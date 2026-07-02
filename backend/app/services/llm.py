@@ -88,3 +88,46 @@ def generate_response(prompt: str, contact_info: dict, db_context: dict = None, 
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to communicate with LLM: {e}")
         raise e
+
+def extract_property_search_criteria(prompt: str) -> dict:
+    """
+    Extracts property search criteria from the user's prompt using the LLM.
+    Returns a dictionary with 'location', 'property_type', and 'max_price'.
+    """
+    url = f"{OLLAMA_BASE_URL}/api/generate"
+    
+    system_prompt = """
+    You are an intelligent real estate search parser. 
+    Analyze the user's message and extract the following property search criteria.
+    Output strictly as a JSON object with these fields:
+    - "location": The city, state, or area they are looking for (e.g., "Bentong", "Mentakab", "Raub"). Output null if not specified.
+    - "property_type": The type of property (e.g., "bungalow", "land", "orchard", "shop", "house"). Output null if not specified.
+    - "max_price": The maximum budget as an integer (e.g., 500000). Output null if not specified.
+    """
+    
+    payload = {
+        "model": "gemma4:e4b-it-bf16",
+        "prompt": prompt,
+        "system": system_prompt,
+        "stream": False,
+        "format": "json"
+    }
+    
+    try:
+        response = requests.post(url, json=payload, timeout=30)
+        response.raise_for_status()
+        result = response.json()
+        raw_text = result.get("response", "{}")
+        try:
+            parsed = json.loads(raw_text)
+            return {
+                "location": parsed.get("location"),
+                "property_type": parsed.get("property_type"),
+                "max_price": parsed.get("max_price")
+            }
+        except json.JSONDecodeError:
+            logger.error(f"Failed to parse criteria JSON: {raw_text}")
+            return {}
+    except Exception as e:
+        logger.error(f"Failed to extract search criteria: {e}")
+        return {}

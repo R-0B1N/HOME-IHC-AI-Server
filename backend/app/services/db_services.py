@@ -1,6 +1,7 @@
 import logging
 from sqlalchemy.orm import Session
-from app.db.models import SessionLocal, Customer, Admin, Employee, Interaction
+from sqlalchemy import or_
+from app.db.models import SessionLocal, Customer, Admin, Employee, Interaction, Property
 
 logger = logging.getLogger(__name__)
 
@@ -88,5 +89,47 @@ def get_sender_role(phone_number: str) -> str:
     except Exception as e:
         logger.error(f"Error checking sender role: {e}")
         return "customer"
+    finally:
+        db.close()
+
+def search_properties(criteria: dict, limit: int = 5) -> list:
+    """
+    Search the Property table based on extracted criteria (location, property_type, max_price).
+    """
+    db: Session = SessionLocal()
+    try:
+        query = db.query(Property).filter(Property.status == "Available")
+        
+        location = criteria.get("location")
+        if location:
+            search_loc = f"%{location}%"
+            query = query.filter(or_(
+                Property.location.ilike(search_loc),
+                Property.title.ilike(search_loc),
+                Property.description.ilike(search_loc)
+            ))
+            
+        property_type = criteria.get("property_type")
+        if property_type:
+            search_type = f"%{property_type}%"
+            query = query.filter(or_(
+                Property.title.ilike(search_type),
+                Property.description.ilike(search_type)
+            ))
+            
+        max_price = criteria.get("max_price")
+        if max_price:
+            try:
+                max_price_float = float(max_price)
+                query = query.filter(Property.price <= max_price_float)
+            except ValueError:
+                pass
+                
+        results = query.limit(limit).all()
+        # Convert to dict for easier JSON serialization
+        return [{"id": p.id, "title": p.title, "price": p.price, "location": p.location, "status": p.status} for p in results]
+    except Exception as e:
+        logger.error(f"Error searching properties: {e}")
+        return []
     finally:
         db.close()

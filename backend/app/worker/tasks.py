@@ -7,8 +7,8 @@ import requests
 import base64
 from app.worker.celery_app import celery_app
 from app.services.chatwoot import send_message, apply_label, toggle_typing_status
-from app.services.llm import generate_response, transcribe_audio
-from app.services.db_services import get_or_create_customer, get_sender_role
+from app.services.llm import generate_response, transcribe_audio, extract_property_search_criteria
+from app.services.db_services import get_or_create_customer, get_sender_role, search_properties
 from app.db.models import SessionLocal, Customer, Property, Transaction, Order
 
 
@@ -135,7 +135,19 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                 # Customer: own data only
                 if customer:
                     db_context["data"]["my_orders"] = [{"id": o.id, "status": o.status, "total": o.total_amount} for o in db.query(Order).filter(Order.customer_id == customer.id).all()]
-                db_context["data"]["properties"] = [{"id": p.id, "title": p.title, "price": p.price, "status": p.status} for p in db.query(Property).filter(Property.status == "Available").limit(20).all()]
+                
+                # Perform RAG search for properties
+                logger.info(f"Extracting search criteria from prompt: {final_prompt_text}")
+                criteria = extract_property_search_criteria(final_prompt_text)
+                logger.info(f"Extracted criteria: {criteria}")
+                
+                if criteria and any(criteria.values()):
+                    matched_properties = search_properties(criteria, limit=5)
+                    logger.info(f"Found {len(matched_properties)} matching properties.")
+                    db_context["data"]["properties"] = matched_properties
+                else:
+                    # Fallback to general available properties if no criteria
+                    db_context["data"]["properties"] = [{"id": p.id, "title": p.title, "price": p.price, "status": p.status} for p in db.query(Property).filter(Property.status == "Available").limit(5).all()]
         finally:
             db.close()
         
