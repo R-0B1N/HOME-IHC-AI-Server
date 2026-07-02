@@ -6,7 +6,7 @@ import json
 logger = logging.getLogger(__name__)
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-WHISPER_API_URL = os.getenv("WHISPER_API_URL", "http://localhost:8080/inference") # Example for local whisper server
+WHISPER_API_URL = os.getenv("WHISPER_API_URL", "http://crm-whisper:8000/v1/audio/transcriptions")
 
 def transcribe_audio(audio_url: str) -> str:
     """
@@ -21,7 +21,6 @@ def transcribe_audio(audio_url: str) -> str:
         audio_resp.raise_for_status()
         
         # 2. POST to whisper API
-        # Assuming an OpenAI-compatible endpoint that expects multipart/form-data
         files = {
             'file': ('audio.ogg', audio_resp.content, 'audio/ogg')
         }
@@ -29,14 +28,20 @@ def transcribe_audio(audio_url: str) -> str:
             'model': 'whisper-1'
         }
         
+        logger.info(f"Sending audio to Whisper API: {WHISPER_API_URL}")
         whisper_resp = requests.post(WHISPER_API_URL, files=files, data=data, timeout=120)
-        whisper_resp.raise_for_status()
         
+        if whisper_resp.status_code != 200:
+            logger.error(f"Whisper API failed with status {whisper_resp.status_code}: {whisper_resp.text}")
+            whisper_resp.raise_for_status()
+            
         # 3. Return text
         result = whisper_resp.json()
-        return result.get("text", "")
+        transcript = result.get("text", "")
+        logger.info(f"Transcription successful: {transcript}")
+        return transcript
         
-    except requests.exceptions.RequestException as e:
+    except Exception as e:
         logger.error(f"Failed to transcribe audio: {e}")
         return ""
 
