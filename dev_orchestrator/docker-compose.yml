@@ -3,7 +3,7 @@ version: "3.8"
 services:
   api:
     build:
-      context: ./backend
+      context: ../backend
       dockerfile: Dockerfile
     container_name: whatsapp_ai_api
     restart: unless-stopped
@@ -19,10 +19,11 @@ services:
       - postgres
     networks:
       - ai_net
+      - crm_network
 
   worker:
     build:
-      context: ./backend
+      context: ../backend
       dockerfile: Dockerfile
     container_name: whatsapp_ai_worker
     restart: unless-stopped
@@ -37,6 +38,7 @@ services:
       - postgres
     networks:
       - ai_net
+      - crm_network
 
   redis:
     image: redis:7-alpine
@@ -68,3 +70,5 @@ volumes:
 networks:
   ai_net:
     driver: bridge
+  crm_network:
+    external: true
