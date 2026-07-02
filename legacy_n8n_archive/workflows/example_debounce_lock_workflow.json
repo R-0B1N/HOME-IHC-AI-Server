@@ -1,0 +1,191 @@
+{
+  "name": "Example: Debouncing & Locking",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "webhook-test"
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "amount": 5,
+        "unit": "seconds"
+      },
+      "name": "Wait 5 Seconds",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "url": "=https://inbox.bentongland.com.my/api/v1/accounts/1/conversations/{{ $node['Webhook'].json.body.conversation.id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "name": "Get Conversation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [],
+          "string": [
+            {
+              "value1": "={{ $json.messages[0].id }}",
+              "value2": "={{ $node['Webhook'].json.body.id }}"
+            }
+          ]
+        }
+      },
+      "name": "Is Last Message?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $node['Get Conversation'].json.custom_attributes.ai_status }}",
+              "operation": "notEqual",
+              "value2": "processing"
+            }
+          ]
+        }
+      },
+      "name": "Is AI Idle?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1050, 280]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://inbox.bentongland.com.my/api/v1/accounts/1/conversations/{{ $node['Webhook'].json.body.conversation.id }}/custom_attributes",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"custom_attributes\": {\n    \"ai_status\": \"processing\"\n  }\n}",
+        "options": {}
+      },
+      "name": "Lock Conversation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1250, 260]
+    },
+    {
+      "parameters": {
+        "text": "Simulating AI processing for 10 seconds..."
+      },
+      "name": "AI Agent (Simulation)",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [1450, 260]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://inbox.bentongland.com.my/api/v1/accounts/1/conversations/{{ $node['Webhook'].json.body.conversation.id }}/custom_attributes",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"custom_attributes\": {\n    \"ai_status\": \"idle\"\n  }\n}",
+        "options": {}
+      },
+      "name": "Unlock Conversation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1650, 260]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Wait 5 Seconds",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 5 Seconds": {
+      "main": [
+        [
+          {
+            "node": "Get Conversation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Conversation": {
+      "main": [
+        [
+          {
+            "node": "Is Last Message?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Last Message?": {
+      "main": [
+        [
+          {
+            "node": "Is AI Idle?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is AI Idle?": {
+      "main": [
+        [
+          {
+            "node": "Lock Conversation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lock Conversation": {
+      "main": [
+        [
+          {
+            "node": "AI Agent (Simulation)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent (Simulation)": {
+      "main": [
+        [
+          {
+            "node": "Unlock Conversation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

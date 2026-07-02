@@ -1,0 +1,17 @@
+{
+  "name": "Orchestrator",
+  "version": "1.0",
+  "capabilities": {
+    "enable_subagents": true
+  },
+  "mcp_servers": [
+    {
+      "name": "n8n_mcp",
+      "command": "npx",
+      "args": [
+        "-y",
+        "n8n-mcp"
+      ]
+    }
+  ]
+}

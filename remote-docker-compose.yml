@@ -1,0 +1,135 @@
+version: '3.8'
+
+networks:
+  crm_network:
+    external: true
+
+volumes:
+  whatsapp_ai_postgres_data:
+
+services:
+  dashboard:
+    build: ./dashboard
+    container_name: crm-dashboard
+    restart: unless-stopped
+    pid: host
+    privileged: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /opt/crm/dashboard:/app
+    networks:
+      - crm_network
+
+  netdata:
+    image: netdata/netdata:latest
+    container_name: crm-netdata
+    restart: unless-stopped
+    pid: host
+    cap_add:
+      - SYS_PTRACE
+      - DAC_READ_SEARCH
+    security_opt:
+      - apparmor:unconfined
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /etc/os-release:/host/etc/os-release:ro
+    networks:
+      - crm_network
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: crm-tunnel
+    restart: unless-stopped
+    command: tunnel --config /home/nonroot/.cloudflared/config.yml run 3a53ce15-66be-4871-9b88-ec881726721d
+    environment:
+      - TUNNEL_TRANSPORT_PROTOCOL=http2
+      - TUNNEL_NO_TLS_VERIFY=true
+    volumes:
+      - /opt/crm/tunnel:/home/nonroot/.cloudflared
+    networks:
+      - crm_network
+
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: crm-tailscale
+    restart: unless-stopped
+    hostname: homeihc-ai-server
+    network_mode: host
+    environment:
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_EXTRA_ARGS=--accept-dns=false
+    volumes:
+      - /opt/crm/tailscale_data:/var/lib/tailscale
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: whatsapp_ai_api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_HOST=whatsapp_ai_redis
+      - REDIS_PORT=6379
+      - DB_HOST=whatsapp_ai_db
+      - DB_USER=n8n
+      - DB_PASSWORD=n8n
+      - DB_NAME=whatsapp_ai
+      - CHATWOOT_BASE_URL=http://crm-chatwoot-web:3000
+      - CHATWOOT_API_TOKEN=E8wuqP3YDvyPXYwoQcTXLnTT
+      - OLLAMA_BASE_URL=http://crm-ollama:11434
+    depends_on:
+      - whatsapp_ai_redis
+      - whatsapp_ai_db
+    networks:
+      - crm_network
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: whatsapp_ai_worker
+    restart: unless-stopped
+    command: celery -A app.worker.celery_app worker --loglevel=info
+    environment:
+      - REDIS_HOST=whatsapp_ai_redis
+      - REDIS_PORT=6379
+      - DB_HOST=whatsapp_ai_db
+      - DB_USER=n8n
+      - DB_PASSWORD=n8n
+      - DB_NAME=whatsapp_ai
+      - CHATWOOT_BASE_URL=http://crm-chatwoot-web:3000
+      - CHATWOOT_API_TOKEN=E8wuqP3YDvyPXYwoQcTXLnTT
+      - OLLAMA_BASE_URL=http://crm-ollama:11434
+    depends_on:
+      - whatsapp_ai_redis
+      - whatsapp_ai_db
+    networks:
+      - crm_network
+
+  whatsapp_ai_redis:
+    image: redis:7-alpine
+    container_name: whatsapp_ai_redis
+    restart: unless-stopped
+    networks:
+      - crm_network
+
+  whatsapp_ai_db:
+    image: postgres:15-alpine
+    container_name: whatsapp_ai_db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=n8n
+      - POSTGRES_PASSWORD=n8n
+      - POSTGRES_DB=whatsapp_ai
+    volumes:
+      - whatsapp_ai_postgres_data:/var/lib/postgresql/data
+    networks:
+      - crm_network

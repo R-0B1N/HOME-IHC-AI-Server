@@ -1,0 +1,22 @@
+#!/usr/bin/expect -f
+set timeout -1
+
+# Upload file
+spawn scp -o StrictHostKeyChecking=no docker-compose.yml admin123@homeihc-ai-server:/tmp/docker-compose.yml
+expect {
+    "*assword:" {
+        send "P@ssw0rd\r"
+        exp_continue
+    }
+    eof
+}
+
+# Run remote commands
+spawn ssh -o StrictHostKeyChecking=no admin123@homeihc-ai-server "echo P@ssw0rd | sudo -S mkdir -p /opt/crm/whisper_data && echo P@ssw0rd | sudo -S cp /tmp/docker-compose.yml /opt/crm/ai-stack/docker-compose.yml && cd /opt/crm/ai-stack && echo P@ssw0rd | sudo -S docker compose up -d"
+expect {
+    "*assword:" {
+        send "P@ssw0rd\r"
+        exp_continue
+    }
+    eof
+}

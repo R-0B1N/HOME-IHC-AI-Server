@@ -1,0 +1,70 @@
+version: "3.8"
+
+services:
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: whatsapp_ai_api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DB_HOST=postgres
+      # Add Chatwoot & LLM ENV vars here
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - ai_net
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: whatsapp_ai_worker
+    restart: unless-stopped
+    command: celery -A app.worker.celery_app worker --loglevel=info
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DB_HOST=postgres
+      # Add Chatwoot & LLM ENV vars here
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - ai_net
+
+  redis:
+    image: redis:7-alpine
+    container_name: whatsapp_ai_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    networks:
+      - ai_net
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: whatsapp_ai_db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=n8n
+      - POSTGRES_PASSWORD=n8n
+      - POSTGRES_DB=whatsapp_ai
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - ai_net
+
+volumes:
+  postgres_data:
+
+networks:
+  ai_net:
+    driver: bridge

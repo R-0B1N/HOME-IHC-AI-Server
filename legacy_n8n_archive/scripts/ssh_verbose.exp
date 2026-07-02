@@ -1,0 +1,11 @@
+#!/usr/bin/expect -f
+set timeout 10
+set cmd [lindex $argv 0]
+spawn ssh -vvv -o StrictHostKeyChecking=no admin123@bentongland.com.my $cmd
+expect {
+    "*assword:" {
+        send "P@ssw0rd\r"
+        exp_continue
+    }
+    eof
+}

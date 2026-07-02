@@ -1,3 +1,10 @@
+-- Create separate databases to prevent Chatwoot migrations from wiping n8n tables
+-- (If databases already exist, this will return an error which can be ignored)
+CREATE DATABASE chatwoot_db;
+CREATE DATABASE n8n_db;
+
+\c n8n_db;
+
 -- User Roles Table
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
