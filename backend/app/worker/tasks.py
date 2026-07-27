@@ -290,7 +290,9 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                                     contact_name,
                                     phone_number,
                                     intent.upper(),
-                                    f"Location: {location} Property Type: {property_type} Budget: {budget}",
+                                    str(location),
+                                    str(property_type),
+                                    str(budget),
                                     str(conversation_summary),
                                     str(cw_link)
                                 ]
