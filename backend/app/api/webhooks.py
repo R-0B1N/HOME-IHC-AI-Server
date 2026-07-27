@@ -1,9 +1,13 @@
 import os
 import json
 import time
+import logging
 from fastapi import APIRouter, Request, BackgroundTasks
 import redis
 from app.worker.tasks import process_conversation_queue
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 router = APIRouter()
 
@@ -12,16 +16,21 @@ REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
 
-TIMEOUT_SECONDS = 5
-
+TIMEOUT_SECONDS = 10
 @router.post("/chatwoot")
+@router.post("/chatwoot-ai")
 async def chatwoot_webhook(request: Request):
     """
     Receives webhooks from Chatwoot.
     Implements a Sliding Window message batcher.
     Combines messages into a queue and processes them after the user stops typing.
     """
-    payload = await request.json()
+    try:
+        payload = await request.json()
+        logger.info(f"Received webhook payload: {json.dumps(payload)}")
+    except Exception:
+        logger.error("Invalid or empty JSON payload in webhook")
+        return {"status": "ignored", "reason": "invalid or empty json payload"}
     
     event_name = payload.get("event")
     
@@ -35,31 +44,27 @@ async def chatwoot_webhook(request: Request):
             redis_client.expire(active_key, 3600)
         return {"status": "typing_on_recorded"}
 
-    if event_name == "conversation_typing_off":
-        conversation_id = payload.get("conversation", {}).get("id")
-        if conversation_id:
-            # Immediately trigger queue processing since they stopped typing
-            current_time = time.time()
-            process_conversation_queue.apply_async(
-                args=[conversation_id, current_time], 
-                countdown=0
-            )
-        return {"status": "typing_off_fast_track"}
-    
+
     # We only care about message creation events below this point
     if event_name != "message_created":
+        logger.info(f"Ignoring webhook, not a message_created event (was {event_name})")
         return {"status": "ignored", "reason": "not a message_created event"}
         
     message_type = payload.get("message_type")
     # message_type == "incoming" means incoming message from customer
     if message_type != "incoming" and message_type != 0:
+        logger.info(f"Ignoring webhook, not an incoming customer message (was {message_type})")
         return {"status": "ignored", "reason": "not an incoming customer message"}
         
+    inbox_id = payload.get("inbox", {}).get("id") or payload.get("conversation", {}).get("inbox_id")
+    # Removed strict inbox ID filtering so test/production inboxes both work
+    
     conversation = payload.get("conversation", {})
     conversation_id = conversation.get("id")
     message_id = payload.get("id")
     
     if not message_id or not conversation_id:
+        logger.info("Ignoring webhook, no message or conversation id found")
         return {"status": "ignored", "reason": "no message or conversation id"}
         
     # Strictly debounce duplicate message_ids to prevent processing the exact same webhook twice

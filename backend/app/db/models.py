@@ -42,11 +42,23 @@ class Property(Base):
     __tablename__ = "properties"
 
     id = Column(Integer, primary_key=True, index=True)
-    title = Column(String, index=True)
+    status = Column(String)  # Available, Pending, Sold
+    name = Column(String, index=True)
     description = Column(String)
     price = Column(Float)
-    status = Column(String)  # Available, Sold, Rented
+    category = Column(String)
+    property_type = Column(String)
     location = Column(String)
+    acres = Column(Float)
+    title_type = Column(String)
+    area = Column(String)
+    city = Column(String)
+    state = Column(String)
+    order_id = Column(Integer, ForeignKey("orders.id"), nullable=True)
+    customer_id = Column(String, ForeignKey("customers.id"), nullable=True)
+    final_price_sold = Column(Float, nullable=True)
+    sale_date = Column(DateTime, nullable=True)
+    sales_person = Column(String, nullable=True)
     metadata_json = Column(JSON, nullable=True)
 
 class Transaction(Base):
