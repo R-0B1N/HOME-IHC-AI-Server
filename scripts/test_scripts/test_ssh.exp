@@ -1,0 +1,14 @@
+#!/usr/bin/expect -f
+set timeout 10
+spawn ssh admin123@homeihc-ai-server "ls -la ~/opt/crm && cat /etc/nginx/sites-available/default"
+expect {
+    "yes/no" {
+        send "yes\r"
+        exp_continue
+    }
+    "assword:" {
+        send "P@ssw0rd\r"
+        exp_continue
+    }
+    eof
+}

@@ -286,19 +286,20 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                                 # First send the template summary
                                 from app.services.chatwoot import send_whatsapp_contact, send_whatsapp_template
                                 
+                                # We append the AI summary and chatwoot link to the budget parameter (parameter 6)
+                                # because the Meta template only accepts 6 parameters. Note: template parameters cannot contain newlines.
+                                extended_budget = f"{budget} - *AI Conversation Summary:* {conversation_summary} - *Review this lead:* {cw_link}"
                                 template_params = [
                                     contact_name,
                                     phone_number,
                                     intent.upper(),
                                     str(location),
                                     str(property_type),
-                                    str(budget),
-                                    str(conversation_summary),
-                                    str(cw_link)
+                                    extended_budget
                                 ]
                                 
                                 send_whatsapp_template(
-                                    inbox_id=3,
+                                    inbox_id=inbox_id,
                                     to_phone=main_phone,
                                     template_name="new_lead_alert_utility",
                                     parameters=template_params,

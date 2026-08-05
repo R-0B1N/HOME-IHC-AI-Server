@@ -1,6 +1,7 @@
 import logging
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
 from app.db.models import SessionLocal, Customer, Admin, Employee, Interaction, Property
 
 logger = logging.getLogger(__name__)
@@ -33,9 +34,16 @@ def get_or_create_customer(phone_number: str, contact_name: str, email: str = No
                 metadata_json=metadata if metadata else {}
             )
             db.add(customer)
-            db.commit()
-            db.refresh(customer)
-        else:
+            try:
+                db.commit()
+                db.refresh(customer)
+            except IntegrityError:
+                db.rollback()
+                logger.warning(f"Customer {phone_number} was created concurrently. Fetching existing.")
+                customer = db.query(Customer).filter(Customer.id == phone_number).first()
+                if not customer:
+                    return None
+        if customer:
             # Update the contact_name if the incoming name is not 'Unknown' or 'John Doe'
             updated = False
             if contact_name and contact_name.lower() not in ["unknown", "john doe"] and customer.contact_name != contact_name:

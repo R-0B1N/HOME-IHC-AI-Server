@@ -1,8 +1,0 @@
-#!/usr/bin/expect -f
-set timeout 30
-set file [lindex $argv 0]
-set host [lindex $argv 1]
-spawn scp -o StrictHostKeyChecking=no $file admin123@$host:/tmp/workflow_fixed.json
-expect "*password:*"
-send "P@ssw0rd\r"
-expect eof

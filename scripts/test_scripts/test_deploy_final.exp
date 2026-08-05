@@ -1,0 +1,33 @@
+#!/usr/bin/expect -f
+set timeout -1
+
+# Upload docker-compose and config
+spawn scp -o StrictHostKeyChecking=no ./archive/docker_configs/docker-compose.remote.yml admin123@homeihc-ai-server:/tmp/
+expect "*?assword:*"
+send "P@ssw0rd\r"
+expect eof
+
+sleep 1
+
+# Upload backend
+spawn rsync -avz --exclude 'venv' --exclude '__pycache__' --exclude '.env' -e "ssh -o StrictHostKeyChecking=no" ./backend/ admin123@homeihc-ai-server:/tmp/backend/
+expect "*?assword:*"
+send "P@ssw0rd\r"
+expect eof
+
+sleep 1
+
+# Upload property-dashboard
+spawn rsync -avz --exclude 'node_modules' --exclude 'dist' -e "ssh -o StrictHostKeyChecking=no" ./property-dashboard/ admin123@homeihc-ai-server:/tmp/property-dashboard/
+expect "*?assword:*"
+send "P@ssw0rd\r"
+expect eof
+
+sleep 1
+
+# Execute sudo commands
+spawn ssh -o StrictHostKeyChecking=no admin123@homeihc-ai-server "echo P@ssw0rd | sudo -S sh -c 'cp /tmp/docker-compose.remote.yml /opt/crm/docker-compose.yml && cp -r /tmp/backend/* /opt/crm/backend/ && rm -rf /opt/crm/property-dashboard/* && cp -r /tmp/property-dashboard/* /opt/crm/property-dashboard/ && chown -R admin123:admin123 /opt/crm/backend /opt/crm/property-dashboard && cd /opt/crm && docker compose down property-dashboard api worker cloudflared whatsapp_ai_db && docker compose up -d --build property-dashboard api worker cloudflared whatsapp_ai_db'"
+expect "*?assword:*"
+send "P@ssw0rd\r"
+expect eof
+

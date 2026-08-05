@@ -1,0 +1,10 @@
+#!/usr/bin/expect -f
+set timeout 60
+spawn ssh -o StrictHostKeyChecking=no admin123@100.124.31.19 "echo P@ssw0rd | sudo -S docker logs --tail 50 whatsapp_ai_api_staging"
+expect {
+    "*?assword*" {
+        send "P@ssw0rd\r"
+        exp_continue
+    }
+    eof
+}
