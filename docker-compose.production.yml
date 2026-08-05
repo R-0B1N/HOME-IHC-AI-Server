@@ -85,11 +85,13 @@ services:
       - POSTGRES_PASSWORD=n8n
       - POSTGRES_DB=whatsapp_ai
     volumes:
-      - production_db_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     networks:
       - prod_net
 
 volumes:
-  production_db_data:
+  postgres_data:
+    name: crm_whatsapp_ai_postgres_data
+    external: true
