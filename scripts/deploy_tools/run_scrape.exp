@@ -1,0 +1,7 @@
+#!/usr/bin/expect -f
+set timeout 60
+
+spawn ssh -o StrictHostKeyChecking=no admin123@homeihc-ai-server "cd /opt/crm && echo P@ssw0rd | sudo -S docker compose exec api python scripts/scrape_bentongland.py"
+expect "*?assword:*"
+send "P@ssw0rd\r"
+expect eof

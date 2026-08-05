@@ -1,0 +1,10 @@
+#!/usr/bin/expect -f
+set timeout -1
+spawn ssh -t -o StrictHostKeyChecking=no admin123@homeihc-ai-server "sudo bash -c 'docker exec whatsapp_ai_db psql -U n8n -d whatsapp_ai -c \"SELECT * FROM customers;\"'"
+expect {
+    "*?assword*" {
+        send "P@ssw0rd\r"
+        exp_continue
+    }
+    eof
+}

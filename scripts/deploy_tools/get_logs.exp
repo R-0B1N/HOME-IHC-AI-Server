@@ -1,0 +1,10 @@
+#!/usr/bin/expect -f
+set timeout 10
+spawn ssh -o StrictHostKeyChecking=no admin123@homeihc-ai-server "echo P@ssw0rd | sudo -S docker logs --tail 20 whatsapp_ai_api"
+expect "*?assword:*"
+send "P@ssw0rd\r"
+expect eof
+spawn ssh -o StrictHostKeyChecking=no admin123@homeihc-ai-server "echo P@ssw0rd | sudo -S docker logs --tail 20 whatsapp_ai_db"
+expect "*?assword:*"
+send "P@ssw0rd\r"
+expect eof

@@ -1,0 +1,7 @@
+#!/usr/bin/expect -f
+set timeout -1
+
+spawn ssh -o StrictHostKeyChecking=no admin123@homeihc-ai-server "cd /opt/crm && echo P@ssw0rd | sudo -S docker compose up -d --build property-dashboard api worker cloudflared"
+expect "*?assword:*"
+send "P@ssw0rd\r"
+expect eof

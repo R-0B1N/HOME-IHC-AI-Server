@@ -1,0 +1,12 @@
+#!/usr/bin/expect -f
+set timeout 10
+
+spawn scp -o StrictHostKeyChecking=no ./backend/app/api/webhooks.py admin123@homeihc-ai-server:/home/admin123/webhooks.py
+expect "*?assword:*"
+send "P@ssw0rd\r"
+expect eof
+
+spawn ssh -o StrictHostKeyChecking=no admin123@homeihc-ai-server "echo P@ssw0rd | sudo -S cp /home/admin123/webhooks.py /opt/crm/backend/app/api/webhooks.py && cd /opt/crm && echo P@ssw0rd | sudo -S docker compose restart api worker"
+expect "*?assword:*"
+send "P@ssw0rd\r"
+expect eof
