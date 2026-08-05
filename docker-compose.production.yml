@@ -77,7 +77,7 @@ services:
       - prod_net
 
   db_production:
-    image: pgvector/pgvector:pg16
+    image: pgvector/pgvector:pg15
     container_name: whatsapp_ai_db_production
     restart: unless-stopped
     environment:
