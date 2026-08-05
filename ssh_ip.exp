@@ -1,0 +1,8 @@
+#!/usr/bin/expect -f
+set timeout 60
+spawn ssh -o StrictHostKeyChecking=no admin123@homeihc-ai-server "tailscale ip -4"
+expect {
+    "*?assword:*" { send "P@ssw0rd\r" }
+    timeout { puts "TIMEOUT"; exit 1 }
+}
+expect eof
