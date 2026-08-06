@@ -1,0 +1,8 @@
+#!/usr/bin/expect -f
+set timeout 60
+spawn ssh -o StrictHostKeyChecking=no admin123@homeihc-ai-server "docker logs whatsapp_ai_db_production --tail 30 2>&1; echo '===API==='; docker logs whatsapp_ai_api_production --tail 30 2>&1"
+expect {
+    "*?assword:*" { send "P@ssw0rd\r" }
+    timeout { puts "TIMEOUT"; exit 1 }
+}
+expect eof
