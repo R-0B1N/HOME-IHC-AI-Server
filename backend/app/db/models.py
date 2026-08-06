@@ -22,7 +22,7 @@ Base = declarative_base()
 class Customer(Base):
     __tablename__ = "customers"
 
-    id = Column(String, primary_key=True, index=True) # phone number as primary key
+    id = Column(String, primary_key=True) # phone number as primary key
     country = Column(String, nullable=True)
     language = Column(String, nullable=True)
     contact_name = Column(String)
@@ -40,7 +40,7 @@ class Lead(Base):
     __tablename__ = "leads"
 
     # 1. Core Lead & Identification
-    lead_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    lead_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     customer_id = Column(String, ForeignKey("customers.id"), nullable=True) # Linked to customer
     source_channel = Column(String, default="WhatsApp")
     contact_handle = Column(String)
@@ -78,7 +78,7 @@ class Property(Base):
     __tablename__ = "properties"
 
     # 1. Core Property & Identification
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     source_url = Column(String, nullable=True)
     title = Column(String)
     listing_status = Column(String)
@@ -153,7 +153,7 @@ class Property(Base):
 class Transaction(Base):
     __tablename__ = "transactions"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     customer_id = Column(String, ForeignKey("customers.id"))
     property_id = Column(UUID(as_uuid=True), ForeignKey("properties.id"))
     transaction_type = Column(String)  # Sale, Rent
@@ -163,7 +163,7 @@ class Transaction(Base):
 class Order(Base):
     __tablename__ = "orders"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     customer_id = Column(String, ForeignKey("customers.id"))
     status = Column(String)  # Pending, Completed, Cancelled
     total_amount = Column(Float)
@@ -172,7 +172,7 @@ class Order(Base):
 class Interaction(Base):
     __tablename__ = "interactions"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     customer_id = Column(String, ForeignKey("customers.id"))
     message_in = Column(String)
     message_out = Column(String)
@@ -181,7 +181,7 @@ class Interaction(Base):
 class Admin(Base):
     __tablename__ = "admins"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     phone_number = Column(String, unique=True, index=True)
     name = Column(String)
     email = Column(String, nullable=True)
@@ -190,7 +190,7 @@ class Admin(Base):
 class Employee(Base):
     __tablename__ = "employees"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     phone_number = Column(String, unique=True, index=True)
     name = Column(String)
     email = Column(String, nullable=True)
