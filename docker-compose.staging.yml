@@ -17,6 +17,7 @@ services:
       - "3001:80"
     networks:
       - staging_net
+      - crm_network
 
   api_staging:
     build:

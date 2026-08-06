@@ -17,6 +17,7 @@ services:
       - "3002:80"
     networks:
       - prod_net
+      - crm_network
 
   api_production:
     build:

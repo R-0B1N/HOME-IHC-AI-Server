@@ -37,5 +37,5 @@ jobs:
           password: ${{ secrets.SSH_PASSWORD }}
           script: |
             cd ~/whatsapp-ai-staging
-            docker compose -f docker-compose.staging.yml down --remove-orphans
+            docker compose -f docker-compose.staging.yml down
             docker compose -f docker-compose.staging.yml up -d --build
