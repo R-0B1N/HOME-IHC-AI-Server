@@ -29,7 +29,6 @@ def get_or_create_customer(phone_number: str, contact_name: str, email: str = No
                 country=country,
                 contact_name=contact_name,
                 email=email,
-                intent_category="general",
                 conversation_ids=[conversation_id] if conversation_id else [],
                 metadata_json=metadata if metadata else {}
             )
@@ -135,7 +134,7 @@ def search_properties(criteria: dict, limit: int = 15) -> list:
     """
     db: Session = SessionLocal()
     try:
-        query = db.query(Property).filter(Property.status.in_(["Available", "For Sale", "For Rent"]))
+        query = db.query(Property).filter(Property.listing_status.in_(["Available", "For Sale", "For Rent"]))
         
         location = criteria.get("location")
         if location:

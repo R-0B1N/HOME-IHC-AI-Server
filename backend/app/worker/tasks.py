@@ -206,7 +206,7 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                     db_context["data"]["properties"] = matched_properties
                 else:
                     # Fallback to general available properties if no criteria
-                    db_context["data"]["properties"] = [{"id": p.id, "name": p.name, "price": p.price, "status": p.status} for p in db.query(Property).filter(Property.status == "Available").limit(10).all()]
+                    db_context["data"]["properties"] = [{"id": p.id, "name": p.title, "price": p.asking_price_myr, "status": p.listing_status} for p in db.query(Property).filter(Property.listing_status == "Available").limit(10).all()]
         finally:
             db.close()
         
