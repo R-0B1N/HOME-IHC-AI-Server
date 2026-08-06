@@ -32,3 +32,10 @@ jobs:
             
             echo "=== PRODUCTION DB LOGS ==="
             docker logs whatsapp_ai_db_production --tail 20 2>&1 || true
+
+            echo "=== STAGING API LOGS ==="
+            docker logs whatsapp_ai_api_staging --tail 100 2>&1 || true
+            
+            echo "=== STAGING WORKER LOGS ==="
+            docker logs whatsapp_ai_worker_staging --tail 100 2>&1 || true
+
