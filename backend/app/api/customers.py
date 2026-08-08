@@ -20,8 +20,7 @@ class CustomerCreate(BaseModel):
     contact_name: str
     email: Optional[str] = None
     country: Optional[str] = None
-    intent_category: Optional[str] = "general"
-    intention_tag: Optional[str] = "Cold"
+    country: Optional[str] = None
     ignore_ai: Optional[bool] = False
 
 class CustomerUpdate(BaseModel):
@@ -29,8 +28,7 @@ class CustomerUpdate(BaseModel):
     contact_name: Optional[str] = None
     email: Optional[str] = None
     country: Optional[str] = None
-    intent_category: Optional[str] = None
-    intention_tag: Optional[str] = None
+    country: Optional[str] = None
     ignore_ai: Optional[bool] = None
 
 @router.get("")
@@ -44,8 +42,6 @@ def get_customers(db: Session = Depends(get_db)):
             "contact_name": c.contact_name,
             "email": c.email,
             "country": c.country,
-            "intent_category": c.intent_category,
-            "intention_tag": c.intention_tag,
             "conversation_ids": c.conversation_ids,
             "metadata_json": c.metadata_json,
             "last_interaction": c.last_interaction.isoformat() if c.last_interaction else None
@@ -63,8 +59,6 @@ def create_customer(customer_data: CustomerCreate, db: Session = Depends(get_db)
         country=customer_data.country,
         contact_name=customer_data.contact_name,
         email=customer_data.email,
-        intent_category=customer_data.intent_category,
-        intention_tag=customer_data.intention_tag,
         last_interaction=datetime.datetime.utcnow(),
         metadata_json={"ignore_ai": customer_data.ignore_ai or False}
     )
@@ -85,10 +79,6 @@ def update_customer(customer_id: str, customer_data: CustomerUpdate, db: Session
         customer.email = customer_data.email
     if customer_data.country is not None:
         customer.country = customer_data.country
-    if customer_data.intent_category is not None:
-        customer.intent_category = customer_data.intent_category
-    if customer_data.intention_tag is not None:
-        customer.intention_tag = customer_data.intention_tag
     if customer_data.ignore_ai is not None:
         meta = customer.metadata_json.copy() if customer.metadata_json else {}
         meta["ignore_ai"] = customer_data.ignore_ai
@@ -101,9 +91,7 @@ def update_customer(customer_id: str, customer_data: CustomerUpdate, db: Session
         "id": customer.id,
         "contact_name": customer.contact_name,
         "email": customer.email,
-        "country": customer.country,
-        "intention_tag": customer.intention_tag,
-        "intent_category": customer.intent_category
+        "country": customer.country
     }
 
 class CustomerMigrate(BaseModel):
@@ -125,8 +113,6 @@ def migrate_customer(customer_id: str, body: CustomerMigrate, db: Session = Depe
         contact_name=old_customer.contact_name,
         email=old_customer.email,
         country=old_customer.country,
-        intent_category=old_customer.intent_category,
-        intention_tag=old_customer.intention_tag,
         conversation_ids=old_customer.conversation_ids,
         metadata_json=old_customer.metadata_json,
         last_interaction=old_customer.last_interaction,
@@ -149,8 +135,6 @@ def migrate_customer(customer_id: str, body: CustomerMigrate, db: Session = Depe
         "contact_name": new_customer.contact_name,
         "email": new_customer.email,
         "country": new_customer.country,
-        "intent_category": new_customer.intent_category,
-        "intention_tag": new_customer.intention_tag,
         "conversation_ids": new_customer.conversation_ids,
         "metadata_json": new_customer.metadata_json,
         "last_interaction": new_customer.last_interaction.isoformat() if new_customer.last_interaction else None

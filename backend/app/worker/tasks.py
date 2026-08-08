@@ -7,7 +7,7 @@ import requests
 import base64
 from app.worker.celery_app import celery_app
 from app.services.chatwoot import send_message, apply_label, set_priority, toggle_typing_status, get_conversation_messages, get_or_create_contact, create_conversation, assign_agent
-from app.services.llm import generate_response, transcribe_audio, extract_property_search_criteria, extract_valuer_data
+from app.services.llm import generate_response, transcribe_audio, extract_property_search_criteria, extract_valuer_data, extract_wordpress_property
 from app.services.document_parser import extract_text_from_document
 from app.services.db_services import get_or_create_customer, get_sender_role, search_properties
 from app.db.models import SessionLocal, Customer, Property, Transaction, Order
@@ -50,7 +50,36 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
             )
             return {"status": "deferred", "reason": "user still active"}
             
-        # If we reach here, it's been at least 5 seconds since the last message.
+        # Master AI Toggle check
+        master_ai_raw = redis_client.get("master_ai_enabled")
+        master_ai_enabled = master_ai_raw.decode("utf-8") == "true" if master_ai_raw else True
+        if not master_ai_enabled:
+            logger.info(f"Master AI Toggle is OFF. Deferring conversation {conversation_id}.")
+            return {"status": "deferred", "reason": "master ai is off"}
+
+        # If we reach here, it's been at least 10 seconds since the last message and AI is ON.
+        
+        # Human Override Check
+        try:
+            chatwoot_messages = get_conversation_messages(conversation_id)
+            if chatwoot_messages:
+                chatwoot_messages.sort(key=lambda x: x.get("created_at", 0))
+                last_msg = chatwoot_messages[-1]
+                # If the last message is outgoing and NOT from our AI/bot (e.g., from a human agent)
+                # Chatwoot marks bot messages with sender_type = "AgentBot" or user_id for humans
+                sender = last_msg.get("sender", {})
+                sender_type = sender.get("type", "")
+                if last_msg.get("message_type") == "outgoing" and sender_type != "agent_bot" and sender.get("id") != 0:
+                    logger.info(f"Human agent replied to conversation {conversation_id}. Clearing queue and skipping.")
+                    queue_key = f"convo_queue_{conversation_id}"
+                    pipe = redis_client.pipeline()
+                    pipe.delete(queue_key)
+                    pipe.delete(active_key)
+                    pipe.execute()
+                    return {"status": "skipped", "reason": "human override"}
+        except Exception as e:
+            logger.error(f"Failed to check for human override: {e}")
+
         # Let's atomically grab all messages in the queue and delete the queue.
         queue_key = f"convo_queue_{conversation_id}"
         
@@ -106,12 +135,17 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                     elif file_type == "file":
                         logger.info("Document/PDF attachment detected.")
                         try:
-                            doc_text = extract_text_from_document(data_url, attachment.get("data_file_name", ""))
+                            doc_result = extract_text_from_document(data_url, attachment.get("data_file_name", ""))
+                            doc_text = doc_result.get("text", "")
                             if doc_text:
                                 combined_text.append(f"[Document Content]: {doc_text}")
-                        except Exception as e:
-                            logger.error(f"Failed to extract document text: {e}")
                             
+                            doc_images = doc_result.get("images", [])
+                            if doc_images:
+                                logger.info(f"Extracted {len(doc_images)} images from document.")
+                                combined_images.extend(doc_images)
+                        except Exception as e:
+                            logger.error(f"Failed to extract document text/images: {e}")
         final_prompt_text = "\n".join(combined_text).strip()
             
         if not final_prompt_text:
@@ -168,16 +202,16 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
         try:
             if role == "admin":
                 # Admin: all data (limited for token size)
-                db_context["data"]["customers"] = [{"id": c.id, "name": c.contact_name, "phone": c.phone_number} for c in db.query(Customer).limit(50).all()]
-                db_context["data"]["properties"] = [{"id": p.id, "name": p.name, "price": p.price, "status": p.status} for p in db.query(Property).limit(50).all()]
+                db_context["data"]["customers"] = [{"id": str(c.id), "name": c.contact_name, "phone": c.phone_number} for c in db.query(Customer).limit(50).all()]
+                db_context["data"]["properties"] = [{"id": str(p.id), "name": p.name, "price": p.price, "status": p.status} for p in db.query(Property).limit(50).all()]
             elif role == "employee":
                 # Employee: customer data only
-                db_context["data"]["customers"] = [{"id": c.id, "name": c.contact_name, "phone": c.phone_number} for c in db.query(Customer).limit(50).all()]
-                db_context["data"]["properties"] = [{"id": p.id, "name": p.name, "price": p.price, "status": p.status} for p in db.query(Property).limit(50).all()]
+                db_context["data"]["customers"] = [{"id": str(c.id), "name": c.contact_name, "phone": c.phone_number} for c in db.query(Customer).limit(50).all()]
+                db_context["data"]["properties"] = [{"id": str(p.id), "name": p.name, "price": p.price, "status": p.status} for p in db.query(Property).limit(50).all()]
             else:
                 # Customer: own data only
                 if customer:
-                    db_context["data"]["my_orders"] = [{"id": o.id, "status": o.status, "total": o.total_amount} for o in db.query(Order).filter(Order.customer_id == customer.id).all()]
+                    db_context["data"]["my_orders"] = [{"id": str(o.id), "status": o.status, "total": o.total_amount} for o in db.query(Order).filter(Order.customer_id == customer.id).all()]
                 
                 
                 # Fetch conversation history
@@ -206,7 +240,7 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                     db_context["data"]["properties"] = matched_properties
                 else:
                     # Fallback to general available properties if no criteria
-                    db_context["data"]["properties"] = [{"id": p.id, "name": p.title, "price": p.asking_price_myr, "status": p.listing_status} for p in db.query(Property).filter(Property.listing_status == "Available").limit(10).all()]
+                    db_context["data"]["properties"] = [{"id": str(p.id), "name": p.title, "price": p.asking_price_myr, "status": p.listing_status} for p in db.query(Property).filter(Property.listing_status == "Available").limit(10).all()]
         finally:
             db.close()
         
@@ -322,8 +356,6 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
             try:
                 db_cust = db.query(Customer).filter(Customer.id == customer.id).first()
                 if db_cust:
-                    db_cust.intent_category = intent
-                    db_cust.intention_tag = lead_temp
                     if handover_initiated:
                         meta = db_cust.metadata_json.copy() if db_cust.metadata_json else {}
                         meta["ignore_ai"] = True
@@ -385,4 +417,63 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
         except:
             pass
         logger.error(f"Error processing conversation {conversation_id}: {exc}")
+        raise self.retry(exc=exc, countdown=2 ** self.request.retries)
+
+@celery_app.task(bind=True, max_retries=3)
+def process_wordpress_property(self, payload: dict):
+    """
+    Processes a raw WordPress webhook payload, extracts property details via LLM,
+    and upserts into the database.
+    """
+    try:
+        logger.info(f"Processing WordPress property: {payload.get('title')}")
+        extracted_data = extract_wordpress_property(payload)
+        
+        title = payload.get("title", "")
+        if not title:
+            logger.error("No title found in WordPress payload, skipping.")
+            return {"status": "failed", "reason": "no title"}
+            
+        db = SessionLocal()
+        try:
+            from app.db.models import Property
+            import uuid
+            
+            existing = db.query(Property).filter(Property.title == title).first()
+            if existing:
+                # Update existing property
+                existing.search_corpus_markdown = payload.get("description", existing.search_corpus_markdown)
+                existing.asking_price_myr = extracted_data.get("price", existing.asking_price_myr)
+                existing.listing_status = extracted_data.get("status", existing.listing_status)
+                existing.property_category = extracted_data.get("category", existing.property_category)
+                existing.land_area_acres = extracted_data.get("acres", existing.land_area_acres)
+                existing.source_url = payload.get("source_url", existing.source_url)
+                existing.state = extracted_data.get("state", existing.state)
+                existing.city = extracted_data.get("city", existing.city)
+                db.commit()
+                logger.info(f"Updated property {title} in DB.")
+                return {"status": "success", "action": "updated"}
+            else:
+                # Create new property
+                new_property = Property(
+                    id=str(uuid.uuid4()),
+                    title=title,
+                    search_corpus_markdown=payload.get("description", ""),
+                    asking_price_myr=extracted_data.get("price", 0.0),
+                    listing_status=extracted_data.get("status", "Available"),
+                    property_category=extracted_data.get("category", []),
+                    state=extracted_data.get("state", ""),
+                    city=extracted_data.get("city", ""),
+                    land_area_acres=extracted_data.get("acres", 0.0),
+                    source_url=payload.get("source_url", "")
+                )
+                db.add(new_property)
+                db.commit()
+                logger.info(f"Created property {title} in DB.")
+                return {"status": "success", "action": "created"}
+        finally:
+            db.close()
+            
+    except Exception as exc:
+        logger.error(f"Error processing WordPress property: {exc}")
         raise self.retry(exc=exc, countdown=2 ** self.request.retries)

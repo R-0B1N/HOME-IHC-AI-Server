@@ -51,12 +51,34 @@ function App() {
     is_tenanted: false
   });
 
+  const [masterAiEnabled, setMasterAiEnabled] = useState(true);
+
   const fetchProperties = async () => {
     try {
       const response = await axios.get(`${API_BASE_URL}/properties`);
       setProperties(response.data);
     } catch (error) {
       console.error('Failed to fetch properties:', error);
+    }
+  };
+
+  const fetchMasterAiStatus = async () => {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/settings/ai-status`);
+      setMasterAiEnabled(response.data.enabled);
+    } catch (error) {
+      console.error('Failed to fetch master AI status:', error);
+    }
+  };
+
+  const toggleMasterAi = async () => {
+    try {
+      const newStatus = !masterAiEnabled;
+      const response = await axios.post(`${API_BASE_URL}/settings/ai-status`, { enabled: newStatus });
+      setMasterAiEnabled(response.data.enabled);
+    } catch (error) {
+      console.error('Failed to toggle master AI status:', error);
+      alert('Failed to toggle master AI status.');
     }
   };
 
@@ -71,6 +93,8 @@ function App() {
 
   // Fetch data on tab change + auto-refresh every 30s for real-time updates
   useEffect(() => {
+    fetchMasterAiStatus();
+    
     if (activeTab === 'properties') {
       fetchProperties();
     } else if (activeTab === 'leads') {
@@ -78,6 +102,7 @@ function App() {
     }
 
     const interval = setInterval(() => {
+      fetchMasterAiStatus();
       if (activeTab === 'properties') {
         fetchProperties();
       } else if (activeTab === 'leads') {
@@ -357,6 +382,29 @@ function App() {
         <div className="logo-section">
           <h1>Home IHC Dashboard</h1>
           <p>RBAC Property & Lead Management Console</p>
+          <div style={{ marginTop: '0.5rem' }}>
+            <button 
+              className={`ai-status-btn ${masterAiEnabled ? 'active' : 'disabled'}`}
+              onClick={toggleMasterAi}
+              title={masterAiEnabled ? "Click to disable all AI replies" : "Click to enable all AI replies"}
+              style={{
+                padding: '0.5rem 1rem',
+                borderRadius: '8px',
+                fontSize: '0.85rem',
+                fontWeight: 'bold',
+                border: '1px solid',
+                cursor: 'pointer',
+                backgroundColor: masterAiEnabled ? '#e6f4ea' : '#fce8e6',
+                color: masterAiEnabled ? '#137333' : '#c5221f',
+                borderColor: masterAiEnabled ? '#ceead6' : '#fad2cf',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem'
+              }}
+            >
+              Master AI Toggle: {masterAiEnabled ? 'ON' : 'OFF'}
+            </button>
+          </div>
         </div>
         
         <div className="tab-navigation">

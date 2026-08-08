@@ -36,7 +36,7 @@ services:
       - DB_NAME=whatsapp_ai
       - CHATWOOT_BASE_URL=http://crm-chatwoot-web:3000
       - CHATWOOT_API_TOKEN=E8wuqP3YDvyPXYwoQcTXLnTT
-      - OLLAMA_BASE_URL=http://crm-ollama:11434
+      - OLLAMA_BASE_URL=http://crm-vllm:8000
     depends_on:
       - redis_production
       - db_production
@@ -50,7 +50,7 @@ services:
       dockerfile: Dockerfile
     container_name: whatsapp_ai_worker_production
     restart: unless-stopped
-    command: celery -A app.worker.celery_app worker --loglevel=info
+    command: celery -A app.worker.celery_app worker --pool=gevent --concurrency=20 --loglevel=info
     environment:
       - REDIS_HOST=whatsapp_ai_redis_production
       - REDIS_PORT=6379
@@ -60,7 +60,7 @@ services:
       - DB_NAME=whatsapp_ai
       - CHATWOOT_BASE_URL=http://crm-chatwoot-web:3000
       - CHATWOOT_API_TOKEN=E8wuqP3YDvyPXYwoQcTXLnTT
-      - OLLAMA_BASE_URL=http://crm-ollama:11434
+      - OLLAMA_BASE_URL=http://crm-vllm:8000
     depends_on:
       - redis_production
       - db_production

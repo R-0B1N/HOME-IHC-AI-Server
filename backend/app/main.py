@@ -4,6 +4,7 @@ from app.api.webhooks import router as webhooks_router
 from app.api.properties import router as properties_router
 from app.api.customers import router as customers_router
 from app.api.wordpress import router as wordpress_router
+from app.api.settings import router as settings_router
 from app.db.models import Base, engine
 
 # Initialize database and run auto-migration if needed
@@ -34,6 +35,7 @@ app.include_router(webhooks_router, prefix="/webhook") # Fallback for old n8n we
 app.include_router(wordpress_router, prefix="/api/v1/webhooks/wordpress")
 app.include_router(properties_router, prefix="/api/v1/properties")
 app.include_router(customers_router, prefix="/api/v1/customers")
+app.include_router(settings_router, prefix="/api/v1/settings")
 
 @app.get("/health")
 def health_check():

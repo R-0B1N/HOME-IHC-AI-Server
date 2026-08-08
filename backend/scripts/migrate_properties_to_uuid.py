@@ -113,7 +113,9 @@ def migrate():
             
             # --- Migrate Leads to Customers ---
             leads_exists = conn.execute(text("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'leads');")).scalar()
-            if leads_exists:
+            migrated_exists = conn.execute(text("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'leads_migrated');")).scalar()
+            
+            if leads_exists and not migrated_exists:
                 print("Migrating leads to customers...")
                 old_leads = conn.execute(text("SELECT * FROM leads;")).fetchall()
                 for lead in old_leads:

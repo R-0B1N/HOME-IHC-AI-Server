@@ -8,8 +8,6 @@ logger = logging.getLogger(__name__)
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://crm-ollama:11434")
 WHISPER_API_URL = os.getenv("WHISPER_API_URL", "http://crm-whisper:8000/v1/audio/transcriptions")
 
-LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "google/gemma-4-12B-it")
-
 def transcribe_audio(audio_url: str) -> str:
     """
     Downloads audio and sends to Whisper (or Gemma 4 audio model) for transcription.
@@ -95,7 +93,7 @@ def generate_response(prompt: str, contact_info: dict, db_context: dict = None, 
             })
             
     payload = {
-        "model": LLM_MODEL_NAME,
+        "model": "gemma4:e4b-it-bf16",
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content}
@@ -170,7 +168,7 @@ def extract_property_search_criteria(prompt: str, conversation_history: str = ""
     """
     
     payload = {
-        "model": LLM_MODEL_NAME,
+        "model": "gemma4:e4b-it-bf16",
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt}
@@ -226,7 +224,7 @@ def extract_valuer_data(prompt: str, conversation_history: str = "") -> dict:
     """
     
     payload = {
-        "model": LLM_MODEL_NAME,
+        "model": "gemma4:e4b-it-bf16",
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt}
@@ -284,7 +282,7 @@ def extract_wordpress_property(payload: dict) -> dict:
     content = f"Title: {title}\n\nDescription: {description}"
     
     payload_llm = {
-        "model": LLM_MODEL_NAME,
+        "model": "gemma4:e4b-it-bf16",
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": content}
@@ -315,9 +313,9 @@ def extract_wordpress_property(payload: dict) -> dict:
         
         try:
             parsed = json.loads(clean_json)
-            extracted_data["price"] = float(str(parsed.get("price", 0.0)).replace(",", "")) if parsed.get("price") is not None else 0.0
+            extracted_data["price"] = float(parsed.get("price", 0.0)) if parsed.get("price") is not None else 0.0
             extracted_data["category"] = parsed.get("category", [])
-            extracted_data["acres"] = float(str(parsed.get("acres", 0.0)).replace(",", "")) if parsed.get("acres") is not None else 0.0
+            extracted_data["acres"] = float(parsed.get("acres", 0.0)) if parsed.get("acres") is not None else 0.0
             extracted_data["state"] = parsed.get("state", "")
             extracted_data["city"] = parsed.get("city", "")
             if parsed.get("status"):
