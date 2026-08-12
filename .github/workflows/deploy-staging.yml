@@ -38,3 +38,12 @@ jobs:
           script: |
             cd ~/whatsapp-ai-staging
             docker compose -f docker-compose.staging.yml up -d --build --remove-orphans
+            
+            # Wait a few seconds for DB to be ready if needed, then run scripts
+            sleep 5
+            
+            # Seed the workflow templates
+            docker compose -f docker-compose.staging.yml exec -T backend python -m scripts.seed_workflows
+            
+            # Reset ignore_ai flags for testing purposes
+            docker compose -f docker-compose.staging.yml exec -T backend python -m scripts.reset_ai_flags
