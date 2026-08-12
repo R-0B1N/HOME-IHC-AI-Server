@@ -35,7 +35,10 @@ def _ensure_bucket_exists():
             logger.error(f"Error checking/creating bucket {MINIO_BUCKET_NAME}: {e}")
 
 # Ensure bucket is created on module load
-_ensure_bucket_exists()
+try:
+    _ensure_bucket_exists()
+except Exception as e:
+    logger.error(f"Failed to ensure bucket exists on startup: {e}")
 
 def upload_media(file_data: bytes, object_name: str, content_type: str = "application/octet-stream") -> str:
     """
