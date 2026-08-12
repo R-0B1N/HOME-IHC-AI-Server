@@ -62,7 +62,7 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict) -
             
             # Simple wrapper to LLM to parse expected fields
             # Since generate_response already handles DB context, we will do a custom prompt here
-            from app.services.llm import llm_client, LLM_MODEL
+            from app.services.llm import llm_client, LLM_MODEL_NAME
             
             system_prompt = f"You are an AI assistant. Extract the following information from the user's message based on the instruction: '{instruction}'. Expected JSON keys: {expected_keys}. Return valid JSON."
             messages = [
@@ -72,7 +72,7 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict) -
             
             try:
                 response = llm_client.chat.completions.create(
-                    model=LLM_MODEL,
+                    model=LLM_MODEL_NAME,
                     messages=messages,
                     response_format={"type": "json_object"},
                     temperature=0.0
