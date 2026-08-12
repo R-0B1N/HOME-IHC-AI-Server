@@ -375,12 +375,20 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                                     cw_link
                                 ]
                                 
+                                # The template lives on WABA 926462380020902 (phone: +601163044931)
+                                # which is different from the test inbox WABA, so we must override
+                                TEMPLATE_PHONE_NUMBER_ID = os.getenv(
+                                    "WHATSAPP_TEMPLATE_PHONE_NUMBER_ID",
+                                    "1039310802596891"
+                                )
+                                
                                 send_whatsapp_template(
                                     inbox_id=inbox_id,
                                     to_phone=main_phone,
                                     template_name="new_lead_alert_utility",
                                     parameters=template_params,
-                                    language_code="en"
+                                    language_code="en",
+                                    override_phone_number_id=TEMPLATE_PHONE_NUMBER_ID
                                 )
                                 
                                 # Then send the native contact card directly via WhatsApp API

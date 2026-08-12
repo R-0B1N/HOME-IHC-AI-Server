@@ -91,7 +91,7 @@ def send_whatsapp_contact(inbox_id: int, to_phone: str, contact_name: str, conta
         logger.error(f"Missing API key or phone number ID in inbox {inbox_id} for sending contact card")
         return None
         
-    url = f"https://graph.facebook.com/v17.0/{phone_number_id}/messages"
+    url = f"https://graph.facebook.com/v21.0/{phone_number_id}/messages"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
@@ -132,21 +132,25 @@ def send_whatsapp_contact(inbox_id: int, to_phone: str, contact_name: str, conta
             logger.error(f"Response: {e.response.text}")
         return None
 
-def send_whatsapp_template(inbox_id: int, to_phone: str, template_name: str, parameters: list, language_code: str = "en"):
+def send_whatsapp_template(inbox_id: int, to_phone: str, template_name: str, parameters: list, language_code: str = "en", override_phone_number_id: str = None):
     """
     Sends a WhatsApp Template Message via the Graph API.
     parameters should be a list of strings mapping to {{1}}, {{2}}, etc.
+    
+    If override_phone_number_id is provided, it will be used instead of the inbox's
+    phone_number_id. This is needed when the template is registered on a different WABA
+    than the inbox's phone number.
     """
     inbox = get_inbox_details(inbox_id)
     provider_config = inbox.get("provider_config", {})
     api_key = provider_config.get("api_key")
-    phone_number_id = provider_config.get("phone_number_id")
+    phone_number_id = override_phone_number_id or provider_config.get("phone_number_id")
     
     if not api_key or not phone_number_id:
         logger.error(f"Missing API key or phone number ID in inbox {inbox_id} for sending template")
         return None
         
-    url = f"https://graph.facebook.com/v17.0/{phone_number_id}/messages"
+    url = f"https://graph.facebook.com/v21.0/{phone_number_id}/messages"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
