@@ -2,7 +2,7 @@ import logging
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
-from app.db.models import SessionLocal, Customer, Admin, Employee, Interaction, Property
+from app.db.models import SessionLocal, Customer, Admin, Employee, InteractionLog, Property
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +84,7 @@ def log_interaction(customer_id: str, message_in: str, message_out: str):
         if not customer_id:
             return
             
-        interaction = Interaction(
+        interaction = InteractionLog(
             customer_id=customer_id,
             message_in=message_in,
             message_out=message_out
