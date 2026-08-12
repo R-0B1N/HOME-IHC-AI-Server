@@ -156,10 +156,11 @@ async def chatwoot_webhook(request: Request):
     if event_name == "contact_updated":
         # Sync bypass_ai flag from Chatwoot custom attributes
         custom_attributes = payload.get("custom_attributes", {})
-        bypass_ai_val = custom_attributes.get("bypass_ai")
+        # If bypass_ai is not in custom_attributes, it means it's unchecked or unset
+        bypass_ai_val = custom_attributes.get("bypass_ai", False)
         phone_number = payload.get("phone_number")
         
-        if phone_number and bypass_ai_val is not None:
+        if phone_number:
             # Clean phone number just in case
             if phone_number.startswith('+'):
                 phone_number = phone_number[1:]
@@ -170,8 +171,8 @@ async def chatwoot_webhook(request: Request):
             try:
                 customer = db.query(Customer).filter(Customer.phone_number.like(f"%{phone_number}%")).first()
                 if customer:
-                    meta = customer.metadata_json or {}
-                    # Ensure bool
+                    # Create a new dict to ensure SQLAlchemy detects the change
+                    meta = dict(customer.metadata_json or {})
                     meta["bypass_ai"] = bool(bypass_ai_val)
                     customer.metadata_json = meta
                     db.commit()
