@@ -246,12 +246,23 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
         finally:
             db.close()
         
-        llm_response = generate_response(final_prompt_text, contact_info, db_context, images=combined_images, conversation_history=conversation_history)
+        # Use Database-Driven Persona Agent State Machine
+        from app.services.agent_logic import process_persona_state_machine
         
-        intent = llm_response.get("intent", "general").lower()
-        lead_temp = llm_response.get("lead_temperature", "Warm")
-        response_text = llm_response.get("response", "Sorry, I couldn't process your request.")
-        
+        with SessionManager.lock_session(phone_number):
+            session = SessionManager.get_session(phone_number)
+            
+            agent_result = process_persona_state_machine(phone_number, final_prompt_text, session)
+            session = agent_result.get("updated_session", session)
+            
+            intent = session.get("current_agent", "general").lower()
+            lead_temp = "Warm" # default for now, can be dynamically calculated
+            response_text = agent_result.get("response", "Sorry, I couldn't process your request.")
+            handover_initiated = agent_result.get("handover", False)
+            
+            SessionManager.save_session(phone_number, session)
+            
+        llm_response = {"summary": "User progressed in workflow."}        
         if intent == "bank valuer":
             valuer_data = extract_valuer_data(final_prompt_text, conversation_history)
             if valuer_data and any(valuer_data.values()):
@@ -273,14 +284,9 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                     finally:
                         db.close()
 
-        handover_initiated = False
         if role not in ["admin", "employee"]:
-            if lead_temp.lower() == "hot" or intent == "bank valuer":
+            if lead_temp.lower() == "hot" or intent == "bank valuer" or handover_initiated:
                 handover_initiated = True
-                if intent == "bank valuer":
-                    response_text += "\n\nThank you. Our team will review the valuation and reach out to you shortly."
-                else:
-                    response_text += "\n\nOur senior agent will reach out to you shortly."
                 
                 # Assign Agent 1 (ID 4) to the conversation
                 try:

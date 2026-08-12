@@ -210,3 +210,16 @@ class Employee(Base):
     email = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
+class WorkflowTemplate(Base):
+    __tablename__ = "workflow_templates"
+
+    id = Column(Integer, primary_key=True)
+    persona_type = Column(String, index=True) # BUYER, SELLER, TENANT, LANDLORD
+    step_number = Column(Integer)
+    step_name = Column(String)
+    ai_action_instruction = Column(String) # LLM instruction e.g. "Ask only one question at a time"
+    message_template = Column(String) # The exact WhatsApp Message to send
+    expected_data_keys = Column(ARRAY(String), default=list) # Fields to extract
+    next_step = Column(Integer, nullable=True) # ID of next step
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
