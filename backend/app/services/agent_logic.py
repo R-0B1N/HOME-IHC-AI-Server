@@ -21,38 +21,24 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict) -
         current_step_id = session.get("current_step_id")
         
         # Initialization / Router
+        # Initialization
         if not current_agent or session.get("state") == "INIT":
-            # Call Intent Classification
-            history = session.get("collected_data", {}).get("history", "")
-            intent = classify_intent(text, history)
-            logger.info(f"Router classified {phone_number} as {intent}")
+            session["state"] = "IN_PROGRESS"
+            session["current_agent"] = "ROUTER"
+            session["current_step_id"] = 1
             
-            persona_map = {
-                "personal buyer": "BUYER",
-                "seller": "SELLER",
-                "tenant": "TENANT",
-                "landlord": "LANDLORD",
-                "property agent / broker": "GLOBAL",
-                "bank valuer": "GLOBAL"
-            }
-            mapped_intent = persona_map.get(intent.lower(), "GLOBAL")
-            
-            session["current_agent"] = mapped_intent
-            
-            # Find the first step for this persona
             first_step = db.query(WorkflowTemplate).filter(
-                WorkflowTemplate.persona_type == mapped_intent
-            ).order_by(WorkflowTemplate.step_number.asc()).first()
+                WorkflowTemplate.persona_type == "ROUTER",
+                WorkflowTemplate.step_number == 1
+            ).first()
             
             if first_step:
-                session["current_step_id"] = first_step.step_number
                 return {
                     "response": first_step.message_template,
                     "handover": False,
                     "updated_session": session
                 }
             else:
-                session["current_agent"] = "GLOBAL"
                 return {
                     "response": "A senior agent will contact you shortly.",
                     "handover": True,
@@ -115,6 +101,32 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict) -
             # If successful, move to next step
             session["retry_count"] = 0
             next_step_id = current_step.next_step
+            
+            # Transition from ROUTER to Persona
+            if not next_step_id and current_agent == "ROUTER":
+                category = session.get("collected_data", {}).get("customer_category", "").lower()
+                persona_map = {
+                    "personal buyer": "BUYER",
+                    "seller": "SELLER",
+                    "tenant": "TENANT",
+                    "landlord": "LANDLORD"
+                }
+                mapped_intent = "GLOBAL"
+                for key, val in persona_map.items():
+                    if key in category:
+                        mapped_intent = val
+                        break
+                        
+                if mapped_intent != "GLOBAL":
+                    current_agent = mapped_intent
+                    session["current_agent"] = mapped_intent
+                    first_persona_step = db.query(WorkflowTemplate).filter(
+                        WorkflowTemplate.persona_type == mapped_intent
+                    ).order_by(WorkflowTemplate.step_number.asc()).first()
+                    
+                    if first_persona_step:
+                        next_step_id = first_persona_step.step_number
+            
             if next_step_id:
                 next_step = db.query(WorkflowTemplate).filter(
                     WorkflowTemplate.persona_type == current_agent,
