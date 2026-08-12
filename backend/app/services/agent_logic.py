@@ -11,9 +11,16 @@ REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
 
-def process_persona_state_machine(phone_number: str, text: str, session: dict) -> dict:
+
+def process_persona_state_machine(phone_number: str, text: str, session: dict, conversation_history: str = "") -> dict:
     """
     State machine logic for processing Persona Agent steps from Database templates.
+    
+    Args:
+        phone_number: The user's phone number
+        text: The current message text
+        session: The current session state dict
+        conversation_history: Prior conversation messages for LLM context
     """
     db = SessionLocal()
     try:
@@ -21,11 +28,11 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict) -
         current_step_id = session.get("current_step_id")
         
         # Initialization / Router
-        # Initialization
         if not current_agent or session.get("state") == "INIT":
             session["state"] = "IN_PROGRESS"
             session["current_agent"] = "ROUTER"
             session["current_step_id"] = 1
+            session["retry_count"] = 0  # Always reset on init
             
             first_step = db.query(WorkflowTemplate).filter(
                 WorkflowTemplate.persona_type == "ROUTER",
@@ -33,11 +40,22 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict) -
             ).first()
             
             if first_step:
-                return {
-                    "response": first_step.message_template,
-                    "handover": False,
-                    "updated_session": session
-                }
+                # If step has no expected data keys (greeting-only), auto-advance
+                expected_keys = first_step.expected_data_keys or []
+                if not expected_keys or expected_keys == [""]:
+                    # Pure greeting step — send template and advance to next
+                    session["current_step_id"] = first_step.next_step or 2
+                    return {
+                        "response": first_step.message_template,
+                        "handover": False,
+                        "updated_session": session
+                    }
+                else:
+                    return {
+                        "response": first_step.message_template,
+                        "handover": False,
+                        "updated_session": session
+                    }
             else:
                 return {
                     "response": "A senior agent will contact you shortly.",
@@ -56,15 +74,58 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict) -
                 logger.error(f"Step {current_step_id} not found for persona {current_agent}")
                 return {"response": "A senior agent will contact you shortly.", "handover": True, "updated_session": session}
                 
+            # Check expected data keys
+            expected_keys = current_step.expected_data_keys or []
+            # Filter out empty strings
+            expected_keys = [k for k in expected_keys if k and k.strip()]
+            
+            if not expected_keys:
+                # No data needed for this step — just send template and advance
+                next_step_id = current_step.next_step
+                session["retry_count"] = 0
+                
+                if next_step_id:
+                    session["current_step_id"] = next_step_id
+                    return {
+                        "response": current_step.message_template,
+                        "handover": False,
+                        "updated_session": session
+                    }
+                else:
+                    # No next step and no expected keys — workflow complete
+                    return {
+                        "response": current_step.message_template or "A senior agent will contact you shortly.",
+                        "handover": True,
+                        "updated_session": session
+                    }
+            
             # Ask LLM to extract the data based on current_step.expected_data_keys
-            expected_keys = current_step.expected_data_keys
             instruction = current_step.ai_action_instruction
             
-            # Simple wrapper to LLM to parse expected fields
-            # Since generate_response already handles DB context, we will do a custom prompt here
             from app.services.llm import llm_client, LLM_MODEL_NAME
             
-            system_prompt = f"You are an AI assistant. Extract the following information from the user's message based on the instruction: '{instruction}'. Expected JSON keys: {expected_keys}. Return valid JSON."
+            # Build system prompt with conversation history for context
+            history_block = ""
+            if conversation_history:
+                history_block = f"\n\nConversation history so far:\n{conversation_history}\n"
+            
+            system_prompt = f"""You are a Real Estate AI assistant for ERA Realtor, acting as Irene Leong, a Senior Property Agent.
+Instruction: '{instruction}'
+Expected JSON keys: {expected_keys}
+{history_block}
+1. Extract the expected keys from the user's message. Use null if not provided or unclear.
+2. If any expected key is missing (null), write a friendly conversational response asking the user for the missing information. Keep it short, natural, and ask only ONE question at a time.
+3. Be flexible in interpretation. For example:
+   - "im looking for a property" → customer_category could be "personal buyer"
+   - "i want to buy land" → customer_category = "personal buyer"
+   - "i want to sell" → customer_category = "seller"
+   - Location mentions like "bentong", "raub" → location = that value
+   - Property type mentions like "agricultural", "commercial", "residential" → property_type = that value
+
+Return valid JSON with two fields:
+- "extracted_data": {{ key: value }}
+- "follow_up_message": string (your friendly question if keys are missing, otherwise null)"""
+
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": text}
@@ -77,28 +138,34 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict) -
                     response_format={"type": "json_object"},
                     temperature=0.0
                 )
-                extracted_data = json.loads(response.choices[0].message.content)
+                result = json.loads(response.choices[0].message.content)
+                extracted_data = result.get("extracted_data", {})
+                follow_up_message = result.get("follow_up_message")
             except Exception as e:
                 logger.error(f"Failed to extract JSON from LLM: {e}")
                 extracted_data = {}
+                follow_up_message = None
             
             # Save extracted data to session
             for key in expected_keys:
-                if key in extracted_data:
-                    session["collected_data"][key] = extracted_data[key]
+                val = extracted_data.get(key)
+                if val:
+                    session["collected_data"][key] = val
                     
             # Check if all keys were collected
             missing_keys = [k for k in expected_keys if not session["collected_data"].get(k)]
             if missing_keys:
-                # LLM didn't get all info, retry (or use LLM to re-ask)
                 retry_count = session.get("retry_count", 0)
-                if retry_count >= 2:
-                    # Too many retries, handoff
+                if retry_count >= 3:
+                    # Too many retries — handover to human
+                    session["retry_count"] = 0  # Reset for future use
                     return {"response": "A senior agent will contact you shortly.", "handover": True, "updated_session": session}
                 session["retry_count"] = retry_count + 1
-                return {"response": current_step.message_template, "handover": False, "updated_session": session}
+                
+                reply_text = follow_up_message if follow_up_message else "Could you please provide more details so I can assist you better?"
+                return {"response": reply_text, "handover": False, "updated_session": session}
             
-            # If successful, move to next step
+            # SUCCESS — all keys collected. Reset retry_count and advance.
             session["retry_count"] = 0
             next_step_id = current_step.next_step
             
@@ -107,13 +174,19 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict) -
                 category = session.get("collected_data", {}).get("customer_category", "").lower()
                 persona_map = {
                     "personal buyer": "BUYER",
+                    "buyer": "BUYER",
                     "seller": "SELLER",
+                    "owner": "SELLER",
                     "tenant": "TENANT",
-                    "landlord": "LANDLORD"
+                    "renter": "TENANT",
+                    "landlord": "LANDLORD",
+                    "agent": "AGENT",
+                    "broker": "AGENT",
+                    "property agent": "AGENT",
                 }
                 mapped_intent = "GLOBAL"
                 for key, val in persona_map.items():
-                    if key in category:
+                    if key in category or category in key or val.lower() in category:
                         mapped_intent = val
                         break
                         
@@ -138,7 +211,6 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict) -
                     # If this is the recommendation step, inject properties
                     response_msg = next_step.message_template
                     if next_step.step_name == "Recommend Listings":
-                        # Perform DB Search based on collected data
                         from app.services.db_services import search_properties
                         criteria = {
                             "location": session["collected_data"].get("current_location"),

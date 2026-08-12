@@ -132,7 +132,7 @@ def send_whatsapp_contact(inbox_id: int, to_phone: str, contact_name: str, conta
             logger.error(f"Response: {e.response.text}")
         return None
 
-def send_whatsapp_template(inbox_id: int, to_phone: str, template_name: str, parameters: list, language_code: str = "en_US"):
+def send_whatsapp_template(inbox_id: int, to_phone: str, template_name: str, parameters: list, language_code: str = "en"):
     """
     Sends a WhatsApp Template Message via the Graph API.
     parameters should be a list of strings mapping to {{1}}, {{2}}, etc.

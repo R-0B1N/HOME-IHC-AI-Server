@@ -21,7 +21,7 @@ REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
 
-TIMEOUT_SECONDS = 10
+TIMEOUT_SECONDS = 15
 
 @celery_app.task(bind=True, max_retries=3)
 def process_conversation_queue(self, conversation_id: int, task_scheduled_time: float):
@@ -43,8 +43,8 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
         time_since_active = current_time - last_active
         
         # We want to wait for 10 seconds of inactivity
-        if time_since_active < 10:
-            wait_time = int(10 - time_since_active) + 1
+        if time_since_active < TIMEOUT_SECONDS:
+            wait_time = int(TIMEOUT_SECONDS - time_since_active) + 1
             logger.info(f"User is still active in conversation {conversation_id}. Rescheduling for {wait_time}s.")
             process_conversation_queue.apply_async(
                 args=[conversation_id, task_scheduled_time],
@@ -197,6 +197,7 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
         role = get_sender_role(phone_number)
         
         criteria = {}
+        conversation_history = ""
         
         # Build DB context based on RBAC
         db_context = {"role": role, "data": {}}
@@ -252,17 +253,47 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
         with SessionManager.lock_session(phone_number):
             session = SessionManager.get_session(phone_number)
             
-            agent_result = process_persona_state_machine(phone_number, final_prompt_text, session)
+            agent_result = process_persona_state_machine(
+                phone_number, final_prompt_text, session,
+                conversation_history=conversation_history
+            )
             session = agent_result.get("updated_session", session)
             
             intent = session.get("current_agent", "general").lower()
-            lead_temp = "Warm" # default for now, can be dynamically calculated
             response_text = agent_result.get("response", "Sorry, I couldn't process your request.")
             handover_initiated = agent_result.get("handover", False)
             
+            # Dynamic lead temperature based on collected data completeness
+            collected = session.get("collected_data", {})
+            filled_keys = [k for k, v in collected.items() if v]
+            if len(filled_keys) >= 5 or handover_initiated:
+                lead_temp = "Hot"
+            elif len(filled_keys) >= 2:
+                lead_temp = "Warm"
+            else:
+                lead_temp = "Cold"
+            
             SessionManager.save_session(phone_number, session)
             
-        llm_response = {"summary": "User progressed in workflow."}        
+        # Generate a real AI summary from the conversation
+        try:
+            from app.services.llm import llm_client, LLM_MODEL_NAME
+            summary_messages = [
+                {"role": "system", "content": "Summarize this customer interaction in 1-2 sentences for an agent briefing. Include the customer's intent, what information was collected, and current status. Be concise."},
+                {"role": "user", "content": f"Customer: {contact_name}, Phone: {phone_number}\nLatest message: {final_prompt_text}\nCollected data: {json.dumps(session.get('collected_data', {}))}\nCurrent workflow: {intent}\nHandover: {handover_initiated}"}
+            ]
+            summary_resp = llm_client.chat.completions.create(
+                model=LLM_MODEL_NAME,
+                messages=summary_messages,
+                temperature=0.0,
+                max_tokens=150
+            )
+            conversation_summary_text = summary_resp.choices[0].message.content.strip()
+        except Exception as e:
+            logger.error(f"Failed to generate AI summary: {e}")
+            conversation_summary_text = f"Customer {contact_name} inquired about {intent}. Data collected: {json.dumps(session.get('collected_data', {}))}"
+        
+        llm_response = {"summary": conversation_summary_text}        
         if intent == "bank valuer":
             valuer_data = extract_valuer_data(final_prompt_text, conversation_history)
             if valuer_data and any(valuer_data.values()):
@@ -324,20 +355,24 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                                 conversation_summary = llm_response.get("summary", "No summary available.")
                                 if isinstance(conversation_summary, str):
                                     conversation_summary = conversation_summary.replace('\n', ' ').replace('\t', ' ')
+                                    # Truncate if too long for template parameter
+                                    if len(conversation_summary) > 500:
+                                        conversation_summary = conversation_summary[:497] + "..."
                                 
                                 # First send the template summary
                                 from app.services.chatwoot import send_whatsapp_contact, send_whatsapp_template
                                 
-                                # We append the AI summary and chatwoot link to the budget parameter (parameter 6)
-                                # because the Meta template only accepts 6 parameters. Note: template parameters cannot contain newlines.
-                                extended_budget = f"{budget} - *AI Conversation Summary:* {conversation_summary} - *Review this lead:* {cw_link}"
+                                # We append the AI summary and chatwoot link as parameters 7 and 8
+                                # The Meta template requires 8 parameters: Name, Phone, Intent, Location, Type, Budget, Summary, Link
                                 template_params = [
                                     contact_name,
                                     phone_number,
                                     intent.upper(),
                                     str(location),
                                     str(property_type),
-                                    extended_budget
+                                    str(budget),
+                                    conversation_summary,
+                                    cw_link
                                 ]
                                 
                                 send_whatsapp_template(
