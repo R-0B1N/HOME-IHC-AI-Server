@@ -160,6 +160,104 @@ def seed_workflows():
         },
         
         # ==========================================
+        # TENANT PERSONA
+        # ==========================================
+        {
+            "persona_type": "TENANT",
+            "step_number": 31,
+            "step_name": "Ask Name",
+            "ai_action_instruction": "Ask for the tenant's name. Ask ONLY this question.",
+            "message_template": "Hi! 😊 May I know your name?",
+            "expected_data_keys": ["name"],
+            "next_step": 32
+        },
+        {
+            "persona_type": "TENANT",
+            "step_number": 32,
+            "step_name": "Ask Location",
+            "ai_action_instruction": "Ask where the tenant is looking to rent. Ask ONLY this question.",
+            "message_template": "May I know where you are looking to rent?",
+            "expected_data_keys": ["current_location"],
+            "next_step": 34
+        },
+        {
+            "persona_type": "TENANT",
+            "step_number": 34,
+            "step_name": "Ask Purpose",
+            "ai_action_instruction": "Ask for the purpose of renting.",
+            "message_template": "May I know what is your purpose for renting the property?",
+            "expected_data_keys": ["purpose"],
+            "next_step": 35
+        },
+        {
+            "persona_type": "TENANT",
+            "step_number": 35,
+            "step_name": "Ask Budget",
+            "ai_action_instruction": "Ask for the rental budget.",
+            "message_template": "May I know your monthly budget for this rental? 💰",
+            "expected_data_keys": ["budget"],
+            "next_step": 36
+        },
+        {
+            "persona_type": "TENANT",
+            "step_number": 36,
+            "step_name": "Ask Entity",
+            "ai_action_instruction": "Ask if it's for personal or business use.",
+            "message_template": "Will this rental be for:\n1️⃣ Personal Use\n2️⃣ Business Use",
+            "expected_data_keys": ["use_type"],
+            "next_step": 50
+        },
+        {
+            "persona_type": "TENANT",
+            "step_number": 50,
+            "step_name": "Recommend Listings",
+            "ai_action_instruction": "Based on collected data, the backend will append listing links here.",
+            "message_template": "Thank you for the information! Based on your requirements, here are some suitable rental properties for your consideration:",
+            "expected_data_keys": [],
+            "next_step": 60
+        },
+        
+        # ==========================================
+        # LANDLORD PERSONA
+        # ==========================================
+        {
+            "persona_type": "LANDLORD",
+            "step_number": 10,
+            "step_name": "Landlord Greeting",
+            "ai_action_instruction": "Greet the Landlord and explain the process.",
+            "message_template": "Good day! 😊\nThank you for contacting ERA Realtor\nI'm Irene Leong, a Senior Property Agent. I'll be happy to assist you with renting out your land or property.\nTo better understand your property and recommend the most suitable marketing strategy, may I ask you a few questions?",
+            "expected_data_keys": [],
+            "next_step": 11
+        },
+        {
+            "persona_type": "LANDLORD",
+            "step_number": 11,
+            "step_name": "Ask Name",
+            "ai_action_instruction": "Ask the landlord's full name.",
+            "message_template": "May I have your full name?",
+            "expected_data_keys": ["name"],
+            "next_step": 12
+        },
+        {
+            "persona_type": "LANDLORD",
+            "step_number": 12,
+            "step_name": "Verify Ownership",
+            "ai_action_instruction": "Ask if they are the owner or representing the owner.",
+            "message_template": "Are you the property owner or representing the owner?",
+            "expected_data_keys": ["is_owner"],
+            "next_step": 13
+        },
+        {
+            "persona_type": "LANDLORD",
+            "step_number": 13,
+            "step_name": "Property Type",
+            "ai_action_instruction": "Ask what type of property they want to rent out.",
+            "message_template": "May I know what type of property you would like to rent out?\n\n🌱 Agricultural Land \n🏢 Commercial Property \n🏭 Industrial \n🏠 Residential",
+            "expected_data_keys": ["property_type"],
+            "next_step": 14
+        },
+        
+        # ==========================================
         # GLOBAL FALLBACK
         # ==========================================
         {

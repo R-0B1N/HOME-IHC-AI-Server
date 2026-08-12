@@ -619,16 +619,6 @@ def process_whatsapp_message(self, payload: dict):
                         # Update session state with message
                         session["collected_data"]["last_message"] = text
                         
-                        # Router Agent Logic (Phase 2)
-                        if session.get("current_agent") is None or session.get("state") == "INIT":
-                            from app.services.llm import classify_intent
-                            history = session.get("collected_data", {}).get("history", "")
-                            intent = classify_intent(text, history)
-                            logger.info(f"Router Agent classified {phone_number} as {intent}")
-                            
-                            session["current_agent"] = intent
-                            session["state"] = "AWAITING_INFO"
-                            
                         SessionManager.save_session(phone_number, session)
                         
                         logger.info(f"Processed WhatsApp message {wamid} from {phone_number}. Text: {text}")
