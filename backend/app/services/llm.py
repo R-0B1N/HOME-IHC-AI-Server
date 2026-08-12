@@ -2,13 +2,20 @@ import logging
 import requests
 import os
 import json
+from openai import OpenAI
+import re
 
 logger = logging.getLogger(__name__)
 
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://crm-ollama:11434")
+VLLM_BASE_URL = os.getenv("VLLM_BASE_URL", "http://crm-vllm:8000/v1")
 WHISPER_API_URL = os.getenv("WHISPER_API_URL", "http://crm-whisper:8000/v1/audio/transcriptions")
-
 LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "google/gemma-4-12B-it")
+
+# Initialize OpenAI client for vLLM
+llm_client = OpenAI(
+    api_key="EMPTY",
+    base_url=VLLM_BASE_URL
+)
 
 def transcribe_audio(audio_url: str) -> str:
     """
@@ -47,13 +54,23 @@ def transcribe_audio(audio_url: str) -> str:
         logger.error(f"Failed to transcribe audio: {e}")
         return ""
 
+def _parse_json_from_llm(raw_text: str) -> dict:
+    """Helper to extract and parse JSON from LLM output."""
+    raw_text = raw_text.replace('“', '"').replace('”', '"').replace("‘", "'").replace("’", "'")
+    json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
+    clean_json = json_match.group(0) if json_match else raw_text
+    
+    try:
+        return json.loads(clean_json)
+    except json.JSONDecodeError:
+        logger.error(f"Failed to parse LLM JSON: {raw_text}")
+        return None
+
 def generate_response(prompt: str, contact_info: dict, db_context: dict = None, images: list = None, conversation_history: str = "") -> dict:
     """
-    Calls the LLM (vLLM or Ollama via OpenAI API spec) to categorize and generate a response.
+    Calls the vLLM via OpenAI API spec to categorize and generate a response.
     Returns a dict containing 'intent' and 'response'.
     """
-    url = f"{OLLAMA_BASE_URL}/v1/chat/completions"
-    
     role = db_context.get("role", "customer") if db_context else "customer"
     context_data = json.dumps(db_context.get("data", {})) if db_context else "{}"
     
@@ -94,54 +111,35 @@ def generate_response(prompt: str, contact_info: dict, db_context: dict = None, 
                 "image_url": {"url": f"data:image/jpeg;base64,{img}"}
             })
             
-    payload = {
-        "model": LLM_MODEL_NAME,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content}
-        ],
-        "response_format": {"type": "json_object"}
-    }
-    
     try:
-        response = requests.post(url, json=payload, timeout=60)
-        response.raise_for_status()
-        result = response.json()
-        raw_text = result.get("choices", [{}])[0].get("message", {}).get("content", "{}")
+        response = llm_client.chat.completions.create(
+            model=LLM_MODEL_NAME,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content}
+            ],
+            response_format={"type": "json_object"}
+        )
+        raw_text = response.choices[0].message.content
         
-        # Replace smart quotes that break JSON parsing
-        raw_text = raw_text.replace('“', '"').replace('”', '"').replace("‘", "'").replace("’", "'")
-        
-        # Strip markdown json blocks if present
-        import re
-        json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
-        clean_json = json_match.group(0) if json_match else raw_text
-        
-        try:
-            parsed = json.loads(clean_json)
-            # Edge case: LLM sometimes wraps the JSON inside the response key itself
+        parsed = _parse_json_from_llm(raw_text)
+        if parsed:
+            # Edge case handling
             if isinstance(parsed.get("response"), str) and '"intent"' in parsed.get("response") and '"response"' in parsed.get("response"):
                 try:
                     inner_parsed = json.loads(parsed["response"].replace('“', '"').replace('”', '"'))
                     parsed["response"] = inner_parsed.get("response", parsed["response"])
                 except json.JSONDecodeError:
-                    # Strip out the JSON-like structure from the response string if inner parsing fails
                     match = re.search(r'"response"\s*:\s*"([^"]*)', parsed["response"])
                     if match:
                         parsed["response"] = match.group(1)
             return parsed
-        except json.JSONDecodeError:
-            logger.error(f"Failed to parse LLM JSON: {raw_text}")
-            
-            # Try to extract the response field if the JSON is malformed or truncated
+        else:
             match = re.search(r'"response"\s*:\s*"([^"]*)', raw_text)
-            if match:
-                fallback_response = match.group(1)
-            else:
-                fallback_response = "I'm sorry, I'm having trouble processing your request completely right now. Our team will assist you shortly."
-            
+            fallback_response = match.group(1) if match else "I'm sorry, I'm having trouble processing your request completely right now. A senior agent will contact you shortly."
             return {"intent": "general", "lead_temperature": "Warm", "response": fallback_response}
-    except requests.exceptions.RequestException as e:
+            
+    except Exception as e:
         logger.error(f"Failed to communicate with LLM: {e}")
         raise e
 
@@ -150,8 +148,6 @@ def extract_property_search_criteria(prompt: str, conversation_history: str = ""
     Extracts property search criteria from the user's prompt using the LLM.
     Returns a dictionary with 'location', 'property_type', and 'max_price'.
     """
-    url = f"{OLLAMA_BASE_URL}/v1/chat/completions"
-    
     system_prompt = f"""
     You are an intelligent real estate search parser. 
     Analyze the user's latest message and the recent conversation history to extract the property search criteria.
@@ -169,35 +165,24 @@ def extract_property_search_criteria(prompt: str, conversation_history: str = ""
     - "max_price": The maximum budget as an integer. Output null if not specified.
     """
     
-    payload = {
-        "model": LLM_MODEL_NAME,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt}
-        ],
-        "response_format": {"type": "json_object"}
-    }
-    
     try:
-        response = requests.post(url, json=payload, timeout=30)
-        response.raise_for_status()
-        result = response.json()
-        raw_text = result.get("choices", [{}])[0].get("message", {}).get("content", "{}")
-        raw_text = raw_text.replace('“', '"').replace('”', '"').replace("‘", "'").replace("’", "'")
-        import re
-        json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
-        clean_json = json_match.group(0) if json_match else raw_text
-        
-        try:
-            parsed = json.loads(clean_json)
+        response = llm_client.chat.completions.create(
+            model=LLM_MODEL_NAME,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ],
+            response_format={"type": "json_object"}
+        )
+        raw_text = response.choices[0].message.content
+        parsed = _parse_json_from_llm(raw_text)
+        if parsed:
             return {
                 "location": parsed.get("location"),
                 "property_type": parsed.get("property_type"),
                 "max_price": parsed.get("max_price")
             }
-        except json.JSONDecodeError:
-            logger.error(f"Failed to parse criteria JSON: {raw_text}")
-            return {}
+        return {}
     except Exception as e:
         logger.error(f"Failed to extract search criteria: {e}")
         return {}
@@ -207,8 +192,6 @@ def extract_valuer_data(prompt: str, conversation_history: str = "") -> dict:
     Extracts Bank Valuer details from the user's prompt using the LLM.
     Returns a dictionary with 'property_location', 'quoted_bank_value', and 'listed_selling_price'.
     """
-    url = f"{OLLAMA_BASE_URL}/v1/chat/completions"
-    
     system_prompt = f"""
     You are an intelligent data extractor for real estate operations.
     Analyze the user's latest message and the recent conversation history to extract Bank Valuer details.
@@ -225,35 +208,24 @@ def extract_valuer_data(prompt: str, conversation_history: str = "") -> dict:
     - "listed_selling_price": The listed selling price on the market (integer or float). Output null if not specified.
     """
     
-    payload = {
-        "model": LLM_MODEL_NAME,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt}
-        ],
-        "response_format": {"type": "json_object"}
-    }
-    
     try:
-        response = requests.post(url, json=payload, timeout=30)
-        response.raise_for_status()
-        result = response.json()
-        raw_text = result.get("choices", [{}])[0].get("message", {}).get("content", "{}")
-        raw_text = raw_text.replace('“', '"').replace('”', '"').replace("‘", "'").replace("’", "'")
-        import re
-        json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
-        clean_json = json_match.group(0) if json_match else raw_text
-        
-        try:
-            parsed = json.loads(clean_json)
+        response = llm_client.chat.completions.create(
+            model=LLM_MODEL_NAME,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ],
+            response_format={"type": "json_object"}
+        )
+        raw_text = response.choices[0].message.content
+        parsed = _parse_json_from_llm(raw_text)
+        if parsed:
             return {
                 "property_location": parsed.get("property_location"),
                 "quoted_bank_value": parsed.get("quoted_bank_value"),
                 "listed_selling_price": parsed.get("listed_selling_price")
             }
-        except json.JSONDecodeError:
-            logger.error(f"Failed to parse valuer data JSON: {raw_text}")
-            return {}
+        return {}
     except Exception as e:
         logger.error(f"Failed to extract valuer data: {e}")
         return {}
@@ -262,69 +234,174 @@ def extract_wordpress_property(payload: dict) -> dict:
     """
     Extracts structured property details from the raw WordPress webhook payload using the LLM.
     """
-    url = f"{OLLAMA_BASE_URL}/v1/chat/completions"
-    
     title = payload.get("title", "")
     description = payload.get("description", "")
-    source_url = payload.get("source_url", "")
     
     system_prompt = f"""
     You are an intelligent data extractor for real estate operations.
     Analyze the provided raw WordPress property title and description.
     
-    Output strictly as a JSON object with these fields:
-    - "price": The listed asking price as a float. Output 0.0 if not specified.
-    - "category": A list of strings representing the property category (e.g., ["Industrial Land", "Agricultural Land", "Residential"]).
-    - "acres": The total land area in acres as a float. Output 0.0 if not specified.
-    - "state": The state where the property is located (e.g., "Pahang"). Output empty string if not specified.
-    - "city": The city or area where the property is located (e.g., "Bentong"). Output empty string if not specified.
-    - "status": The listing status, typically "Available" or "Sold".
+    Output strictly as a JSON object with these exact fields. Use null if a value is not specified or cannot be inferred:
+    - "asking_price_myr": Float. The listed asking price.
+    - "monthly_rental_income_myr": Float. Current or estimated monthly rental income.
+    - "implied_yield_pct": Float. Estimated gross ROI percentage per annum.
+    - "category": List of strings (e.g., ["Commercial", "Shop"]).
+    - "land_area_sqft": Float.
+    - "land_area_acres": Float.
+    - "land_area_sqm": Float.
+    - "built_up_area_sqft": Float.
+    - "tenure_type": String (e.g., "Freehold", "Leasehold").
+    - "zoning_type": String (e.g., "Commercial", "Industrial").
+    - "power_supply_amp": Integer.
+    - "utilities_available": List of strings (e.g., ["Electricity", "Water"]).
+    - "has_office": Boolean. True if the property has an office.
+    - "office_features": String.
+    - "road_access_quality": String.
+    - "is_tenanted": Boolean. True if currently tenanted.
+    - "lease_start_date": String (YYYY-MM-DD).
+    - "lease_end_date": String (YYYY-MM-DD).
+    - "current_tenant_use": String.
+    - "street_address": String.
+    - "area": String (e.g., "Taman Desa Damai").
+    - "city": String (e.g., "Bentong").
+    - "state": String (e.g., "Pahang").
+    - "suitable_industries": List of strings.
+    - "key_highlights": List of strings.
+    - "risk_flags": List of strings (e.g., upcoming lease expiry).
+    - "status": String (e.g., "For Sale", "Available").
     """
     
     content = f"Title: {title}\n\nDescription: {description}"
     
-    payload_llm = {
-        "model": LLM_MODEL_NAME,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": content}
-        ],
-        "response_format": {"type": "json_object"}
-    }
-    
-    # Default to base extracted fields + safe defaults
     extracted_data = {
-        "price": 0.0,
+        "asking_price_myr": 0.0,
+        "monthly_rental_income_myr": None,
+        "implied_yield_pct": None,
         "category": [],
-        "acres": 0.0,
-        "state": "",
-        "city": "",
+        "land_area_sqft": None,
+        "land_area_acres": None,
+        "land_area_sqm": None,
+        "built_up_area_sqft": None,
+        "tenure_type": None,
+        "zoning_type": None,
+        "power_supply_amp": None,
+        "utilities_available": [],
+        "has_office": False,
+        "office_features": None,
+        "road_access_quality": None,
+        "is_tenanted": False,
+        "lease_start_date": None,
+        "lease_end_date": None,
+        "current_tenant_use": None,
+        "street_address": None,
+        "area": None,
+        "city": None,
+        "state": None,
+        "suitable_industries": [],
+        "key_highlights": [],
+        "risk_flags": [],
         "status": payload.get("status", "Available")
     }
     
     try:
-        response = requests.post(url, json=payload_llm, timeout=30)
-        response.raise_for_status()
-        result = response.json()
-        raw_text = result.get("choices", [{}])[0].get("message", {}).get("content", "{}")
-        raw_text = raw_text.replace('“', '"').replace('”', '"').replace("‘", "'").replace("’", "'")
+        response = llm_client.chat.completions.create(
+            model=LLM_MODEL_NAME,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": content}
+            ],
+            response_format={"type": "json_object"}
+        )
+        raw_text = response.choices[0].message.content
+        parsed = _parse_json_from_llm(raw_text)
         
-        import re
-        json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
-        clean_json = json_match.group(0) if json_match else raw_text
-        
-        try:
-            parsed = json.loads(clean_json)
-            extracted_data["price"] = float(str(parsed.get("price", 0.0)).replace(",", "")) if parsed.get("price") is not None else 0.0
-            extracted_data["category"] = parsed.get("category", [])
-            extracted_data["acres"] = float(str(parsed.get("acres", 0.0)).replace(",", "")) if parsed.get("acres") is not None else 0.0
-            extracted_data["state"] = parsed.get("state", "")
-            extracted_data["city"] = parsed.get("city", "")
+        if parsed:
+            def safe_float(val):
+                if val is None: return None
+                try:
+                    return float(str(val).replace(",", "").replace("RM", "").replace("%", "").strip())
+                except ValueError:
+                    return None
+                    
+            def safe_int(val):
+                if val is None: return None
+                try:
+                    return int(str(val).replace(",", "").strip())
+                except ValueError:
+                    return None
+
+            extracted_data["asking_price_myr"] = safe_float(parsed.get("asking_price_myr")) or 0.0
+            extracted_data["monthly_rental_income_myr"] = safe_float(parsed.get("monthly_rental_income_myr"))
+            extracted_data["implied_yield_pct"] = safe_float(parsed.get("implied_yield_pct"))
+            
+            extracted_data["category"] = parsed.get("category", []) if isinstance(parsed.get("category"), list) else []
+            
+            extracted_data["land_area_sqft"] = safe_float(parsed.get("land_area_sqft"))
+            extracted_data["land_area_acres"] = safe_float(parsed.get("land_area_acres"))
+            extracted_data["land_area_sqm"] = safe_float(parsed.get("land_area_sqm"))
+            extracted_data["built_up_area_sqft"] = safe_float(parsed.get("built_up_area_sqft"))
+            
+            extracted_data["tenure_type"] = parsed.get("tenure_type")
+            extracted_data["zoning_type"] = parsed.get("zoning_type")
+            extracted_data["power_supply_amp"] = safe_int(parsed.get("power_supply_amp"))
+            extracted_data["utilities_available"] = parsed.get("utilities_available", []) if isinstance(parsed.get("utilities_available"), list) else []
+            extracted_data["has_office"] = bool(parsed.get("has_office"))
+            extracted_data["office_features"] = parsed.get("office_features")
+            extracted_data["road_access_quality"] = parsed.get("road_access_quality")
+            
+            extracted_data["is_tenanted"] = bool(parsed.get("is_tenanted"))
+            extracted_data["lease_start_date"] = parsed.get("lease_start_date")
+            extracted_data["lease_end_date"] = parsed.get("lease_end_date")
+            extracted_data["current_tenant_use"] = parsed.get("current_tenant_use")
+            
+            extracted_data["street_address"] = parsed.get("street_address")
+            extracted_data["area"] = parsed.get("area")
+            extracted_data["city"] = parsed.get("city")
+            extracted_data["state"] = parsed.get("state")
+            
+            extracted_data["suitable_industries"] = parsed.get("suitable_industries", []) if isinstance(parsed.get("suitable_industries"), list) else []
+            extracted_data["key_highlights"] = parsed.get("key_highlights", []) if isinstance(parsed.get("key_highlights"), list) else []
+            extracted_data["risk_flags"] = parsed.get("risk_flags", []) if isinstance(parsed.get("risk_flags"), list) else []
+            
             if parsed.get("status"):
                 extracted_data["status"] = parsed.get("status")
-        except json.JSONDecodeError:
-            logger.error(f"Failed to parse WordPress property JSON: {raw_text}")
+                
     except Exception as e:
         logger.error(f"Failed to extract WordPress property data: {e}")
         
     return extracted_data
+
+def classify_intent(text: str, conversation_history: str = "") -> str:
+    """
+    Phase 2 Router Agent logic. Classifies user into:
+    PERSONAL_BUYER, AGENT_BROKER, SELLER, TENANT, LANDLORD, VALUER, GENERAL
+    """
+    system_prompt = f"""
+    You are a Real Estate classification assistant. Read the user's message and determine their category from: 
+    PERSONAL_BUYER, AGENT_BROKER, SELLER, TENANT, LANDLORD, VALUER, GENERAL.
+    
+    Recent Conversation History:
+    {conversation_history}
+    
+    User Message:
+    {text}
+    
+    Output strictly as a JSON object with a single field "category".
+    """
+    
+    try:
+        response = llm_client.chat.completions.create(
+            model=LLM_MODEL_NAME,
+            messages=[
+                {"role": "system", "content": system_prompt}
+            ],
+            response_format={"type": "json_object"}
+        )
+        raw_text = response.choices[0].message.content
+        parsed = _parse_json_from_llm(raw_text)
+        if parsed and parsed.get("category"):
+            return parsed.get("category").upper()
+        return "GENERAL"
+    except Exception as e:
+        logger.error(f"Failed to classify intent: {e}")
+        return "GENERAL"

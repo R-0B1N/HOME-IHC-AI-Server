@@ -169,14 +169,28 @@ class Order(Base):
     total_amount = Column(Float)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
-class Interaction(Base):
-    __tablename__ = "interactions"
+class InteractionLog(Base):
+    __tablename__ = "interaction_logs"
 
     id = Column(Integer, primary_key=True)
-    customer_id = Column(String, ForeignKey("customers.id"))
-    message_in = Column(String)
-    message_out = Column(String)
+    wamid = Column(String, unique=True, index=True, nullable=True) # WhatsApp Message ID for idempotency
+    customer_id = Column(String, ForeignKey("customers.id"), index=True)
+    direction = Column(String) # INBOUND or OUTBOUND
+    message_text = Column(String, nullable=True)
+    message_type = Column(String, default="text") # text, image, document, audio
+    media_url = Column(String, nullable=True)
     timestamp = Column(DateTime, default=datetime.datetime.utcnow)
+
+class LeadIntent(Base):
+    __tablename__ = "lead_intents"
+    
+    id = Column(Integer, primary_key=True)
+    customer_id = Column(String, ForeignKey("customers.id"), index=True)
+    intent_type = Column(String)  # BUYER, SELLER, TENANT, LANDLORD, VALUER, AGENT
+    status = Column(String, default="ACTIVE") # ACTIVE, PAUSED, COMPLETED
+    collected_data = Column(JSON, default=dict) # To store schema fields incrementally
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
 class Admin(Base):
     __tablename__ = "admins"

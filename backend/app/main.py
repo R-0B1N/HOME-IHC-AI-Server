@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.webhooks import router as webhooks_router
 from app.api.properties import router as properties_router
@@ -29,6 +29,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.middleware("http")
+async def cache_raw_body(request: Request, call_next):
+    # Cache raw body to allow HMAC validation without breaking Pydantic
+    body = await request.body()
+    request.state.raw_body = body
+    
+    # Mock the receive function since the stream was exhausted
+    async def receive():
+        return {"type": "http.request", "body": body}
+    request._receive = receive
+    
+    return await call_next(request)
 
 app.include_router(webhooks_router, prefix="/api/v1/webhooks")
 app.include_router(webhooks_router, prefix="/webhook") # Fallback for old n8n webhook URL

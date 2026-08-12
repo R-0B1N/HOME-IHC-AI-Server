@@ -4,9 +4,9 @@ import time
 import logging
 import hmac
 import hashlib
-from fastapi import APIRouter, Request, BackgroundTasks
+from fastapi import APIRouter, Request, BackgroundTasks, HTTPException, Response
 import redis
-from app.worker.tasks import process_conversation_queue
+from app.worker.tasks import process_conversation_queue, process_whatsapp_message
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -19,7 +19,75 @@ REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
 
 CHATWOOT_WEBHOOK_SECRET = os.getenv("CHATWOOT_WEBHOOK_SECRET")
+WHATSAPP_APP_SECRET = os.getenv("WHATSAPP_APP_SECRET", "")
+WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "")
 TIMEOUT_SECONDS = 10
+
+@router.get("/whatsapp")
+async def verify_whatsapp_webhook(request: Request):
+    """
+    Handles WhatsApp Webhook Verification (Hub Challenge).
+    """
+    mode = request.query_params.get("hub.mode")
+    token = request.query_params.get("hub.verify_token")
+    challenge = request.query_params.get("hub.challenge")
+    
+    if mode and token:
+        if mode == "subscribe" and token == WHATSAPP_VERIFY_TOKEN:
+            logger.info("WhatsApp WEBHOOK_VERIFIED")
+            return Response(content=challenge, media_type="text/plain", status_code=200)
+        else:
+            raise HTTPException(status_code=403, detail="Verification failed")
+    raise HTTPException(status_code=400, detail="Missing parameters")
+
+@router.post("/whatsapp")
+async def whatsapp_webhook(request: Request):
+    """
+    Handles WhatsApp Webhook Event Notifications.
+    Validates HMAC SHA256 signature using raw body and offloads to Celery.
+    """
+    if WHATSAPP_APP_SECRET:
+        signature = request.headers.get("X-Hub-Signature-256")
+        if not signature:
+            raise HTTPException(status_code=403, detail="Missing signature")
+            
+        raw_body = getattr(request.state, "raw_body", b"")
+        expected_sig = "sha256=" + hmac.new(
+            WHATSAPP_APP_SECRET.encode("utf-8"),
+            raw_body,
+            hashlib.sha256
+        ).hexdigest()
+        
+        if not hmac.compare_digest(expected_sig, signature):
+            logger.error("Invalid WhatsApp webhook signature.")
+            raise HTTPException(status_code=403, detail="Invalid signature")
+
+    payload = await request.json()
+    
+    # Extract entries
+    entries = payload.get("entry", [])
+    for entry in entries:
+        changes = entry.get("changes", [])
+        for change in changes:
+            value = change.get("value", {})
+            messages = value.get("messages", [])
+            
+            for message in messages:
+                wamid = message.get("id")
+                
+                if wamid:
+                    # Idempotency check
+                    lock_key = f"whatsapp_lock_msg_{wamid}"
+                    is_new = redis_client.setnx(lock_key, "1")
+                    if not is_new:
+                        logger.info(f"Skipping duplicate WhatsApp message: {wamid}")
+                        continue
+                    redis_client.expire(lock_key, 300)
+                
+                # Offload to Celery
+                process_whatsapp_message.apply_async(args=[payload])
+                
+    return Response(content="OK", status_code=200)
 
 @router.post("/chatwoot")
 @router.post("/chatwoot-ai")

@@ -10,7 +10,9 @@ from app.services.chatwoot import send_message, apply_label, set_priority, toggl
 from app.services.llm import generate_response, transcribe_audio, extract_property_search_criteria, extract_valuer_data, extract_wordpress_property
 from app.services.document_parser import extract_text_from_document
 from app.services.db_services import get_or_create_customer, get_sender_role, search_properties
-from app.db.models import SessionLocal, Customer, Property, Transaction, Order
+from app.services.session_manager import SessionManager
+from app.services.minio_service import upload_media
+from app.db.models import SessionLocal, Customer, Property, Transaction, Order, InteractionLog
 
 
 logger = logging.getLogger(__name__)
@@ -434,6 +436,13 @@ def process_wordpress_property(self, payload: dict):
             logger.error("No title found in WordPress payload, skipping.")
             return {"status": "failed", "reason": "no title"}
             
+        # Optional fields from payload directly
+        latitude = payload.get("latitude")
+        longitude = payload.get("longitude")
+        image_urls = payload.get("image_urls", [])
+        if isinstance(image_urls, str):
+            image_urls = [image_urls]
+            
         db = SessionLocal()
         try:
             from app.db.models import Property
@@ -443,13 +452,40 @@ def process_wordpress_property(self, payload: dict):
             if existing:
                 # Update existing property
                 existing.search_corpus_markdown = payload.get("description", existing.search_corpus_markdown)
-                existing.asking_price_myr = extracted_data.get("price", existing.asking_price_myr)
-                existing.listing_status = extracted_data.get("status", existing.listing_status)
-                existing.property_category = extracted_data.get("category", existing.property_category)
-                existing.land_area_acres = extracted_data.get("acres", existing.land_area_acres)
                 existing.source_url = payload.get("source_url", existing.source_url)
-                existing.state = extracted_data.get("state", existing.state)
+                if latitude is not None: existing.latitude = latitude
+                if longitude is not None: existing.longitude = longitude
+                if image_urls: existing.image_urls = image_urls
+                
+                # Fields from extraction
+                existing.asking_price_myr = extracted_data.get("asking_price_myr", existing.asking_price_myr)
+                existing.monthly_rental_income_myr = extracted_data.get("monthly_rental_income_myr", existing.monthly_rental_income_myr)
+                existing.implied_yield_pct = extracted_data.get("implied_yield_pct", existing.implied_yield_pct)
+                existing.property_category = extracted_data.get("category", existing.property_category)
+                existing.land_area_sqft = extracted_data.get("land_area_sqft", existing.land_area_sqft)
+                existing.land_area_acres = extracted_data.get("land_area_acres", existing.land_area_acres)
+                existing.land_area_sqm = extracted_data.get("land_area_sqm", existing.land_area_sqm)
+                existing.built_up_area_sqft = extracted_data.get("built_up_area_sqft", existing.built_up_area_sqft)
+                existing.tenure_type = extracted_data.get("tenure_type", existing.tenure_type)
+                existing.zoning_type = extracted_data.get("zoning_type", existing.zoning_type)
+                existing.power_supply_amp = extracted_data.get("power_supply_amp", existing.power_supply_amp)
+                existing.utilities_available = extracted_data.get("utilities_available", existing.utilities_available)
+                existing.has_office = extracted_data.get("has_office", existing.has_office)
+                existing.office_features = extracted_data.get("office_features", existing.office_features)
+                existing.road_access_quality = extracted_data.get("road_access_quality", existing.road_access_quality)
+                existing.is_tenanted = extracted_data.get("is_tenanted", existing.is_tenanted)
+                existing.lease_start_date = extracted_data.get("lease_start_date", existing.lease_start_date)
+                existing.lease_end_date = extracted_data.get("lease_end_date", existing.lease_end_date)
+                existing.current_tenant_use = extracted_data.get("current_tenant_use", existing.current_tenant_use)
+                existing.street_address = extracted_data.get("street_address", existing.street_address)
+                existing.area = extracted_data.get("area", existing.area)
                 existing.city = extracted_data.get("city", existing.city)
+                existing.state = extracted_data.get("state", existing.state)
+                existing.suitable_industries = extracted_data.get("suitable_industries", existing.suitable_industries)
+                existing.key_highlights = extracted_data.get("key_highlights", existing.key_highlights)
+                existing.risk_flags = extracted_data.get("risk_flags", existing.risk_flags)
+                existing.listing_status = extracted_data.get("status", existing.listing_status)
+                
                 db.commit()
                 logger.info(f"Updated property {title} in DB.")
                 return {"status": "success", "action": "updated"}
@@ -459,13 +495,38 @@ def process_wordpress_property(self, payload: dict):
                     id=str(uuid.uuid4()),
                     title=title,
                     search_corpus_markdown=payload.get("description", ""),
-                    asking_price_myr=extracted_data.get("price", 0.0),
-                    listing_status=extracted_data.get("status", "Available"),
+                    source_url=payload.get("source_url", ""),
+                    latitude=latitude,
+                    longitude=longitude,
+                    image_urls=image_urls,
+                    
+                    asking_price_myr=extracted_data.get("asking_price_myr", 0.0),
+                    monthly_rental_income_myr=extracted_data.get("monthly_rental_income_myr"),
+                    implied_yield_pct=extracted_data.get("implied_yield_pct"),
                     property_category=extracted_data.get("category", []),
-                    state=extracted_data.get("state", ""),
+                    land_area_sqft=extracted_data.get("land_area_sqft"),
+                    land_area_acres=extracted_data.get("land_area_acres", 0.0),
+                    land_area_sqm=extracted_data.get("land_area_sqm"),
+                    built_up_area_sqft=extracted_data.get("built_up_area_sqft"),
+                    tenure_type=extracted_data.get("tenure_type"),
+                    zoning_type=extracted_data.get("zoning_type"),
+                    power_supply_amp=extracted_data.get("power_supply_amp"),
+                    utilities_available=extracted_data.get("utilities_available", []),
+                    has_office=extracted_data.get("has_office", False),
+                    office_features=extracted_data.get("office_features"),
+                    road_access_quality=extracted_data.get("road_access_quality"),
+                    is_tenanted=extracted_data.get("is_tenanted", False),
+                    lease_start_date=extracted_data.get("lease_start_date"),
+                    lease_end_date=extracted_data.get("lease_end_date"),
+                    current_tenant_use=extracted_data.get("current_tenant_use"),
+                    street_address=extracted_data.get("street_address"),
+                    area=extracted_data.get("area"),
                     city=extracted_data.get("city", ""),
-                    land_area_acres=extracted_data.get("acres", 0.0),
-                    source_url=payload.get("source_url", "")
+                    state=extracted_data.get("state", ""),
+                    suitable_industries=extracted_data.get("suitable_industries", []),
+                    key_highlights=extracted_data.get("key_highlights", []),
+                    risk_flags=extracted_data.get("risk_flags", []),
+                    listing_status=extracted_data.get("status", "Available")
                 )
                 db.add(new_property)
                 db.commit()
@@ -476,4 +537,97 @@ def process_wordpress_property(self, payload: dict):
             
     except Exception as exc:
         logger.error(f"Error processing WordPress property: {exc}")
+        raise self.retry(exc=exc, countdown=2 ** self.request.retries)
+
+
+@celery_app.task(bind=True, max_retries=3)
+def process_whatsapp_message(self, payload: dict):
+    """
+    Processes incoming WhatsApp messages.
+    Extracts wamid, locks session, handles media, and forwards to LLM.
+    """
+    try:
+        entries = payload.get("entry", [])
+        for entry in entries:
+            changes = entry.get("changes", [])
+            for change in changes:
+                value = change.get("value", {})
+                messages = value.get("messages", [])
+                contacts = value.get("contacts", [])
+                
+                contact_name = "Unknown"
+                if contacts:
+                    contact_name = contacts[0].get("profile", {}).get("name", "Unknown")
+
+                for message in messages:
+                    wamid = message.get("id")
+                    phone_number = message.get("from")
+                    message_type = message.get("type")
+                    
+                    if not wamid or not phone_number:
+                        continue
+                        
+                    # Acquire distributed lock for this user's session
+                    with SessionManager.lock_session(phone_number):
+                        session = SessionManager.get_session(phone_number)
+                        
+                        if session.get("is_paused"):
+                            logger.info(f"Session for {phone_number} is paused. Skipping AI processing.")
+                            continue
+                            
+                        text = ""
+                        media_url = ""
+                        
+                        # Handle different message types
+                        if message_type == "text":
+                            text = message.get("text", {}).get("body", "")
+                        elif message_type in ["image", "audio", "document", "video"]:
+                            media_id = message.get(message_type, {}).get("id")
+                            if media_id:
+                                # Fetch media from WhatsApp (Placeholder - need actual WA API call to fetch media binary)
+                                # Assuming we have binary data in `media_binary`
+                                # media_binary = fetch_whatsapp_media(media_id)
+                                # media_url = upload_media(media_binary, f"{wamid}.{message_type}", "application/octet-stream")
+                                logger.info(f"Received {message_type} with id {media_id}. MinIO upload pending WhatsApp API fetch.")
+                                text = f"[{message_type} attached]"
+
+                        # Log interaction
+                        db = SessionLocal()
+                        try:
+                            # Save interaction log
+                            log = InteractionLog(
+                                wamid=wamid,
+                                phone_number=phone_number,
+                                direction="incoming",
+                                message_text=text,
+                                media_url=media_url
+                            )
+                            db.add(log)
+                            db.commit()
+                        except Exception as e:
+                            logger.error(f"Failed to log interaction: {e}")
+                            db.rollback()
+                        finally:
+                            db.close()
+                            
+                        # Update session state with message
+                        session["collected_data"]["last_message"] = text
+                        
+                        # Router Agent Logic (Phase 2)
+                        if session.get("current_agent") is None or session.get("state") == "INIT":
+                            from app.services.llm import classify_intent
+                            history = session.get("collected_data", {}).get("history", "")
+                            intent = classify_intent(text, history)
+                            logger.info(f"Router Agent classified {phone_number} as {intent}")
+                            
+                            session["current_agent"] = intent
+                            session["state"] = "AWAITING_INFO"
+                            
+                        SessionManager.save_session(phone_number, session)
+                        
+                        logger.info(f"Processed WhatsApp message {wamid} from {phone_number}. Text: {text}")
+                        
+        return {"status": "success"}
+    except Exception as exc:
+        logger.error(f"Error processing WhatsApp message: {exc}")
         raise self.retry(exc=exc, countdown=2 ** self.request.retries)
