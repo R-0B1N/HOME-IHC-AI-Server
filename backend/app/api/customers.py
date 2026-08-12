@@ -21,7 +21,7 @@ class CustomerCreate(BaseModel):
     email: Optional[str] = None
     country: Optional[str] = None
     country: Optional[str] = None
-    ignore_ai: Optional[bool] = False
+    bypass_ai: Optional[bool] = False
 
 class CustomerUpdate(BaseModel):
     model_config = ConfigDict(extra='ignore')
@@ -29,7 +29,7 @@ class CustomerUpdate(BaseModel):
     email: Optional[str] = None
     country: Optional[str] = None
     country: Optional[str] = None
-    ignore_ai: Optional[bool] = None
+    bypass_ai: Optional[bool] = None
 
 @router.get("")
 def get_customers(db: Session = Depends(get_db)):
@@ -60,7 +60,7 @@ def create_customer(customer_data: CustomerCreate, db: Session = Depends(get_db)
         contact_name=customer_data.contact_name,
         email=customer_data.email,
         last_interaction=datetime.datetime.utcnow(),
-        metadata_json={"ignore_ai": customer_data.ignore_ai or False}
+        metadata_json={"bypass_ai": customer_data.bypass_ai or False}
     )
     db.add(new_customer)
     db.commit()
@@ -79,9 +79,9 @@ def update_customer(customer_id: str, customer_data: CustomerUpdate, db: Session
         customer.email = customer_data.email
     if customer_data.country is not None:
         customer.country = customer_data.country
-    if customer_data.ignore_ai is not None:
+    if customer_data.bypass_ai is not None:
         meta = customer.metadata_json.copy() if customer.metadata_json else {}
-        meta["ignore_ai"] = customer_data.ignore_ai
+        meta["bypass_ai"] = customer_data.bypass_ai
         customer.metadata_json = meta
 
     db.commit()

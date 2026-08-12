@@ -10,20 +10,20 @@ from app.db.models import Customer, engine
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def reset_ai_flags():
-    print("Resetting ignore_ai flags for all customers...")
+    print("Resetting bypass_ai flags for all customers...")
     db = SessionLocal()
     try:
         customers = db.query(Customer).all()
         updated_count = 0
         for cust in customers:
-            if cust.metadata_json and cust.metadata_json.get("ignore_ai"):
+            if cust.metadata_json and cust.metadata_json.get("bypass_ai"):
                 meta = cust.metadata_json.copy()
-                meta["ignore_ai"] = False
+                meta["bypass_ai"] = False
                 cust.metadata_json = meta
                 updated_count += 1
         
         db.commit()
-        print(f"Successfully reset ignore_ai flag for {updated_count} customers.")
+        print(f"Successfully reset bypass_ai flag for {updated_count} customers.")
     except Exception as e:
         print(f"Error resetting flags: {e}")
         db.rollback()

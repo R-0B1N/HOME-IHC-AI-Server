@@ -148,10 +148,40 @@ async def chatwoot_webhook(request: Request):
     if event_name == "conversation_typing_off":
         return {"status": "typing_off_recorded"}
         
-    # Handle contact and conversation metadata events
-    if event_name in ["conversation_created", "conversation_status_changed", "conversation_updated", "message_updated", "webwidget_triggered", "contact_created", "contact_updated"]:
+    # Handle conversation metadata events
+    if event_name in ["conversation_created", "conversation_status_changed", "conversation_updated", "message_updated", "webwidget_triggered", "contact_created"]:
         logger.info(f"Received metadata event: {event_name}. No immediate action required by AI.")
         return {"status": "ignored", "reason": f"metadata event {event_name} not handled"}
+
+    if event_name == "contact_updated":
+        # Sync bypass_ai flag from Chatwoot custom attributes
+        custom_attributes = payload.get("custom_attributes", {})
+        bypass_ai_val = custom_attributes.get("bypass_ai")
+        phone_number = payload.get("phone_number")
+        
+        if phone_number and bypass_ai_val is not None:
+            # Clean phone number just in case
+            if phone_number.startswith('+'):
+                phone_number = phone_number[1:]
+                
+            from app.db.database import SessionLocal
+            from app.db.models import Customer
+            db = SessionLocal()
+            try:
+                customer = db.query(Customer).filter(Customer.phone_number.like(f"%{phone_number}%")).first()
+                if customer:
+                    meta = customer.metadata_json or {}
+                    # Ensure bool
+                    meta["bypass_ai"] = bool(bypass_ai_val)
+                    customer.metadata_json = meta
+                    db.commit()
+                    logger.info(f"Synced bypass_ai={meta['bypass_ai']} for {phone_number} from Chatwoot")
+            except Exception as e:
+                logger.error(f"Failed to sync bypass_ai: {e}")
+            finally:
+                db.close()
+        
+        return {"status": "contact_updated_processed"}
 
     # We only care about message creation events below this point
     if event_name != "message_created":

@@ -186,13 +186,13 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
             metadata=metadata
         )
         
-        if customer and customer.metadata_json and customer.metadata_json.get("ignore_ai"):
-            logger.info(f"Customer {customer.id} has ignore_ai set. Skipping AI response.")
+        if customer and customer.metadata_json and customer.metadata_json.get("bypass_ai"):
+            logger.info(f"Customer {customer.id} has bypass_ai set. Skipping AI response.")
             try:
                 toggle_typing_status(conversation_id, "off")
             except:
                 pass
-            return {"status": "skipped", "reason": "ignore_ai is true"}
+            return {"status": "skipped", "reason": "bypass_ai is true"}
         
         role = get_sender_role(phone_number)
         
@@ -366,7 +366,7 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                 if db_cust:
                     if handover_initiated:
                         meta = db_cust.metadata_json.copy() if db_cust.metadata_json else {}
-                        meta["ignore_ai"] = True
+                        meta["bypass_ai"] = True
                         db_cust.metadata_json = meta
                     db.commit()
             except Exception as e:
