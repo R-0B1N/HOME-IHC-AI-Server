@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from app.db.models import SessionLocal, Customer, Property, Transaction, Order, Interaction
+from app.db.models import SessionLocal, Customer, Property, Transaction, Order, InteractionLog
 from pydantic import BaseModel, ConfigDict
 from typing import Optional, Dict, Any, List
 import datetime
@@ -123,7 +123,7 @@ def migrate_customer(customer_id: str, body: CustomerMigrate, db: Session = Depe
     db.query(Property).filter(Property.customer_id == customer_id).update({Property.customer_id: body.new_phone_number})
     db.query(Transaction).filter(Transaction.customer_id == customer_id).update({Transaction.customer_id: body.new_phone_number})
     db.query(Order).filter(Order.customer_id == customer_id).update({Order.customer_id: body.new_phone_number})
-    db.query(Interaction).filter(Interaction.customer_id == customer_id).update({Interaction.customer_id: body.new_phone_number})
+    db.query(InteractionLog).filter(InteractionLog.customer_id == customer_id).update({InteractionLog.customer_id: body.new_phone_number})
 
     db.delete(old_customer)
     db.commit()
