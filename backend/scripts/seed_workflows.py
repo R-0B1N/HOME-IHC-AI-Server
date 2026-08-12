@@ -4,6 +4,7 @@ import sys
 # Add backend to path
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
+from sqlalchemy.orm import sessionmaker
 from app.db.models import WorkflowTemplate, Base, engine
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
