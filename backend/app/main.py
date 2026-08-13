@@ -5,6 +5,7 @@ from app.api.properties import router as properties_router
 from app.api.customers import router as customers_router
 from app.api.wordpress import router as wordpress_router
 from app.api.settings import router as settings_router
+from app.api.admin import router as admin_router
 from app.db.models import Base, engine
 
 # Initialize database and run auto-migration if needed
@@ -49,6 +50,7 @@ app.include_router(wordpress_router, prefix="/api/v1/webhooks/wordpress")
 app.include_router(properties_router, prefix="/api/v1/properties")
 app.include_router(customers_router, prefix="/api/v1/customers")
 app.include_router(settings_router, prefix="/api/v1/settings")
+app.include_router(admin_router, prefix="/api/v1/admin")
 
 @app.get("/health")
 def health_check():

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
-import { Plus, Home, MapPin, Tag, Edit, Trash2, Map, Users, LayoutGrid, MessageCircle, X } from 'lucide-react';
+import { Plus, Home, MapPin, Tag, Edit, Trash2, Map, Users, LayoutGrid, MessageCircle, X, GitBranch } from 'lucide-react';
+import WorkflowViewer from './pages/WorkflowViewer';
 import './App.css';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://n8n.bentongland.com.my/api/v1';
@@ -420,6 +421,12 @@ function App() {
           >
             <Users size={18} /> Leads
           </button>
+          <button 
+            className={`tab-btn ${activeTab === 'workflows' ? 'active' : ''}`}
+            onClick={() => setActiveTab('workflows')}
+          >
+            <GitBranch size={18} /> Workflows
+          </button>
         </div>
 
         {activeTab === 'properties' && (
@@ -581,7 +588,7 @@ function App() {
               </div>
             ))}
           </div>
-        )) : (
+        )) : activeTab === 'leads' ? (
           <div className="leads-grid">
             {leads.length === 0 ? (
               <div className="empty-state">
@@ -688,7 +695,9 @@ function App() {
               </table>
             )}
           </div>
-        )}
+        ) : activeTab === 'workflows' ? (
+          <WorkflowViewer />
+        ) : null}
       </main>
 
       {/* Add/Edit Modal */}

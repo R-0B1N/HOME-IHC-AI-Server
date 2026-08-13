@@ -257,6 +257,64 @@ def seed_workflows():
         },
         
         # ==========================================
+        # AGENT / BROKER PERSONA
+        # ==========================================
+        {
+            "persona_type": "AGENT",
+            "step_number": 10,
+            "step_name": "Agent Greeting",
+            "ai_action_instruction": "Greet the agent/broker and introduce co-agency collaboration process.",
+            "message_template": "Good day! 😊\nThank you for contacting ERA Realtor.\nI'm Irene Leong, a Senior Property Agent.\n\nI'd be happy to explore co-agency collaboration opportunities with you.\nTo better understand your needs, may I ask you a few questions?",
+            "expected_data_keys": [],
+            "next_step": 11
+        },
+        {
+            "persona_type": "AGENT",
+            "step_number": 11,
+            "step_name": "Ask Name",
+            "ai_action_instruction": "Ask the agent's full name. Ask ONLY this question.",
+            "message_template": "May I have your full name?",
+            "expected_data_keys": ["name"],
+            "next_step": 12
+        },
+        {
+            "persona_type": "AGENT",
+            "step_number": 12,
+            "step_name": "Company / Agency",
+            "ai_action_instruction": "Ask which company or agency the agent is from.",
+            "message_template": "May I know which company or agency you are from?",
+            "expected_data_keys": ["company_name"],
+            "next_step": 13
+        },
+        {
+            "persona_type": "AGENT",
+            "step_number": 13,
+            "step_name": "Coverage Area",
+            "ai_action_instruction": "Ask the agent's primary coverage area.",
+            "message_template": "What is your primary coverage area?\n\n📍 Bentong\n📍 Temerloh / Mentakab\n📍 Raub\n📍 Other (please specify)",
+            "expected_data_keys": ["coverage_area"],
+            "next_step": 14
+        },
+        {
+            "persona_type": "AGENT",
+            "step_number": 14,
+            "step_name": "Collaboration Interest",
+            "ai_action_instruction": "Ask if the agent is interested in a specific listing or general co-agency partnership.",
+            "message_template": "Are you interested in:\n1️⃣ A specific property listing\n2️⃣ General co-agency partnership",
+            "expected_data_keys": ["collaboration_type"],
+            "next_step": 15
+        },
+        {
+            "persona_type": "AGENT",
+            "step_number": 15,
+            "step_name": "Co-Agency Terms",
+            "ai_action_instruction": "Provide co-agency terms summary and hand off to human agent for detailed discussion.",
+            "message_template": "Thank you for your interest in co-agency collaboration! 🤝\n\nHere is a summary of our standard co-agency terms:\n• Commission split: Negotiable (typically 50/50)\n• Exclusive / Non-exclusive basis\n• Professional indemnity coverage required\n\nA senior agent will contact you shortly to discuss the details. Thank you!",
+            "expected_data_keys": [],
+            "next_step": None
+        },
+        
+        # ==========================================
         # GLOBAL FALLBACK
         # ==========================================
         {
