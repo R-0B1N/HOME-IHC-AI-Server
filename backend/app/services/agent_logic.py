@@ -110,6 +110,7 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict, c
                 history_block = f"\n\nConversation history so far:\n{conversation_history}\n"
             
             system_prompt = f"""You are a Real Estate AI assistant for ERA Realtor, acting as Irene Leong, a Senior Property Agent.
+You are currently in the {current_agent} workflow.
 Instruction: '{instruction}'
 Expected JSON keys: {expected_keys}
 {history_block}
@@ -119,8 +120,14 @@ Expected JSON keys: {expected_keys}
    - "im looking for a property" → customer_category could be "personal buyer"
    - "i want to buy land" → customer_category = "personal buyer"
    - "i want to sell" → customer_category = "seller"
-   - Location mentions like "bentong", "raub" → location = that value
-   - Property type mentions like "agricultural", "commercial", "residential" → property_type = that value
+   - "im an agent" or "im a broker" → customer_category = "agent"
+   - Location mentions like "bentong", "raub", "mentakab" → location/buyer_location = that value
+   - Property type mentions like "agricultural", "commercial", "residential" → property_type/buyer_property_type = that value
+   - Budget mentions like "500k", "RM 1 million", "below 200000" → budget/buyer_budget = that value
+   - "personal" or "my name" → purchase_entity = "personal"
+   - "company" or "sdn bhd" → purchase_entity = "company"
+   - If user provides their name naturally (e.g. "My name is Ahmad") → agent_name = "Ahmad"
+   - Agency mentions like "IQI", "Hartamas", "ERA" → agency_name = that value
 
 Return valid JSON with two fields:
 - "extracted_data": {{ key: value }}
@@ -212,10 +219,23 @@ Return valid JSON with two fields:
                     response_msg = next_step.message_template
                     if next_step.step_name == "Recommend Listings":
                         from app.services.db_services import search_properties
+                        collected = session.get("collected_data", {})
+                        # Support both BUYER keys and AGENT/BROKER keys
                         criteria = {
-                            "location": session["collected_data"].get("current_location"),
-                            "property_type": session["collected_data"].get("use_type"),
-                            "max_price": session["collected_data"].get("budget")
+                            "location": (
+                                collected.get("buyer_location") 
+                                or collected.get("current_location") 
+                                or collected.get("location")
+                            ),
+                            "property_type": (
+                                collected.get("buyer_property_type") 
+                                or collected.get("use_type") 
+                                or collected.get("property_type")
+                            ),
+                            "max_price": (
+                                collected.get("buyer_budget") 
+                                or collected.get("budget")
+                            )
                         }
                         props = search_properties(criteria)
                         if props:
@@ -223,6 +243,16 @@ Return valid JSON with two fields:
                             response_msg += "\n\n" + "\n".join(urls)
                         else:
                             response_msg += "\n\nCurrently, we have no direct matches, but our agent will reach out!"
+                    
+                    # Check if this next step has no expected keys — auto-advance
+                    next_expected = next_step.expected_data_keys or []
+                    next_expected = [k for k in next_expected if k and k.strip()]
+                    if not next_expected and next_step.next_step:
+                        # Empty-key step with a next step — send message and advance
+                        session["current_step_id"] = next_step.next_step
+                    elif not next_expected and not next_step.next_step:
+                        # Empty-key step with NO next step — this is the final step, trigger handover
+                        return {"response": response_msg, "handover": True, "updated_session": session}
                     
                     return {"response": response_msg, "handover": False, "updated_session": session}
             
