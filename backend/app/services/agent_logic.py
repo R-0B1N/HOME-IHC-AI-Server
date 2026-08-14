@@ -128,10 +128,12 @@ Expected JSON keys: {expected_keys}
    - "company" or "sdn bhd" → purchase_entity = "company"
    - If user provides their name naturally (e.g. "My name is Ahmad") → agent_name = "Ahmad"
    - Agency mentions like "IQI", "Hartamas", "ERA" → agency_name = that value
+4. Guardrail: If the user's message is completely unrelated to real estate, buying, selling, renting, or if they are asking for a job, set "is_out_of_context" to true. Otherwise, false.
 
-Return valid JSON with two fields:
+Return valid JSON with three fields:
 - "extracted_data": {{ key: value }}
-- "follow_up_message": string (your friendly question if keys are missing, otherwise null)"""
+- "follow_up_message": string (your friendly question if keys are missing, otherwise null)
+- "is_out_of_context": boolean"""
 
             messages = [
                 {"role": "system", "content": system_prompt},
@@ -148,10 +150,22 @@ Return valid JSON with two fields:
                 result = json.loads(response.choices[0].message.content)
                 extracted_data = result.get("extracted_data", {})
                 follow_up_message = result.get("follow_up_message")
+                is_out_of_context = result.get("is_out_of_context", False)
             except Exception as e:
                 logger.error(f"Failed to extract JSON from LLM: {e}")
                 extracted_data = {}
                 follow_up_message = None
+                is_out_of_context = False
+            
+            # Guardrail check
+            if is_out_of_context:
+                session["state"] = "COMPLETED"
+                return {
+                    "response": "I see. I've passed this over to our team, and one of our agents will assist you shortly.", 
+                    "handover": True, 
+                    "assignee_email": "homeihc13@gmail.com",
+                    "updated_session": session
+                }
             
             # Save extracted data to session
             for key in expected_keys:

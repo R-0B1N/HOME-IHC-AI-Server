@@ -365,3 +365,25 @@ def assign_agent(conversation_id: int, agent_id: int):
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to assign agent to Chatwoot conversation: {e}")
         return False
+
+def get_agent_id_by_email(email: str) -> int:
+    """
+    Fetches the agent ID by email.
+    """
+    url = f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/agents"
+    headers = {
+        "api_access_token": CHATWOOT_API_TOKEN,
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        agents = response.json()
+        for agent in agents:
+            if agent.get("email") == email:
+                return agent.get("id")
+        return None
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to get agents from Chatwoot: {e}")
+        return None

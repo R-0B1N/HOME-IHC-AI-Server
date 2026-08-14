@@ -262,6 +262,7 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
             intent = session.get("current_agent", "general").lower()
             response_text = agent_result.get("response", "Sorry, I couldn't process your request.")
             handover_initiated = agent_result.get("handover", False)
+            assignee_email = agent_result.get("assignee_email")
             
             # Dynamic lead temperature based on collected data completeness
             collected = session.get("collected_data", {})
@@ -439,6 +440,16 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                 
             if handover_initiated:
                 labels_to_apply.append("handover_initiated")
+                
+                # Assign agent if specified
+                if assignee_email:
+                    try:
+                        from app.services.chatwoot import get_agent_id_by_email, assign_agent
+                        agent_id = get_agent_id_by_email(assignee_email)
+                        if agent_id:
+                            assign_agent(conversation_id, agent_id)
+                    except Exception as e:
+                        logger.error(f"Failed to assign agent on handover: {e}")
                 
             # Map temperature to priority and labels
             priority_map = {
