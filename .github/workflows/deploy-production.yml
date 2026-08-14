@@ -40,9 +40,14 @@ jobs:
             echo "Setting up database credentials..."
             # 1. Get the superuser name from crm-postgres
             SUPER_USER=$(docker exec crm-postgres env | grep POSTGRES_USER= | cut -d= -f2- | tr -d '\r')
+            if [ -z "$SUPER_USER" ]; then
+              SUPER_USER="n8n"
+            fi
+            echo "SUPER_USER is $SUPER_USER"
             
             # 2. Provision admin user and whatsapp_ai database
-            docker exec crm-postgres psql -U $SUPER_USER -c "CREATE USER admin WITH PASSWORD 'P@ssw0rd';" || docker exec crm-postgres psql -U $SUPER_USER -c "ALTER USER admin WITH PASSWORD 'P@ssw0rd';"
+            docker exec crm-postgres psql -U $SUPER_USER -c "CREATE USER admin WITH PASSWORD 'P@ssw0rd';" || \
+              docker exec crm-postgres psql -U $SUPER_USER -c "ALTER USER admin WITH PASSWORD 'P@ssw0rd';"
             docker exec crm-postgres psql -U $SUPER_USER -c "CREATE DATABASE whatsapp_ai OWNER admin;" || true
             docker exec crm-postgres psql -U $SUPER_USER -d whatsapp_ai -c "GRANT ALL PRIVILEGES ON DATABASE whatsapp_ai TO admin;" || true
             docker exec crm-postgres psql -U $SUPER_USER -d whatsapp_ai -c "GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO admin;" || true
