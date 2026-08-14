@@ -38,3 +38,6 @@ jobs:
           script: |
             cd ~/whatsapp-ai-prod
             docker compose -f docker-compose.production.yml up -d --build --remove-orphans
+            sleep 5
+            docker exec crm-postgres env || true
+            docker logs whatsapp_ai_api_production --tail 100 || true
