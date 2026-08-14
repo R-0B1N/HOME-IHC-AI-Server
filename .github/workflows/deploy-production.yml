@@ -37,7 +37,11 @@ jobs:
           password: ${{ secrets.SSH_PASSWORD }}
           script: |
             cd ~/whatsapp-ai-prod
+            echo "Extracting DB credentials from crm-postgres..."
+            DB_USER=$(docker exec crm-postgres env | grep POSTGRES_USER= | cut -d= -f2-)
+            DB_PASS=$(docker exec crm-postgres env | grep POSTGRES_PASSWORD= | cut -d= -f2-)
+            DB_NAME=$(docker exec crm-postgres env | grep POSTGRES_DB= | cut -d= -f2-)
+            echo "POSTGRES_USER=$DB_USER" > .env
+            echo "POSTGRES_PASSWORD=$DB_PASS" >> .env
+            echo "POSTGRES_DB=$DB_NAME" >> .env
             docker compose -f docker-compose.production.yml up -d --build --remove-orphans
-            sleep 5
-            docker exec crm-postgres env || true
-            docker logs whatsapp_ai_api_production --tail 100 || true
