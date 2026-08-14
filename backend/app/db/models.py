@@ -1,3 +1,4 @@
+import urllib.parse
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, JSON, Float, ForeignKey, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -9,7 +10,7 @@ from sqlalchemy.dialects.postgresql import UUID, ARRAY
 
 DB_HOST = os.getenv("DB_HOST", "postgres")
 DB_USER = os.getenv("POSTGRES_USER", "n8n")
-DB_PASS = os.getenv("POSTGRES_PASSWORD", "n8n")
+DB_PASS = urllib.parse.quote_plus(os.getenv("POSTGRES_PASSWORD", "n8n"))
 DB_NAME = os.getenv("POSTGRES_DB", "whatsapp_ai")
 
 DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASS}@{DB_HOST}:5432/{DB_NAME}"
