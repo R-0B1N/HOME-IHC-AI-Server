@@ -37,24 +37,4 @@ jobs:
           password: ${{ secrets.SSH_PASSWORD }}
           script: |
             cd ~/whatsapp-ai-prod
-            echo "Setting up database credentials..."
-            # 1. Get the superuser name from crm-postgres
-            SUPER_USER=$(docker exec crm-postgres env | grep POSTGRES_USER= | cut -d= -f2- | tr -d '\r')
-            if [ -z "$SUPER_USER" ]; then
-              SUPER_USER="n8n"
-            fi
-            echo "SUPER_USER is $SUPER_USER"
-            
-            # 2. Provision admin user and whatsapp_ai database
-            docker exec crm-postgres psql -U $SUPER_USER -d postgres -c "CREATE USER admin WITH PASSWORD 'P@ssw0rd';" || \
-              docker exec crm-postgres psql -U $SUPER_USER -d postgres -c "ALTER USER admin WITH PASSWORD 'P@ssw0rd';"
-            docker exec crm-postgres psql -U $SUPER_USER -d postgres -c "CREATE DATABASE whatsapp_ai OWNER admin;" || true
-            docker exec crm-postgres psql -U $SUPER_USER -d whatsapp_ai -c "GRANT ALL PRIVILEGES ON DATABASE whatsapp_ai TO admin;" || true
-            docker exec crm-postgres psql -U $SUPER_USER -d whatsapp_ai -c "GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO admin;" || true
-            docker exec crm-postgres psql -U $SUPER_USER -d whatsapp_ai -c "GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO admin;" || true
-            
-            # 3. Write .env for the app
-            echo "POSTGRES_USER=admin" > .env
-            echo "POSTGRES_PASSWORD=P@ssw0rd" >> .env
-            echo "POSTGRES_DB=whatsapp_ai" >> .env
             docker compose -f docker-compose.production.yml up -d --build --remove-orphans

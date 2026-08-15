@@ -1,0 +1,47 @@
+name: Update Config (Staging)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  update-config:
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: Update .env on Server
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          script: |
+            mkdir -p ~/whatsapp-ai-staging
+            cd ~/whatsapp-ai-staging
+            
+            cat << 'EOF' > .env
+            # Database Configuration
+            POSTGRES_USER=${{ secrets.POSTGRES_USER_STAGING }}
+            POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD_STAGING }}
+            POSTGRES_DB=${{ secrets.POSTGRES_DB_STAGING }}
+            
+            # Application Configuration
+            CHATWOOT_BASE_URL=${{ secrets.CHATWOOT_BASE_URL_STAGING }}
+            CHATWOOT_API_TOKEN=${{ secrets.CHATWOOT_API_TOKEN_STAGING }}
+            CHATWOOT_ACCOUNT_ID=${{ secrets.CHATWOOT_ACCOUNT_ID_STAGING }}
+            CHATWOOT_WEBHOOK_SECRET=${{ secrets.CHATWOOT_WEBHOOK_SECRET_STAGING }}
+            
+            WHATSAPP_APP_SECRET=${{ secrets.WHATSAPP_APP_SECRET_STAGING }}
+            WHATSAPP_VERIFY_TOKEN=${{ secrets.WHATSAPP_VERIFY_TOKEN_STAGING }}
+            
+            # Optional Hugging Face Token (if using gated models)
+            HF_TOKEN=${{ secrets.HF_TOKEN_STAGING }}
+            EOF
+            
+            echo "Environment variables updated successfully in staging."
