@@ -80,6 +80,38 @@ def on_startup():
             print("🚀 Initializing default workflow templates...")
             from scripts.seed_workflows import seed_workflows
             seed_workflows()
+
+        # 3. Ensure Property listings exist
+        prop_count = db.query(Property).count()
+        if prop_count == 0:
+            print("🏡 Initializing default property listings...")
+            from scripts.seed_properties import seed_properties
+            seed_properties()
+
+        # 4. Ensure Customer leads are synced from Chatwoot
+        cust_count = db.query(Customer).count()
+        if cust_count == 0:
+            print("👥 Auto-syncing initial leads from Chatwoot...")
+            from app.services.chatwoot import get_all_contacts
+            try:
+                for p in range(1, 4):
+                    contacts = get_all_contacts(page=p)
+                    if not contacts: break
+                    for contact in contacts:
+                        phone = contact.get("phone_number") or contact.get("identifier")
+                        if not phone: continue
+                        if not db.query(Customer).filter(Customer.id == phone).first():
+                            db.add(Customer(
+                                id=phone,
+                                contact_name=contact.get("name") or "WhatsApp Lead",
+                                email=contact.get("email"),
+                                country="Malaysia",
+                                last_interaction=datetime.datetime.utcnow(),
+                                metadata_json={"chatwoot_contact_id": contact.get("id"), "source": "chatwoot_startup_sync"}
+                            ))
+                db.commit()
+            except Exception as sync_err:
+                print(f"Chatwoot auto-sync notice: {sync_err}")
     except Exception as e:
         print(f"Startup initialization error: {e}")
         db.rollback()
@@ -91,7 +123,8 @@ app.include_router(auth_router, prefix="/api/v1/auth", tags=["Authentication"])
 app.include_router(users_router, prefix="/api/v1/users", tags=["User Management"])
 app.include_router(webhooks_router, prefix="/api/v1/webhooks", tags=["Webhooks"])
 app.include_router(webhooks_router, prefix="/webhook", tags=["Legacy Webhook"]) # Fallback for old n8n webhook URL
-app.include_router(wordpress_router, prefix="/api/v1/webhooks/wordpress", tags=["WordPress"])
+app.include_router(wordpress_router, prefix="/api/v1/wordpress", tags=["WordPress"])
+app.include_router(wordpress_router, prefix="/api/v1/webhooks/wordpress", tags=["WordPress Webhook"])
 app.include_router(properties_router, prefix="/api/v1/properties", tags=["Properties"])
 app.include_router(customers_router, prefix="/api/v1/customers", tags=["Customers & Leads"])
 app.include_router(settings_router, prefix="/api/v1/settings", tags=["Settings"])
@@ -100,3 +133,4 @@ app.include_router(admin_router, prefix="/api/v1/admin", tags=["Workflows & Admi
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+

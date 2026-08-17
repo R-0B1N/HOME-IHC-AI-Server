@@ -387,3 +387,22 @@ def get_agent_id_by_email(email: str) -> int:
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to get agents from Chatwoot: {e}")
         return None
+
+def get_all_contacts(page: int = 1) -> list:
+    """
+    Fetches contacts from Chatwoot for CRM synchronization.
+    """
+    url = f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts?page={page}"
+    headers = {
+        "api_access_token": CHATWOOT_API_TOKEN,
+        "Content-Type": "application/json"
+    }
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        return data.get("payload", [])
+    except Exception as e:
+        logger.error(f"Failed to fetch contacts from Chatwoot: {e}")
+        return []
+

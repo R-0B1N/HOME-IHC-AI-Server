@@ -56,7 +56,6 @@ services:
       dockerfile: Dockerfile
     container_name: whatsapp_ai_worker_production
     restart: unless-stopped
-    profiles: ["disabled"]
     command: celery -A app.worker.celery_app worker --pool=gevent --concurrency=20 --loglevel=info
     env_file:
       - .env

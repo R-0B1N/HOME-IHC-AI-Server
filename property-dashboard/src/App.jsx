@@ -63,6 +63,8 @@ function App() {
   });
 
   const [masterAiEnabled, setMasterAiEnabled] = useState(true);
+  const [isSyncingLeads, setIsSyncingLeads] = useState(false);
+  const [isSeedingProps, setIsSeedingProps] = useState(false);
 
   const fetchProperties = async () => {
     try {
@@ -70,6 +72,18 @@ function App() {
       setProperties(response.data);
     } catch (error) {
       console.error('Failed to fetch properties:', error);
+    }
+  };
+
+  const seedDefaultProperties = async () => {
+    setIsSeedingProps(true);
+    try {
+      await axios.post(`${API_BASE_URL}/properties/seed-defaults`);
+      await fetchProperties();
+    } catch (error) {
+      console.error('Failed to seed properties:', error);
+    } finally {
+      setIsSeedingProps(false);
     }
   };
 
@@ -101,6 +115,21 @@ function App() {
       console.error('Failed to fetch leads:', error);
     }
   };
+
+  const syncChatwootLeads = async () => {
+    setIsSyncingLeads(true);
+    try {
+      const response = await axios.post(`${API_BASE_URL}/customers/sync-chatwoot`);
+      await fetchLeads();
+      alert(`Chatwoot Sync Complete: ${response.data.synced_count} new leads imported (Total: ${response.data.total_leads})`);
+    } catch (error) {
+      console.error('Failed to sync Chatwoot leads:', error);
+      alert('Failed to sync Chatwoot leads. Please verify Chatwoot server connectivity.');
+    } finally {
+      setIsSyncingLeads(false);
+    }
+  };
+
 
   // Fetch data on tab change + auto-refresh every 30s for real-time updates
   useEffect(() => {
@@ -408,91 +437,104 @@ function App() {
 
   return (
     <div className="dashboard-container">
-      <header>
-        <div className="logo-section">
-          <div className="logo-title-row">
-            <h1>ERA Realtor • BentongLand DB</h1>
+      {/* Tier 1: Modern Luxury Header */}
+      <header className="lux-top-header">
+        <div className="lux-brand-group">
+          <div className="lux-brand-icon">
+            <Home size={22} color="#d4af37" />
           </div>
-          <p>Real Estate CRM, AI State Engine & RBAC Database Access</p>
-          
-          <div className="header-controls-row">
-            <button 
-              className={`ai-status-btn ${masterAiEnabled ? 'active' : 'disabled'}`}
-              onClick={toggleMasterAi}
-              title={masterAiEnabled ? "Click to disable all AI replies" : "Click to enable all AI replies"}
-              style={{
-                padding: '0.4rem 0.8rem',
-                borderRadius: '8px',
-                fontSize: '0.85rem',
-                fontWeight: 'bold',
-                border: '1px solid',
-                cursor: 'pointer',
-                backgroundColor: masterAiEnabled ? '#e6f4ea' : '#fce8e6',
-                color: masterAiEnabled ? '#137333' : '#c5221f',
-                borderColor: masterAiEnabled ? '#ceead6' : '#fad2cf',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.4rem'
-              }}
-            >
-              Master AI: {masterAiEnabled ? '🟢 ON' : '🔴 OFF'}
-            </button>
-
-            {/* Authenticated User Capsule */}
-            <div className="user-profile-capsule">
-              <div className={`user-avatar-sm ${user?.role || 'agent'}`}>
-                {user?.full_name ? user.full_name.charAt(0).toUpperCase() : (user?.username || 'U').charAt(0).toUpperCase()}
-              </div>
-              <div className="user-info-text">
-                <span className="user-display-name">{user?.full_name || user?.username}</span>
-                <span className={`role-badge-sm ${user?.role || 'agent'}`}>
-                  {user?.role === 'admin' ? '🛡️ Admin' : user?.role === 'agent' ? '🤝 Agent' : '👁️ Viewer'}
-                </span>
-              </div>
-              <button 
-                className="btn-logout"
-                onClick={logout}
-                title="Sign Out"
-              >
-                <LogOut size={16} /> Logout
-              </button>
-            </div>
+          <div>
+            <div className="lux-brand-title">ERA Realtor • BentongLand DB</div>
+            <div className="lux-brand-sub">Real Estate CRM, AI State Engine & RBAC Access</div>
           </div>
         </div>
-        
-        <div className="tab-navigation">
+
+        <div className="lux-header-actions-group">
+          {/* Master AI Toggle Pill */}
           <button 
-            className={`tab-btn ${activeTab === 'properties' ? 'active' : ''}`}
+            className={`lux-ai-toggle-pill ${masterAiEnabled ? 'active' : 'disabled'}`}
+            onClick={toggleMasterAi}
+            title={masterAiEnabled ? "Click to disable all AI automated responses" : "Click to enable all AI automated responses"}
+          >
+            <span className={`lux-status-dot ${masterAiEnabled ? 'active' : 'disabled'}`}></span>
+            Master AI: <strong>{masterAiEnabled ? 'ON' : 'OFF'}</strong>
+          </button>
+
+          {/* Authenticated User Capsule */}
+          <div className="lux-user-capsule">
+            <div className={`lux-user-avatar ${user?.role || 'agent'}`}>
+              {user?.full_name ? user.full_name.charAt(0).toUpperCase() : (user?.username || 'U').charAt(0).toUpperCase()}
+            </div>
+            <div className="lux-user-details">
+              <span className="lux-user-name">{user?.full_name || user?.username}</span>
+              <span className={`lux-role-pill ${user?.role || 'agent'}`}>
+                {user?.role === 'admin' ? '🛡️ Admin' : user?.role === 'agent' ? '🤝 Agent' : '👁️ Viewer'}
+              </span>
+            </div>
+            <button 
+              className="lux-logout-btn"
+              onClick={logout}
+              title="Sign Out"
+            >
+              <LogOut size={15} />
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* Tier 2: Sub-Nav Bar & Dynamic Controls */}
+      <div className="lux-subnav-bar">
+        <div className="lux-tabs-container">
+          <button 
+            className={`lux-tab-btn ${activeTab === 'properties' ? 'active' : ''}`}
             onClick={() => setActiveTab('properties')}
           >
-            <LayoutGrid size={18} /> Properties
+            <LayoutGrid size={17} /> Properties
+            <span className="lux-tab-count">{properties.length}</span>
           </button>
           <button 
-            className={`tab-btn ${activeTab === 'leads' ? 'active' : ''}`}
+            className={`lux-tab-btn ${activeTab === 'leads' ? 'active' : ''}`}
             onClick={() => setActiveTab('leads')}
           >
-            <Users size={18} /> Leads
+            <Users size={17} /> Leads
+            <span className="lux-tab-count">{leads.length}</span>
           </button>
           <button 
-            className={`tab-btn ${activeTab === 'workflows' ? 'active' : ''}`}
+            className={`lux-tab-btn ${activeTab === 'workflows' ? 'active' : ''}`}
             onClick={() => setActiveTab('workflows')}
           >
-            <GitBranch size={18} /> Workflows
+            <GitBranch size={17} /> Workflows
           </button>
           {isAdmin && (
             <button 
-              className={`tab-btn ${activeTab === 'users' ? 'active' : ''}`}
+              className={`lux-tab-btn ${activeTab === 'users' ? 'active' : ''}`}
               onClick={() => setActiveTab('users')}
             >
-              <ShieldCheck size={18} /> User Accounts
+              <ShieldCheck size={17} /> User Accounts
             </button>
           )}
         </div>
 
+        {/* Dynamic Toolbar for Properties */}
         {activeTab === 'properties' && (
-          <div className="header-actions">
+          <div className="lux-filter-toolbar">
+            <div className="lux-search-box">
+              <input 
+                type="text" 
+                className="lux-search-input" 
+                placeholder="Search properties..." 
+                value={searchTerm} 
+                onChange={(e) => setSearchTerm(e.target.value)} 
+              />
+              {searchTerm && (
+                <button className="lux-search-clear" onClick={() => setSearchTerm('')}>
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+
             <select 
-              className="form-select sort-select" 
+              className="lux-select" 
               value={propStatusFilter} 
               onChange={(e) => setPropStatusFilter(e.target.value)}
             >
@@ -503,8 +545,9 @@ function App() {
               <option value="Pending">Pending</option>
               <option value="Sold">Sold</option>
             </select>
+
             <select 
-              className="form-select sort-select" 
+              className="lux-select" 
               value={typeFilter} 
               onChange={(e) => setTypeFilter(e.target.value)}
             >
@@ -513,8 +556,9 @@ function App() {
                 <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</option>
               ))}
             </select>
+
             <select 
-              className="form-select sort-select" 
+              className="lux-select" 
               value={cityFilter} 
               onChange={(e) => setCityFilter(e.target.value)}
             >
@@ -523,91 +567,97 @@ function App() {
                 <option key={c} value={c}>{c}</option>
               ))}
             </select>
+
             <select 
-              className="form-select sort-select" 
-              value={stateFilter} 
-              onChange={(e) => setStateFilter(e.target.value)}
-            >
-              <option value="All">All States</option>
-              {uniqueStates.filter(s => s !== 'All').map(s => (
-                <option key={s} value={s}>{s}</option>
-              ))}
-            </select>
-            <select 
-              className="form-select sort-select" 
+              className="lux-select" 
               value={sortOrder} 
               onChange={(e) => setSortOrder(e.target.value)}
             >
               <option value="newest">Sort: Newest</option>
-              <option value="price-asc">Sort: Low to High</option>
-              <option value="price-desc">Sort: High to Low</option>
+              <option value="price-asc">Price: Low to High</option>
+              <option value="price-desc">Price: High to Low</option>
             </select>
-            <button className="btn-primary" onClick={handleOpenAddModal}>
-              <Plus size={20} />
-              Add Listing
+
+            <button className="lux-btn-primary" onClick={handleOpenAddModal}>
+              <Plus size={16} /> Add Listing
             </button>
           </div>
         )}
-        
+
+        {/* Dynamic Toolbar for Leads */}
         {activeTab === 'leads' && (
-          <div className="header-actions">
+          <div className="lux-filter-toolbar">
+            <div className="lux-search-box">
+              <input 
+                type="text" 
+                className="lux-search-input" 
+                placeholder="Search leads by name or phone..." 
+                value={searchTerm} 
+                onChange={(e) => setSearchTerm(e.target.value)} 
+              />
+              {searchTerm && (
+                <button className="lux-search-clear" onClick={() => setSearchTerm('')}>
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+
             <select 
-              className="form-select sort-select" 
+              className="lux-select" 
               value={leadTempFilter} 
               onChange={(e) => setLeadTempFilter(e.target.value)}
             >
               <option value="All">All Temperatures</option>
-              <option value="hot">Hot</option>
-              <option value="warm">Warm</option>
-              <option value="cold">Cold</option>
+              <option value="hot">🔥 Hot</option>
+              <option value="warm">☀️ Warm</option>
+              <option value="cold">❄️ Cold</option>
             </select>
+
             <select 
-              className="form-select sort-select" 
+              className="lux-select" 
               value={leadSortOrder} 
               onChange={(e) => setLeadSortOrder(e.target.value)}
             >
               <option value="newest">Sort: Newest</option>
               <option value="oldest">Sort: Oldest</option>
-              <option value="hot-first">Sort: Hot First</option>
+              <option value="hot-first">Priority: Hot First</option>
             </select>
-            <button className="btn-primary" onClick={handleOpenAddLeadModal}>
-              <Plus size={20} />
-              Add Lead
+
+            <button 
+              className="lux-btn-secondary"
+              onClick={syncChatwootLeads}
+              disabled={isSyncingLeads}
+              title="Import all leads directly from Chatwoot contacts"
+            >
+              {isSyncingLeads ? 'Syncing...' : '🔄 Sync Chatwoot Leads'}
+            </button>
+
+            <button className="lux-btn-primary" onClick={handleOpenAddLeadModal}>
+              <Plus size={16} /> Add Lead
             </button>
           </div>
         )}
-      </header>
+      </div>
 
-      {/* Show global search bar only on properties and leads tabs */}
-      {(activeTab === 'properties' || activeTab === 'leads') && (
-        <div className="search-bar-container">
-          <input 
-            type="text" 
-            className="form-input search-input" 
-            placeholder={`Search ${activeTab}...`} 
-            value={searchTerm} 
-            onChange={(e) => setSearchTerm(e.target.value)} 
-            style={{ width: '100%', paddingRight: '2.5rem' }}
-          />
-          {searchTerm && (
-            <button 
-              className="search-clear-btn"
-              onClick={() => setSearchTerm('')}
-              title="Clear search"
-            >
-              <X size={18} />
-            </button>
-          )}
-        </div>
-      )}
-
-      <main>
+      <main className="lux-main-content">
         {activeTab === 'properties' ? (
           sortedProperties.length === 0 ? (
-          <div className="empty-state">
-            <Home size={48} />
-            <h2>No Properties Found</h2>
-            <p>Click "Add Listing" to create your first property.</p>
+          <div className="lux-empty-card">
+            <div className="lux-empty-icon"><Home size={36} color="#d4af37" /></div>
+            <h3>No Properties Found</h3>
+            <p>Database has 0 property records matching your current filter.</p>
+            <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1.25rem', justifyContent: 'center' }}>
+              <button className="lux-btn-primary" onClick={handleOpenAddModal}>
+                <Plus size={16} /> Add First Listing
+              </button>
+              <button 
+                className="lux-btn-secondary" 
+                onClick={seedDefaultProperties} 
+                disabled={isSeedingProps}
+              >
+                {isSeedingProps ? 'Seeding...' : '🌱 Seed Sample Listings'}
+              </button>
+            </div>
           </div>
         ) : (
           <div className="properties-grid">
@@ -654,10 +704,22 @@ function App() {
         )) : activeTab === 'leads' ? (
           <div className="leads-grid">
             {leads.length === 0 ? (
-              <div className="empty-state">
-                <Users size={48} />
-                <h2>No Leads Found</h2>
-                <p>Waiting for customers to message the AI.</p>
+              <div className="lux-empty-card">
+                <div className="lux-empty-icon"><Users size={36} color="#d4af37" /></div>
+                <h3>No Customer Leads in Database</h3>
+                <p>Sync all existing contacts directly from Chatwoot or wait for incoming WhatsApp messages.</p>
+                <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1.25rem', justifyContent: 'center' }}>
+                  <button 
+                    className="lux-btn-primary" 
+                    onClick={syncChatwootLeads} 
+                    disabled={isSyncingLeads}
+                  >
+                    {isSyncingLeads ? 'Syncing...' : '🔄 Sync Leads from Chatwoot'}
+                  </button>
+                  <button className="lux-btn-secondary" onClick={handleOpenAddLeadModal}>
+                    <Plus size={16} /> Add Manual Lead
+                  </button>
+                </div>
               </div>
             ) : (
               <table className="leads-table">

@@ -48,6 +48,50 @@ def get_customers(db: Session = Depends(get_db)):
         })
     return result
 
+@router.post("/sync-chatwoot")
+def sync_chatwoot(db: Session = Depends(get_db)):
+    """
+    Sync all contacts from Chatwoot into the local Customer CRM table.
+    """
+    from app.services.chatwoot import get_all_contacts
+    synced_count = 0
+    
+    # Fetch first few pages of contacts
+    for page in range(1, 5):
+        contacts = get_all_contacts(page=page)
+        if not contacts:
+            break
+            
+        for contact in contacts:
+            phone = contact.get("phone_number") or contact.get("identifier")
+            if not phone:
+                continue
+                
+            existing = db.query(Customer).filter(Customer.id == phone).first()
+            if not existing:
+                new_cust = Customer(
+                    id=phone,
+                    contact_name=contact.get("name") or "WhatsApp Lead",
+                    email=contact.get("email"),
+                    country="Malaysia",
+                    last_interaction=datetime.datetime.utcnow(),
+                    metadata_json={
+                        "chatwoot_contact_id": contact.get("id"),
+                        "source": "chatwoot_sync"
+                    }
+                )
+                db.add(new_cust)
+                synced_count += 1
+            else:
+                if not existing.contact_name and contact.get("name"):
+                    existing.contact_name = contact.get("name")
+                if not existing.email and contact.get("email"):
+                    existing.email = contact.get("email")
+                    
+    db.commit()
+    return {"status": "success", "synced_count": synced_count, "total_leads": db.query(Customer).count()}
+
+
 @router.post("")
 def create_customer(customer_data: CustomerCreate, db: Session = Depends(get_db)):
     customer = db.query(Customer).filter(Customer.id == customer_data.phone_number).first()

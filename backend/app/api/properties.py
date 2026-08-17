@@ -48,9 +48,18 @@ class PropertyCreate(BaseModel):
 
 @router.get("")
 def read_properties(skip: int = 0, limit: int = 500, db: Session = Depends(get_db)):
-    # Assuming order_by(Property.created_at.desc()) if it existed, else omit order_by or order by another field
     properties = db.query(Property).offset(skip).limit(limit).all()
     return properties
+
+@router.post("/seed-defaults")
+def seed_default_properties(db: Session = Depends(get_db)):
+    """
+    Seeds initial BentongLand property listings if database is empty.
+    """
+    from scripts.seed_properties import seed_properties
+    seed_properties()
+    return {"status": "success", "count": db.query(Property).count()}
+
 
 import uuid
 
