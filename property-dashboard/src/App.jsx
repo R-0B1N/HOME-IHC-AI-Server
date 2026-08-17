@@ -75,6 +75,22 @@ function App() {
     }
   };
 
+  const [isSyncingWP, setIsSyncingWP] = useState(false);
+
+  const syncWordpressListings = async () => {
+    setIsSyncingWP(true);
+    try {
+      const response = await axios.post(`${API_BASE_URL}/properties/sync-wordpress`);
+      await fetchProperties();
+      alert(`WordPress Sync Completed: ${response.data.new_added || 0} new listings added, ${response.data.updated || 0} updated (Total: ${response.data.total_properties || 0})`);
+    } catch (error) {
+      console.error('Failed to sync WordPress properties:', error);
+      alert('Failed to sync properties from WordPress. Please check backend connection.');
+    } finally {
+      setIsSyncingWP(false);
+    }
+  };
+
   const seedDefaultProperties = async () => {
     setIsSeedingProps(true);
     try {
@@ -482,7 +498,7 @@ function App() {
         </div>
       </header>
 
-      {/* Tier 2: Sub-Nav Bar & Dynamic Controls */}
+      {/* Tier 2: Sub-Nav Bar (Tabs on Left, Action CTAs on Right) */}
       <div className="lux-subnav-bar">
         <div className="lux-tabs-container">
           <button 
@@ -515,129 +531,147 @@ function App() {
           )}
         </div>
 
-        {/* Dynamic Toolbar for Properties */}
-        {activeTab === 'properties' && (
-          <div className="lux-filter-toolbar">
-            <div className="lux-search-box">
-              <input 
-                type="text" 
-                className="lux-search-input" 
-                placeholder="Search properties..." 
-                value={searchTerm} 
-                onChange={(e) => setSearchTerm(e.target.value)} 
-              />
-              {searchTerm && (
-                <button className="lux-search-clear" onClick={() => setSearchTerm('')}>
-                  <X size={14} />
-                </button>
-              )}
+        {/* Global Action CTAs for Active Tab */}
+        <div className="lux-tab-actions">
+          {activeTab === 'properties' && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+              <button 
+                className="lux-btn-secondary"
+                onClick={syncWordpressListings}
+                disabled={isSyncingWP}
+                title="Sync all properties from bentongland.com.my WordPress"
+              >
+                {isSyncingWP ? 'Syncing WP...' : '🔄 Sync WordPress'}
+              </button>
+              <button className="lux-btn-primary" onClick={handleOpenAddModal}>
+                <Plus size={16} /> Add Listing
+              </button>
             </div>
+          )}
 
-            <select 
-              className="lux-select" 
-              value={propStatusFilter} 
-              onChange={(e) => setPropStatusFilter(e.target.value)}
-            >
-              <option value="All">All Statuses</option>
-              <option value="Available">Available</option>
-              <option value="For Sale">For Sale</option>
-              <option value="For Rent">For Rent</option>
-              <option value="Pending">Pending</option>
-              <option value="Sold">Sold</option>
-            </select>
-
-            <select 
-              className="lux-select" 
-              value={typeFilter} 
-              onChange={(e) => setTypeFilter(e.target.value)}
-            >
-              <option value="All">All Types</option>
-              {uniqueTypes.filter(t => t !== 'All').map(t => (
-                <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</option>
-              ))}
-            </select>
-
-            <select 
-              className="lux-select" 
-              value={cityFilter} 
-              onChange={(e) => setCityFilter(e.target.value)}
-            >
-              <option value="All">All Cities</option>
-              {uniqueCities.filter(c => c !== 'All').map(c => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-            </select>
-
-            <select 
-              className="lux-select" 
-              value={sortOrder} 
-              onChange={(e) => setSortOrder(e.target.value)}
-            >
-              <option value="newest">Sort: Newest</option>
-              <option value="price-asc">Price: Low to High</option>
-              <option value="price-desc">Price: High to Low</option>
-            </select>
-
-            <button className="lux-btn-primary" onClick={handleOpenAddModal}>
-              <Plus size={16} /> Add Listing
-            </button>
-          </div>
-        )}
-
-        {/* Dynamic Toolbar for Leads */}
-        {activeTab === 'leads' && (
-          <div className="lux-filter-toolbar">
-            <div className="lux-search-box">
-              <input 
-                type="text" 
-                className="lux-search-input" 
-                placeholder="Search leads by name or phone..." 
-                value={searchTerm} 
-                onChange={(e) => setSearchTerm(e.target.value)} 
-              />
-              {searchTerm && (
-                <button className="lux-search-clear" onClick={() => setSearchTerm('')}>
-                  <X size={14} />
-                </button>
-              )}
+          {activeTab === 'leads' && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+              <button 
+                className="lux-btn-secondary"
+                onClick={syncChatwootLeads}
+                disabled={isSyncingLeads}
+                title="Import all leads directly from Chatwoot contacts"
+              >
+                {isSyncingLeads ? 'Syncing...' : '🔄 Sync Chatwoot Leads'}
+              </button>
+              <button className="lux-btn-primary" onClick={handleOpenAddLeadModal}>
+                <Plus size={16} /> Add Lead
+              </button>
             </div>
-
-            <select 
-              className="lux-select" 
-              value={leadTempFilter} 
-              onChange={(e) => setLeadTempFilter(e.target.value)}
-            >
-              <option value="All">All Temperatures</option>
-              <option value="hot">🔥 Hot</option>
-              <option value="warm">☀️ Warm</option>
-              <option value="cold">❄️ Cold</option>
-            </select>
-
-            <select 
-              className="lux-select" 
-              value={leadSortOrder} 
-              onChange={(e) => setLeadSortOrder(e.target.value)}
-            >
-              <option value="newest">Sort: Newest</option>
-              <option value="oldest">Sort: Oldest</option>
-              <option value="hot-first">Priority: Hot First</option>
-            </select>
-
-            <button 
-              className="lux-btn-secondary"
-              onClick={syncChatwootLeads}
-              disabled={isSyncingLeads}
-              title="Import all leads directly from Chatwoot contacts"
-            >
-              {isSyncingLeads ? 'Syncing...' : '🔄 Sync Chatwoot Leads'}
-            </button>
-
-            <button className="lux-btn-primary" onClick={handleOpenAddLeadModal}>
-              <Plus size={16} /> Add Lead
-            </button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
+
+      {/* Tier 3: Contextual Filter Toolbar for Properties */}
+      {activeTab === 'properties' && (
+        <div className="lux-filter-bar">
+          <div className="lux-search-box" style={{ flex: 1, minWidth: '220px' }}>
+            <input 
+              type="text" 
+              className="lux-search-input" 
+              placeholder="Search properties by title, location, category..." 
+              value={searchTerm} 
+              onChange={(e) => setSearchTerm(e.target.value)} 
+            />
+            {searchTerm && (
+              <button className="lux-search-clear" onClick={() => setSearchTerm('')}>
+                <X size={14} />
+              </button>
+            )}
+          </div>
+
+          <select 
+            className="lux-select" 
+            value={propStatusFilter} 
+            onChange={(e) => setPropStatusFilter(e.target.value)}
+          >
+            <option value="All">All Statuses</option>
+            <option value="Available">Available</option>
+            <option value="For Sale">For Sale</option>
+            <option value="For Rent">For Rent</option>
+            <option value="Pending">Pending</option>
+            <option value="Sold">Sold</option>
+          </select>
+
+          <select 
+            className="lux-select" 
+            value={typeFilter} 
+            onChange={(e) => setTypeFilter(e.target.value)}
+          >
+            <option value="All">All Types</option>
+            {uniqueTypes.filter(t => t !== 'All').map(t => (
+              <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</option>
+            ))}
+          </select>
+
+          <select 
+            className="lux-select" 
+            value={cityFilter} 
+            onChange={(e) => setCityFilter(e.target.value)}
+          >
+            <option value="All">All Cities</option>
+            {uniqueCities.filter(c => c !== 'All').map(c => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+          </select>
+
+          <select 
+            className="lux-select" 
+            value={sortOrder} 
+            onChange={(e) => setSortOrder(e.target.value)}
+          >
+            <option value="newest">Sort: Newest</option>
+            <option value="price-asc">Price: Low to High</option>
+            <option value="price-desc">Price: High to Low</option>
+          </select>
+        </div>
+      )}
+
+      {/* Tier 3: Contextual Filter Toolbar for Leads */}
+      {activeTab === 'leads' && (
+        <div className="lux-filter-bar">
+          <div className="lux-search-box" style={{ flex: 1, minWidth: '220px' }}>
+            <input 
+              type="text" 
+              className="lux-search-input" 
+              placeholder="Search leads by name or phone..." 
+              value={searchTerm} 
+              onChange={(e) => setSearchTerm(e.target.value)} 
+            />
+            {searchTerm && (
+              <button className="lux-search-clear" onClick={() => setSearchTerm('')}>
+                <X size={14} />
+              </button>
+            )}
+          </div>
+
+          <select 
+            className="lux-select" 
+            value={leadTempFilter} 
+            onChange={(e) => setLeadTempFilter(e.target.value)}
+          >
+            <option value="All">All Temperatures</option>
+            <option value="hot">🔥 Hot</option>
+            <option value="warm">☀️ Warm</option>
+            <option value="cold">❄️ Cold</option>
+          </select>
+
+          <select 
+            className="lux-select" 
+            value={leadSortOrder} 
+            onChange={(e) => setLeadSortOrder(e.target.value)}
+          >
+            <option value="newest">Sort: Newest</option>
+            <option value="oldest">Sort: Oldest</option>
+            <option value="hot-first">Priority: Hot First</option>
+          </select>
+        </div>
+      )}
 
       <main className="lux-main-content">
         {activeTab === 'properties' ? (
@@ -652,10 +686,10 @@ function App() {
               </button>
               <button 
                 className="lux-btn-secondary" 
-                onClick={seedDefaultProperties} 
-                disabled={isSeedingProps}
+                onClick={syncWordpressListings} 
+                disabled={isSyncingWP}
               >
-                {isSeedingProps ? 'Seeding...' : '🌱 Seed Sample Listings'}
+                {isSyncingWP ? 'Syncing...' : '🔄 Sync All from WordPress'}
               </button>
             </div>
           </div>
@@ -663,45 +697,56 @@ function App() {
           <div className="properties-grid">
             {sortedProperties.map((prop) => (
               <div key={prop.id} className="property-card" onClick={() => handleViewMap(prop)}>
-                <div className="status-badge">{prop.listing_status}</div>
-                <div className="property-price">{formatPrice(prop.asking_price_myr)}</div>
-                <div className="property-title">{prop.title}</div>
+                {prop.image_urls && prop.image_urls.length > 0 ? (
+                  <div className="property-image-wrap">
+                    <img src={prop.image_urls[0]} alt={prop.title} className="property-img" loading="lazy" />
+                    <div className="status-badge">{prop.listing_status}</div>
+                  </div>
+                ) : (
+                  <div className="status-badge" style={{ position: 'absolute', top: '1rem', right: '1rem' }}>{prop.listing_status}</div>
+                )}
                 
-                <div className="property-details">
-                  <div className="detail-item">
-                    <MapPin size={16} />
-                    {prop.street_address || prop.city || 'N/A'}
-                  </div>
-                  <div className="detail-item">
-                    <Tag size={16} />
-                    <span style={{ textTransform: 'capitalize' }}>{(prop.property_category || []).join(', ') || 'General'}</span>
-                  </div>
-                  <div className="detail-item">
-                    <Home size={16} />
-                    <span style={{ textTransform: 'capitalize' }}>{prop.tenure_type || 'N/A'}</span>
-                  </div>
-                  {prop.land_area_acres > 0 && (
+                <div className="property-card-content">
+                  <div className="property-price">{formatPrice(prop.asking_price_myr)}</div>
+                  <div className="property-title">{prop.title}</div>
+                  
+                  <div className="property-details">
                     <div className="detail-item">
-                      <strong>Acres:</strong> {prop.land_area_acres} ac
+                      <MapPin size={16} />
+                      {prop.street_address || prop.city || 'N/A'}
                     </div>
-                  )}
-                </div>
+                    <div className="detail-item">
+                      <Tag size={16} />
+                      <span style={{ textTransform: 'capitalize' }}>{(prop.property_category || []).join(', ') || 'General'}</span>
+                    </div>
+                    <div className="detail-item">
+                      <Home size={16} />
+                      <span style={{ textTransform: 'capitalize' }}>{prop.tenure_type || 'N/A'}</span>
+                    </div>
+                    {prop.land_area_acres > 0 && (
+                      <div className="detail-item">
+                        <strong>Acres:</strong> {prop.land_area_acres} ac
+                      </div>
+                    )}
+                  </div>
 
-                <div className="card-actions">
-                  <button className="btn-icon view-map" onClick={(e) => { e.stopPropagation(); handleViewMap(prop); }} title="View Map & Details">
-                    <Map size={16} /> Map
-                  </button>
-                  <button className="btn-icon edit" onClick={(e) => handleOpenEditModal(prop, e)} title="Edit">
-                    <Edit size={16} /> Edit
-                  </button>
-                  <button className="btn-icon delete" onClick={(e) => handleDelete(prop.id, e)} title="Delete">
-                    <Trash2 size={16} /> Delete
-                  </button>
+                  <div className="card-actions">
+                    <button className="btn-icon view-map" onClick={(e) => { e.stopPropagation(); handleViewMap(prop); }} title="View Map & Details">
+                      <Map size={16} /> Map
+                    </button>
+                    <button className="btn-icon edit" onClick={(e) => handleOpenEditModal(prop, e)} title="Edit">
+                      <Edit size={16} /> Edit
+                    </button>
+                    <button className="btn-icon delete" onClick={(e) => handleDelete(prop.id, e)} title="Delete">
+                      <Trash2 size={16} /> Delete
+                    </button>
+                  </div>
                 </div>
               </div>
             ))}
           </div>
         )) : activeTab === 'leads' ? (
+
           <div className="leads-grid">
             {leads.length === 0 ? (
               <div className="lux-empty-card">

@@ -60,6 +60,16 @@ def seed_default_properties(db: Session = Depends(get_db)):
     seed_properties()
     return {"status": "success", "count": db.query(Property).count()}
 
+@router.post("/sync-wordpress")
+def sync_wordpress_all(db: Session = Depends(get_db)):
+    """
+    Scrapes and syncs all live property listings from bentongland.com.my WordPress REST API.
+    """
+    from scripts.scrape_and_ingest_all_properties import fetch_and_ingest_all
+    result = fetch_and_ingest_all()
+    return result
+
+
 
 import uuid
 

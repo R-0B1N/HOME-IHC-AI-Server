@@ -174,21 +174,21 @@ function UsersManagement() {
 
   return (
     <div className="users-management-container">
-      {/* Header Banner & Stats */}
-      <div className="users-header-row">
+      {/* Header */}
+      <div className="users-header">
         <div>
-          <h2 className="users-page-title">
-            <ShieldCheck size={28} className="users-title-icon" /> Role-Based Access Control (RBAC)
+          <h2 className="users-page-title" style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', margin: '0 0 0.35rem 0' }}>
+            <ShieldCheck size={26} color="#d4af37" /> Role-Based Access Control (RBAC)
           </h2>
-          <p className="users-page-desc">
+          <p className="users-page-desc" style={{ color: '#64748b', fontSize: '0.88rem', margin: 0 }}>
             Manage user accounts, roles, and administrative access to the Real Estate Database.
           </p>
         </div>
         <button
-          className="btn-primary-add"
+          className="lux-btn-primary"
           onClick={() => setIsAddModalOpen(true)}
         >
-          <UserPlus size={18} /> Add New User
+          <UserPlus size={16} /> Add New User
         </button>
       </div>
 
@@ -200,15 +200,15 @@ function UsersManagement() {
         </div>
         <div className="rbac-stat-card admin-stat">
           <div className="rbac-stat-label">Administrators</div>
-          <div className="rbac-stat-value">{adminCount}</div>
+          <div className="rbac-stat-value" style={{ color: '#3b82f6' }}>{adminCount}</div>
         </div>
         <div className="rbac-stat-card agent-stat">
           <div className="rbac-stat-label">Property Agents</div>
-          <div className="rbac-stat-value">{agentCount}</div>
+          <div className="rbac-stat-value" style={{ color: '#10b981' }}>{agentCount}</div>
         </div>
         <div className="rbac-stat-card viewer-stat">
           <div className="rbac-stat-label">Viewers</div>
-          <div className="rbac-stat-value">{viewerCount}</div>
+          <div className="rbac-stat-value" style={{ color: '#8b5cf6' }}>{viewerCount}</div>
         </div>
       </div>
 
@@ -225,23 +225,28 @@ function UsersManagement() {
       )}
 
       {/* Controls: Search & Filter */}
-      <div className="users-controls-bar">
-        <div className="search-box">
-          <Search size={18} className="search-icon" />
+      <div className="lux-filter-bar" style={{ marginBottom: '1.5rem' }}>
+        <div className="lux-search-box" style={{ flex: 1, maxWidth: '400px' }}>
           <input
             type="text"
+            className="lux-search-input"
             placeholder="Search by name, username, or email..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
           />
+          {searchTerm && (
+            <button className="lux-search-clear" onClick={() => setSearchTerm('')}>
+              <X size={14} />
+            </button>
+          )}
         </div>
 
-        <div className="role-filter-group">
-          <label>Role Filter:</label>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', marginLeft: 'auto' }}>
+          <label style={{ fontSize: '0.85rem', fontWeight: 600, color: '#64748b' }}>Role Filter:</label>
           <select
             value={roleFilter}
             onChange={(e) => setRoleFilter(e.target.value)}
-            className="filter-select"
+            className="lux-select"
           >
             <option value="All">All Roles</option>
             <option value="admin">Admin Only</option>
@@ -250,11 +255,12 @@ function UsersManagement() {
           </select>
 
           <button
-            className="btn-icon refresh"
+            className="lux-btn-secondary"
             onClick={fetchUsers}
             title="Refresh Users"
+            style={{ padding: '0.55rem' }}
           >
-            <RefreshCw size={16} />
+            <RefreshCw size={15} />
           </button>
         </div>
       </div>
