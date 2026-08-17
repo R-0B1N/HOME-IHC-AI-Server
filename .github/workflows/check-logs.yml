@@ -20,16 +20,18 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SSH_PASSWORD }}
           script: |
-            echo "=== CRM POSTGRES: whatsapp_ai DB TABLES ==="
-            docker exec crm-postgres psql -U crm_admin -d whatsapp_ai -c "\dt" || true
-            docker exec crm-postgres psql -U crm_admin -d whatsapp_ai -c "SELECT count(*) AS properties_count FROM properties;" || true
-            docker exec crm-postgres psql -U crm_admin -d whatsapp_ai -c "SELECT count(*) AS customers_count FROM customers;" || true
-            docker exec crm-postgres psql -U crm_admin -d whatsapp_ai -c "SELECT count(*) AS transactions_count FROM transactions;" || true
-            docker exec crm-postgres psql -U crm_admin -d whatsapp_ai -c "SELECT id, title, asking_price_myr, listing_status FROM properties LIMIT 5;" || true
-            docker exec crm-postgres psql -U crm_admin -d whatsapp_ai -c "SELECT id, name, phone_number, created_at FROM customers LIMIT 5;" || true
-            echo "=== CRM POSTGRES: n8n_crm DB TABLES ==="
-            docker exec crm-postgres psql -U crm_admin -d n8n_crm -c "SELECT count(*) FROM properties;" || true
-            docker exec crm-postgres psql -U crm_admin -d n8n_crm -c "SELECT count(*) FROM customers;" || true
+            echo "=== STAGING DB: CUSTOMERS & LEADS ==="
+            docker exec whatsapp_ai_db_staging psql -U n8n -d whatsapp_ai -c "\d customers" || true
+            docker exec whatsapp_ai_db_staging psql -U n8n -d whatsapp_ai -c "SELECT * FROM customers LIMIT 10;" || true
+            docker exec whatsapp_ai_db_staging psql -U n8n -d whatsapp_ai -c "SELECT * FROM properties LIMIT 10;" || true
+            docker exec whatsapp_ai_db_staging psql -U n8n -d whatsapp_ai -c "SELECT * FROM interaction_logs LIMIT 5;" || true
+            echo "=== CHATWOOT DB CONTACTS & CONVERSATIONS ==="
+            docker exec crm-postgres psql -U crm_admin -d chatwoot -c "SELECT count(*) AS contacts_count FROM contacts;" || true
+            docker exec crm-postgres psql -U crm_admin -d chatwoot -c "SELECT count(*) AS conversations_count FROM conversations;" || true
+            docker exec crm-postgres psql -U crm_admin -d chatwoot -c "SELECT id, name, phone_number, email FROM contacts LIMIT 10;" || true
+            echo "=== SEARCH FOR SQL DUMPS OR BACKUPS ON HOST ==="
+            find /home -name "*.sql" -o -name "*.dump" 2>/dev/null || true
+
 
 
 
