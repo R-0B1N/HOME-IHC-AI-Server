@@ -20,15 +20,15 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SSH_PASSWORD }}
           script: |
-            echo "=== CRM POSTGRES TABLES & COUNTS ==="
-            docker exec crm-postgres psql -U crm_admin -d n8n_crm -c "\dt"
-            docker exec crm-postgres psql -U crm_admin -d n8n_crm -c "SELECT count(*) AS properties_count FROM properties;" || true
-            docker exec crm-postgres psql -U crm_admin -d n8n_crm -c "SELECT count(*) AS customers_count FROM customers;" || true
-            docker exec crm-postgres psql -U crm_admin -d n8n_crm -c "SELECT count(*) AS crm_users_count FROM crm_users;" || true
-            echo "=== STAGING DB TABLES & COUNTS ==="
-            docker exec whatsapp_ai_db_staging psql -U n8n -d whatsapp_ai -c "\dt" || true
-            docker exec whatsapp_ai_db_staging psql -U n8n -d whatsapp_ai -c "SELECT count(*) AS properties_count FROM properties;" || true
-            docker exec whatsapp_ai_db_staging psql -U n8n -d whatsapp_ai -c "SELECT count(*) AS customers_count FROM customers;" || true
-            echo "=== API PRODUCTION LOGS ==="
-            docker logs whatsapp_ai_api_production --tail 40
+            echo "=== DATABASES ON CRM POSTGRES ==="
+            docker exec crm-postgres psql -U crm_admin -d n8n_crm -c "\l"
+            echo "=== DATABASES ON STAGING POSTGRES ==="
+            docker exec whatsapp_ai_db_staging psql -U n8n -d whatsapp_ai -c "\l" || true
+            echo "=== STAGING CUSTOMERS SAMPLE ==="
+            docker exec whatsapp_ai_db_staging psql -U n8n -d whatsapp_ai -c "SELECT id, name, phone_number, created_at FROM customers LIMIT 10;" || true
+            echo "=== CHECKING FOR ANY PROPERTIES IN OTHER STAGING TABLES ==="
+            docker exec whatsapp_ai_db_staging psql -U n8n -d whatsapp_ai -c "SELECT table_name FROM information_schema.tables WHERE table_schema='public';" || true
+            echo "=== DOCKER CONTAINERS LIST ==="
+            docker ps -a
+
 
