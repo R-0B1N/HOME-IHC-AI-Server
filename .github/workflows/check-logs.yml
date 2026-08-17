@@ -20,17 +20,13 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SSH_PASSWORD }}
           script: |
-            echo "=== STAGING DB: CUSTOMERS & LEADS ==="
-            docker exec whatsapp_ai_db_staging psql -U n8n -d whatsapp_ai -c "\d customers" || true
-            docker exec whatsapp_ai_db_staging psql -U n8n -d whatsapp_ai -c "SELECT * FROM customers LIMIT 10;" || true
-            docker exec whatsapp_ai_db_staging psql -U n8n -d whatsapp_ai -c "SELECT * FROM properties LIMIT 10;" || true
-            docker exec whatsapp_ai_db_staging psql -U n8n -d whatsapp_ai -c "SELECT * FROM interaction_logs LIMIT 5;" || true
-            echo "=== CHATWOOT DB CONTACTS & CONVERSATIONS ==="
-            docker exec crm-postgres psql -U crm_admin -d chatwoot -c "SELECT count(*) AS contacts_count FROM contacts;" || true
-            docker exec crm-postgres psql -U crm_admin -d chatwoot -c "SELECT count(*) AS conversations_count FROM conversations;" || true
-            docker exec crm-postgres psql -U crm_admin -d chatwoot -c "SELECT id, name, phone_number, email FROM contacts LIMIT 10;" || true
-            echo "=== SEARCH FOR SQL DUMPS OR BACKUPS ON HOST ==="
-            find /home -name "*.sql" -o -name "*.dump" 2>/dev/null || true
+            echo "=== PRE-MIGRATION BACKUP INSPECTION ==="
+            head -n 50 /home/*/opt/Whatsapp_AI/backend/scripts/db_backup_pre_migration.sql 2>/dev/null || true
+            grep -E "INSERT INTO public.properties|INSERT INTO properties|INSERT INTO public.customers|INSERT INTO customers" /home/*/opt/Whatsapp_AI/backend/scripts/db_backup_pre_migration.sql 2>/dev/null | head -n 10 || true
+            grep -c "INSERT INTO" /home/*/opt/Whatsapp_AI/backend/scripts/db_backup_pre_migration.sql 2>/dev/null || true
+            echo "=== CHECKING FOR ANY OTHER SQL FILES ON SERVER ==="
+            find / -name "*property*.sql" -o -name "*backup*.sql" -o -name "*n8n*.sql" 2>/dev/null | grep -v "/proc" | head -n 20 || true
+
 
 
 
