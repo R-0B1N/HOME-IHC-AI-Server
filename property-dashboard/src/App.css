@@ -836,243 +836,472 @@ main {
 }
 
 /* ==========================================================================
-   AUTHENTICATION & RBAC STYLING
+   ARCHITECTURAL LUXURY MINIMAL AUTHENTICATION (BentongLand CRM)
    ========================================================================== */
 
-.auth-container {
+.lux-auth-viewport {
   min-height: 100vh;
+  width: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%);
-  padding: 1.5rem;
+  background: #080c14;
+  position: relative;
+  overflow: hidden;
+  padding: 2rem 1.5rem;
+  box-sizing: border-box;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
 }
 
-.auth-card {
+/* Atmospheric ambient lighting */
+.lux-ambient-glow {
+  position: absolute;
+  width: 600px;
+  height: 600px;
+  border-radius: 50%;
+  filter: blur(140px);
+  opacity: 0.15;
+  pointer-events: none;
+}
+
+.lux-ambient-glow.gold {
+  top: -150px;
+  right: -100px;
+  background: radial-gradient(circle, #d4af37 0%, rgba(212, 175, 55, 0) 70%);
+}
+
+.lux-ambient-glow.sapphire {
+  bottom: -150px;
+  left: -100px;
+  background: radial-gradient(circle, #2563eb 0%, rgba(37, 99, 235, 0) 70%);
+}
+
+.lux-auth-shell {
   width: 100%;
   max-width: 440px;
-  background: #ffffff;
-  border-radius: 16px;
-  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.25), 0 0 1px rgba(0, 0, 0, 0.1);
-  padding: 2.5rem 2rem;
-  box-sizing: border-box;
+  position: relative;
+  z-index: 10;
 }
 
-.auth-header {
+.lux-auth-shell.register-shell {
+  max-width: 520px;
+}
+
+.lux-card {
+  background: rgba(15, 23, 42, 0.75);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(212, 175, 55, 0.18);
+  border-radius: 20px;
+  padding: 2.75rem 2.25rem;
+  box-shadow: 
+    0 25px 50px -12px rgba(0, 0, 0, 0.7),
+    0 0 0 1px rgba(255, 255, 255, 0.05),
+    inset 0 1px 1px rgba(255, 255, 255, 0.1);
+  box-sizing: border-box;
+  animation: luxFadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes luxFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Header & Emblem */
+.lux-header {
   text-align: center;
   margin-bottom: 2rem;
 }
 
-.auth-logo-badge {
-  width: 64px;
-  height: 64px;
-  margin: 0 auto 1rem;
-  background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%);
-  color: #ffffff;
+.lux-emblem-wrap {
+  position: relative;
+  width: 60px;
+  height: 60px;
+  margin: 0 auto 1.25rem;
+}
+
+.lux-emblem {
+  width: 100%;
+  height: 100%;
   border-radius: 16px;
+  background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+  border: 1px solid rgba(212, 175, 55, 0.35);
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 8px 16px rgba(59, 130, 246, 0.3);
+  color: #d4af37;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
 }
 
-.auth-title {
-  font-size: 1.5rem;
+.lux-emblem-ring {
+  position: absolute;
+  inset: -4px;
+  border-radius: 20px;
+  border: 1px dashed rgba(212, 175, 55, 0.2);
+  pointer-events: none;
+}
+
+.lux-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.675rem;
   font-weight: 800;
-  color: #0f172a;
-  margin: 0 0 0.35rem 0;
-  letter-spacing: -0.025em;
+  letter-spacing: 0.14em;
+  color: #d4af37;
+  text-transform: uppercase;
+  margin-bottom: 0.5rem;
 }
 
-.auth-subtitle {
-  font-size: 0.875rem;
-  color: #64748b;
+.lux-sparkle {
+  color: #d4af37;
+}
+
+.lux-title {
+  font-size: 1.65rem;
+  font-weight: 800;
+  color: #f8fafc;
+  margin: 0 0 0.4rem 0;
+  letter-spacing: -0.03em;
+}
+
+.lux-desc {
+  font-size: 0.85rem;
+  color: #94a3b8;
   margin: 0;
 }
 
-.auth-form {
+/* Alerts */
+.lux-alert-error {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  border-radius: 10px;
+  padding: 0.75rem 1rem;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: #fca5a5;
+  margin-bottom: 1.5rem;
+  text-align: left;
+}
+
+.lux-alert-indicator {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ef4444;
+  flex-shrink: 0;
+}
+
+/* Forms & Fields */
+.lux-form {
   display: flex;
   flex-direction: column;
   gap: 1.25rem;
 }
 
-.auth-form-group {
+.lux-fields-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+@media (max-width: 480px) {
+  .lux-fields-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.lux-field-group {
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
   text-align: left;
 }
 
-.auth-label {
-  font-size: 0.825rem;
-  font-weight: 600;
-  color: #334155;
+.lux-label {
+  font-size: 0.775rem;
+  font-weight: 700;
+  color: #cbd5e1;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
 }
 
-.auth-input-wrapper {
+.lux-input-box {
   position: relative;
   display: flex;
   align-items: center;
 }
 
-.auth-input-icon {
+.lux-field-icon {
   position: absolute;
-  left: 0.85rem;
-  color: #94a3b8;
+  left: 0.9rem;
+  color: #64748b;
   pointer-events: none;
+  transition: color 0.2s ease;
 }
 
-.auth-input {
+.lux-input {
   width: 100%;
-  padding: 0.75rem 1rem 0.75rem 2.5rem;
-  border: 1.5px solid #e2e8f0;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(148, 163, 184, 0.18);
   border-radius: 10px;
-  font-size: 0.95rem;
-  color: #0f172a;
-  background: #f8fafc;
+  padding: 0.8rem 1rem 0.8rem 2.6rem;
+  color: #f8fafc;
+  font-size: 0.925rem;
   transition: all 0.2s ease;
   box-sizing: border-box;
 }
 
-.auth-input:focus {
+.lux-input::placeholder {
+  color: #475569;
+}
+
+.lux-input:focus {
   outline: none;
-  border-color: #3b82f6;
-  background: #ffffff;
-  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.12);
+  border-color: rgba(212, 175, 55, 0.6);
+  background: rgba(15, 23, 42, 0.9);
+  box-shadow: 0 0 0 3px rgba(212, 175, 55, 0.12);
 }
 
-.auth-select {
-  width: 100%;
-  padding: 0.75rem 1rem 0.75rem 2.5rem;
-  border: 1.5px solid #e2e8f0;
-  border-radius: 10px;
-  font-size: 0.9rem;
-  color: #0f172a;
-  background: #f8fafc;
-  cursor: pointer;
-  box-sizing: border-box;
+.lux-input:focus + .lux-field-icon,
+.lux-input-box:focus-within .lux-field-icon {
+  color: #d4af37;
 }
 
-.auth-password-toggle {
+.lux-eye-btn {
   position: absolute;
   right: 0.75rem;
   background: none;
   border: none;
-  color: #94a3b8;
+  color: #64748b;
   cursor: pointer;
   padding: 0.25rem;
   display: flex;
   align-items: center;
+  transition: color 0.2s ease;
 }
 
-.auth-password-toggle:hover {
-  color: #475569;
+.lux-eye-btn:hover {
+  color: #cbd5e1;
 }
 
-.auth-submit-btn {
+/* Role Selector Cards */
+.lux-role-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.65rem;
+}
+
+@media (max-width: 480px) {
+  .lux-role-cards-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.lux-role-option {
+  background: rgba(30, 41, 59, 0.4);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 10px;
+  padding: 0.75rem 0.65rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  text-align: left;
+}
+
+.lux-role-option:hover {
+  background: rgba(30, 41, 59, 0.8);
+  border-color: rgba(212, 175, 55, 0.3);
+}
+
+.lux-role-option.selected {
+  background: rgba(212, 175, 55, 0.08);
+  border-color: #d4af37;
+  box-shadow: 0 0 12px rgba(212, 175, 55, 0.15);
+}
+
+.lux-role-option-header {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: #cbd5e1;
+}
+
+.lux-role-option.selected .lux-role-option-header {
+  color: #d4af37;
+}
+
+.lux-role-option-title {
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.lux-role-option-sub {
+  font-size: 0.675rem;
+  color: #64748b;
+  line-height: 1.2;
+}
+
+.lux-role-option.selected .lux-role-option-sub {
+  color: #94a3b8;
+}
+
+/* Primary Button */
+.lux-btn-primary {
   width: 100%;
-  padding: 0.85rem;
-  background: linear-gradient(135deg, #1e40af 0%, #2563eb 100%);
-  color: #ffffff;
+  padding: 0.9rem 1.25rem;
+  background: linear-gradient(135deg, #c29b38 0%, #d4af37 50%, #b58927 100%);
+  color: #0b0f19;
   border: none;
   border-radius: 10px;
-  font-size: 0.95rem;
-  font-weight: 700;
+  font-size: 0.925rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
-  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);
+  box-shadow: 0 4px 16px rgba(212, 175, 55, 0.25);
   transition: all 0.2s ease;
   margin-top: 0.5rem;
 }
 
-.auth-submit-btn:hover:not(:disabled) {
-  background: linear-gradient(135deg, #1d4ed8 0%, #1e40af 100%);
+.lux-btn-primary:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: 0 6px 16px rgba(37, 99, 235, 0.35);
+  box-shadow: 0 6px 20px rgba(212, 175, 55, 0.35);
+  filter: brightness(1.05);
 }
 
-.auth-submit-btn:disabled {
-  opacity: 0.7;
+.lux-btn-primary:disabled {
+  opacity: 0.6;
   cursor: not-allowed;
 }
 
-.auth-error-banner {
-  background: #fef2f2;
-  border: 1px solid #fecaca;
-  color: #b91c1c;
-  padding: 0.75rem 1rem;
-  border-radius: 8px;
-  font-size: 0.875rem;
-  font-weight: 500;
-  margin-bottom: 1.25rem;
-  text-align: left;
+.lux-btn-arrow {
+  transition: transform 0.2s ease;
 }
 
-.auth-footer {
-  text-align: center;
-  margin-top: 1.75rem;
-  padding-top: 1.25rem;
-  border-top: 1px solid #f1f5f9;
+.lux-btn-primary:hover .lux-btn-arrow {
+  transform: translateX(3px);
 }
 
-.auth-footer p {
-  color: #64748b;
-  font-size: 0.875rem;
-  margin: 0 0 0.5rem 0;
-}
-
-.auth-link-btn {
-  background: none;
-  border: none;
-  color: #2563eb;
-  font-weight: 600;
-  font-size: 0.875rem;
-  cursor: pointer;
+.lux-btn-loading {
   display: inline-flex;
   align-items: center;
+  gap: 0.5rem;
+}
+
+.lux-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(11, 15, 25, 0.3);
+  border-top-color: #0b0f19;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+/* Footer Links */
+.lux-footer {
+  text-align: center;
+  margin-top: 2rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid rgba(148, 163, 184, 0.1);
+  display: flex;
+  flex-direction: column;
   gap: 0.35rem;
 }
 
-.auth-link-btn:hover {
+.lux-footer-text {
+  font-size: 0.8rem;
+  color: #64748b;
+}
+
+.lux-btn-link {
+  background: none;
+  border: none;
+  color: #d4af37;
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  transition: color 0.2s ease;
+}
+
+.lux-btn-link:hover {
+  color: #f3d77b;
   text-decoration: underline;
 }
 
-.auth-helper-box {
-  margin-top: 1.5rem;
-  padding: 0.75rem 1rem;
-  background: #f8fafc;
-  border: 1px dashed #cbd5e1;
-  border-radius: 8px;
-  font-size: 0.8rem;
-  color: #475569;
-}
-
-.auth-helper-row {
+/* Security Watermark */
+.lux-security-watermark {
+  margin-top: 1.25rem;
   display: flex;
-  justify-content: space-around;
-  margin-top: 0.35rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  font-size: 0.725rem;
+  color: #475569;
+  font-weight: 500;
 }
 
-.auth-helper-row code {
-  background: #e2e8f0;
-  padding: 0.15rem 0.4rem;
-  border-radius: 4px;
-  font-weight: 700;
-  color: #0f172a;
-}
-
-.auth-success-card {
+/* Success Panel */
+.lux-success-panel {
   text-align: center;
   padding: 1rem 0;
 }
 
-.auth-success-icon {
+.lux-success-icon-wrap {
+  width: 60px;
+  height: 60px;
+  margin: 0 auto 1rem;
+  border-radius: 50%;
+  background: rgba(16, 185, 129, 0.12);
   color: #10b981;
-  margin-bottom: 0.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(16, 185, 129, 0.25);
 }
+
+.lux-success-title {
+  font-size: 1.4rem;
+  font-weight: 800;
+  color: #f8fafc;
+  margin: 0 0 0.5rem 0;
+}
+
+.lux-success-desc {
+  font-size: 0.875rem;
+  color: #94a3b8;
+  margin: 0 0 1.5rem 0;
+}
+
+.lux-role-pill {
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.lux-role-pill.admin { background: rgba(59, 130, 246, 0.2); color: #60a5fa; }
+.lux-role-pill.agent { background: rgba(16, 185, 129, 0.2); color: #34d399; }
+.lux-role-pill.viewer { background: rgba(245, 158, 11, 0.2); color: #fbbf24; }
+
 
 /* User Profile Capsule in Header */
 .header-controls-row {

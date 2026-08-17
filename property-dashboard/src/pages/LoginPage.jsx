@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { ShieldCheck, Lock, User, Eye, EyeOff, LogIn, UserPlus } from 'lucide-react';
+import { Shield, Lock, User, Eye, EyeOff, ArrowRight, Sparkles, Building2 } from 'lucide-react';
 
 function LoginPage({ onSwitchToRegister }) {
   const { login } = useAuth();
@@ -15,7 +15,7 @@ function LoginPage({ onSwitchToRegister }) {
     setError('');
 
     if (!usernameOrEmail.trim() || !password) {
-      setError('Please enter both username/email and password.');
+      setError('Please enter your account identifier and password.');
       return;
     }
 
@@ -29,95 +29,118 @@ function LoginPage({ onSwitchToRegister }) {
   };
 
   return (
-    <div className="auth-container">
-      <div className="auth-card">
-        <div className="auth-header">
-          <div className="auth-logo-badge">
-            <ShieldCheck size={36} className="auth-icon" />
+    <div className="lux-auth-viewport">
+      {/* Ambient background glows */}
+      <div className="lux-ambient-glow gold"></div>
+      <div className="lux-ambient-glow sapphire"></div>
+
+      <div className="lux-auth-shell">
+        <div className="lux-card">
+          {/* Header & Emblem */}
+          <div className="lux-header">
+            <div className="lux-emblem-wrap">
+              <div className="lux-emblem">
+                <Building2 size={26} className="lux-emblem-icon" />
+              </div>
+              <div className="lux-emblem-ring"></div>
+            </div>
+
+            <div className="lux-eyebrow">
+              <Sparkles size={13} className="lux-sparkle" />
+              <span>ESTATE INTELLIGENCE & CRM</span>
+            </div>
+
+            <h1 className="lux-title">BentongLand Portal</h1>
+            <p className="lux-desc">Role-Based Database & AI Orchestration System</p>
           </div>
-          <h1 className="auth-title">ERA Realtor CRM</h1>
-          <p className="auth-subtitle">Database & AI Orchestrator Portal</p>
+
+          {/* Error Notice */}
+          {error && (
+            <div className="lux-alert-error">
+              <div className="lux-alert-indicator"></div>
+              <span>{error}</span>
+            </div>
+          )}
+
+          {/* Form */}
+          <form onSubmit={handleSubmit} className="lux-form">
+            <div className="lux-field-group">
+              <label className="lux-label">Username or Email</label>
+              <div className="lux-input-box">
+                <User size={17} className="lux-field-icon" />
+                <input
+                  type="text"
+                  className="lux-input"
+                  placeholder="Enter your username or email"
+                  value={usernameOrEmail}
+                  onChange={(e) => setUsernameOrEmail(e.target.value)}
+                  autoComplete="username"
+                  required
+                />
+              </div>
+            </div>
+
+            <div className="lux-field-group">
+              <label className="lux-label">Password</label>
+              <div className="lux-input-box">
+                <Lock size={17} className="lux-field-icon" />
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  className="lux-input"
+                  placeholder="••••••••••••"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="current-password"
+                  required
+                />
+                <button
+                  type="button"
+                  className="lux-eye-btn"
+                  onClick={() => setShowPassword(!showPassword)}
+                  tabIndex={-1}
+                  aria-label={showPassword ? "Hide password" : "Show password"}
+                >
+                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              className="lux-btn-primary"
+              disabled={loading}
+            >
+              {loading ? (
+                <span className="lux-btn-loading">
+                  <span className="lux-spinner"></span>
+                  Authenticating...
+                </span>
+              ) : (
+                <>
+                  <span>Sign In to Console</span>
+                  <ArrowRight size={16} className="lux-btn-arrow" />
+                </>
+              )}
+            </button>
+          </form>
+
+          {/* Footer Navigation */}
+          <div className="lux-footer">
+            <span className="lux-footer-text">Need an internal account?</span>
+            <button
+              type="button"
+              className="lux-btn-link"
+              onClick={onSwitchToRegister}
+            >
+              Request Access / Register
+            </button>
+          </div>
         </div>
 
-        {error && (
-          <div className="auth-error-banner">
-            <span>{error}</span>
-          </div>
-        )}
-
-        <form onSubmit={handleSubmit} className="auth-form">
-          <div className="auth-form-group">
-            <label className="auth-label">Username or Email</label>
-            <div className="auth-input-wrapper">
-              <User size={18} className="auth-input-icon" />
-              <input
-                type="text"
-                className="auth-input"
-                placeholder="e.g. admin or agent@bentongland.com.my"
-                value={usernameOrEmail}
-                onChange={(e) => setUsernameOrEmail(e.target.value)}
-                autoComplete="username"
-                required
-              />
-            </div>
-          </div>
-
-          <div className="auth-form-group">
-            <label className="auth-label">Password</label>
-            <div className="auth-input-wrapper">
-              <Lock size={18} className="auth-input-icon" />
-              <input
-                type={showPassword ? 'text' : 'password'}
-                className="auth-input"
-                placeholder="••••••••••••"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoComplete="current-password"
-                required
-              />
-              <button
-                type="button"
-                className="auth-password-toggle"
-                onClick={() => setShowPassword(!showPassword)}
-                tabIndex={-1}
-              >
-                {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
-              </button>
-            </div>
-          </div>
-
-          <button
-            type="submit"
-            className="auth-submit-btn"
-            disabled={loading}
-          >
-            {loading ? (
-              <span className="auth-spinner">Authenticating...</span>
-            ) : (
-              <>
-                <LogIn size={18} /> Sign In
-              </>
-            )}
-          </button>
-        </form>
-
-        <div className="auth-footer">
-          <p>Don't have an account?</p>
-          <button
-            type="button"
-            className="auth-link-btn"
-            onClick={onSwitchToRegister}
-          >
-            <UserPlus size={16} /> Create an Account
-          </button>
-        </div>
-
-        <div className="auth-helper-box">
-          <strong>Default Admin Credentials:</strong>
-          <div className="auth-helper-row">
-            <span>User: <code>admin</code></span>
-            <span>Pass: <code>Admin12345!</code></span>
-          </div>
+        {/* Security watermark */}
+        <div className="lux-security-watermark">
+          <Shield size={12} />
+          <span>Protected by AES-256 JWT RBAC Session Security</span>
         </div>
       </div>
     </div>

@@ -39,18 +39,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.middleware("http")
-async def cache_raw_body(request: Request, call_next):
-    # Cache raw body to allow HMAC validation without breaking Pydantic
-    body = await request.body()
-    request.state.raw_body = body
-    
-    # Mock the receive function since the stream was exhausted
-    async def receive():
-        return {"type": "http.request", "body": body}
-    request._receive = receive
-    
-    return await call_next(request)
 
 @app.on_event("startup")
 def on_startup():

@@ -389,10 +389,11 @@ function App() {
 
   if (authLoading) {
     return (
-      <div className="auth-container">
-        <div className="auth-card" style={{ textAlign: 'center', padding: '3rem' }}>
-          <div className="auth-spinner" style={{ margin: '0 auto 1rem' }}></div>
-          <p>Verifying authentication...</p>
+      <div className="lux-auth-viewport">
+        <div className="lux-card" style={{ textAlign: 'center', padding: '3rem', maxWidth: '380px' }}>
+          <div className="lux-spinner" style={{ margin: '0 auto 1.25rem', width: '28px', height: '28px', borderWidth: '3px', borderColor: 'rgba(212, 175, 55, 0.2)', borderTopColor: '#d4af37' }}></div>
+          <h2 style={{ color: '#f8fafc', fontSize: '1.1rem', margin: '0 0 0.25rem 0' }}>BentongLand CRM</h2>
+          <p style={{ color: '#94a3b8', fontSize: '0.85rem', margin: 0 }}>Verifying secure session...</p>
         </div>
       </div>
     );
