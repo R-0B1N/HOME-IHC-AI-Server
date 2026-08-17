@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { ChevronDown, ChevronRight, Bot, MessageSquareText, ArrowRight, Database } from 'lucide-react';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://n8n.bentongland.com.my/api/v1';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
 
 const PERSONA_COLORS = {
   ROUTER: { bg: '#e8f0fe', border: '#4285f4', text: '#1a73e8', icon: '🧭' },

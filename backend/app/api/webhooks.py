@@ -165,11 +165,10 @@ async def chatwoot_webhook(request: Request):
             if phone_number.startswith('+'):
                 phone_number = phone_number[1:]
                 
-            from app.db.database import SessionLocal
-            from app.db.models import Customer
+            from app.db.models import SessionLocal, Customer
             db = SessionLocal()
             try:
-                customer = db.query(Customer).filter(Customer.phone_number.like(f"%{phone_number}%")).first()
+                customer = db.query(Customer).filter((Customer.id == phone_number) | (Customer.id.like(f"%{phone_number}%"))).first()
                 if customer:
                     # Create a new dict to ensure SQLAlchemy detects the change
                     meta = dict(customer.metadata_json or {})

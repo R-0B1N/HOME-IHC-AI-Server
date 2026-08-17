@@ -1,12 +1,22 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
-import { Plus, Home, MapPin, Tag, Edit, Trash2, Map, Users, LayoutGrid, MessageCircle, X, GitBranch } from 'lucide-react';
+import { 
+  Plus, Home, MapPin, Tag, Edit, Trash2, Map, Users, 
+  LayoutGrid, MessageCircle, X, GitBranch, LogOut, ShieldCheck, Shield, User 
+} from 'lucide-react';
+import { useAuth } from './context/AuthContext';
 import WorkflowViewer from './pages/WorkflowViewer';
+import UsersManagement from './pages/UsersManagement';
+import LoginPage from './pages/LoginPage';
+import RegisterPage from './pages/RegisterPage';
 import './App.css';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://n8n.bentongland.com.my/api/v1';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
 
 function App() {
+  const { user, isAuthenticated, isAdmin, isAgent, isViewer, logout, loading: authLoading } = useAuth();
+  const [authMode, setAuthMode] = useState('login'); // 'login' or 'register'
+
   const [properties, setProperties] = useState([]);
   const [sortOrder, setSortOrder] = useState('newest'); // newest, price-asc, price-desc
   const [propStatusFilter, setPropStatusFilter] = useState('All');
@@ -377,19 +387,40 @@ function App() {
     return b.created_at ? new Date(b.created_at) - new Date(a.created_at) : 0;
   });
 
+  if (authLoading) {
+    return (
+      <div className="auth-container">
+        <div className="auth-card" style={{ textAlign: 'center', padding: '3rem' }}>
+          <div className="auth-spinner" style={{ margin: '0 auto 1rem' }}></div>
+          <p>Verifying authentication...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    if (authMode === 'register') {
+      return <RegisterPage onSwitchToLogin={() => setAuthMode('login')} />;
+    }
+    return <LoginPage onSwitchToRegister={() => setAuthMode('register')} />;
+  }
+
   return (
     <div className="dashboard-container">
       <header>
         <div className="logo-section">
-          <h1>Home IHC Dashboard</h1>
-          <p>RBAC Property & Lead Management Console</p>
-          <div style={{ marginTop: '0.5rem' }}>
+          <div className="logo-title-row">
+            <h1>ERA Realtor • BentongLand DB</h1>
+          </div>
+          <p>Real Estate CRM, AI State Engine & RBAC Database Access</p>
+          
+          <div className="header-controls-row">
             <button 
               className={`ai-status-btn ${masterAiEnabled ? 'active' : 'disabled'}`}
               onClick={toggleMasterAi}
               title={masterAiEnabled ? "Click to disable all AI replies" : "Click to enable all AI replies"}
               style={{
-                padding: '0.5rem 1rem',
+                padding: '0.4rem 0.8rem',
                 borderRadius: '8px',
                 fontSize: '0.85rem',
                 fontWeight: 'bold',
@@ -400,11 +431,31 @@ function App() {
                 borderColor: masterAiEnabled ? '#ceead6' : '#fad2cf',
                 display: 'flex',
                 alignItems: 'center',
-                gap: '0.5rem'
+                gap: '0.4rem'
               }}
             >
-              Master AI Toggle: {masterAiEnabled ? 'ON' : 'OFF'}
+              Master AI: {masterAiEnabled ? '🟢 ON' : '🔴 OFF'}
             </button>
+
+            {/* Authenticated User Capsule */}
+            <div className="user-profile-capsule">
+              <div className={`user-avatar-sm ${user?.role || 'agent'}`}>
+                {user?.full_name ? user.full_name.charAt(0).toUpperCase() : (user?.username || 'U').charAt(0).toUpperCase()}
+              </div>
+              <div className="user-info-text">
+                <span className="user-display-name">{user?.full_name || user?.username}</span>
+                <span className={`role-badge-sm ${user?.role || 'agent'}`}>
+                  {user?.role === 'admin' ? '🛡️ Admin' : user?.role === 'agent' ? '🤝 Agent' : '👁️ Viewer'}
+                </span>
+              </div>
+              <button 
+                className="btn-logout"
+                onClick={logout}
+                title="Sign Out"
+              >
+                <LogOut size={16} /> Logout
+              </button>
+            </div>
           </div>
         </div>
         
@@ -427,6 +478,14 @@ function App() {
           >
             <GitBranch size={18} /> Workflows
           </button>
+          {isAdmin && (
+            <button 
+              className={`tab-btn ${activeTab === 'users' ? 'active' : ''}`}
+              onClick={() => setActiveTab('users')}
+            >
+              <ShieldCheck size={18} /> User Accounts
+            </button>
+          )}
         </div>
 
         {activeTab === 'properties' && (
@@ -518,25 +577,28 @@ function App() {
         )}
       </header>
 
-      <div className="search-bar-container">
-        <input 
-          type="text" 
-          className="form-input search-input" 
-          placeholder={`Search ${activeTab}...`} 
-          value={searchTerm} 
-          onChange={(e) => setSearchTerm(e.target.value)} 
-          style={{ width: '100%', paddingRight: '2.5rem' }}
-        />
-        {searchTerm && (
-          <button 
-            className="search-clear-btn"
-            onClick={() => setSearchTerm('')}
-            title="Clear search"
-          >
-            <X size={18} />
-          </button>
-        )}
-      </div>
+      {/* Show global search bar only on properties and leads tabs */}
+      {(activeTab === 'properties' || activeTab === 'leads') && (
+        <div className="search-bar-container">
+          <input 
+            type="text" 
+            className="form-input search-input" 
+            placeholder={`Search ${activeTab}...`} 
+            value={searchTerm} 
+            onChange={(e) => setSearchTerm(e.target.value)} 
+            style={{ width: '100%', paddingRight: '2.5rem' }}
+          />
+          {searchTerm && (
+            <button 
+              className="search-clear-btn"
+              onClick={() => setSearchTerm('')}
+              title="Clear search"
+            >
+              <X size={18} />
+            </button>
+          )}
+        </div>
+      )}
 
       <main>
         {activeTab === 'properties' ? (
@@ -697,6 +759,8 @@ function App() {
           </div>
         ) : activeTab === 'workflows' ? (
           <WorkflowViewer />
+        ) : activeTab === 'users' ? (
+          <UsersManagement />
         ) : null}
       </main>
 

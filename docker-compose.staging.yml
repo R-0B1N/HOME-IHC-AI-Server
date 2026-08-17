@@ -41,8 +41,11 @@ services:
       - redis_staging
       - db_staging
     networks:
-      - staging_net
-      - crm_network
+      staging_net:
+        aliases:
+          - api
+      crm_network:
+
 
   worker_staging:
     build:

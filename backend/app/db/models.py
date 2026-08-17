@@ -1,19 +1,20 @@
-import urllib.parse
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, JSON, Float, ForeignKey, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import os
 import datetime
 import uuid
+from urllib.parse import quote_plus
 from sqlalchemy.dialects.postgresql import UUID, ARRAY
 # from pgvector.sqlalchemy import Vector
 
-DB_HOST = os.getenv("DB_HOST", "postgres")
-DB_USER = os.getenv("POSTGRES_USER", "n8n")
-DB_PASS = urllib.parse.quote_plus(os.getenv("POSTGRES_PASSWORD", "n8n"))
-DB_NAME = os.getenv("POSTGRES_DB", "whatsapp_ai")
+DB_HOST = os.getenv("DB_HOST", os.getenv("POSTGRES_HOST", "postgres"))
+DB_USER = os.getenv("POSTGRES_USER", os.getenv("DB_USER", "n8n"))
+DB_PASS = os.getenv("POSTGRES_PASSWORD", os.getenv("DB_PASSWORD", "n8n"))
+DB_NAME = os.getenv("POSTGRES_DB", os.getenv("DB_NAME", "whatsapp_ai"))
 
-DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASS}@{DB_HOST}:5432/{DB_NAME}"
+encoded_pass = quote_plus(DB_PASS) if DB_PASS else ""
+DATABASE_URL = f"postgresql://{DB_USER}:{encoded_pass}@{DB_HOST}:5432/{DB_NAME}"
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -224,3 +225,17 @@ class WorkflowTemplate(Base):
     next_step = Column(Integer, nullable=True) # ID of next step
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    username = Column(String, unique=True, index=True, nullable=False)
+    email = Column(String, unique=True, index=True, nullable=False)
+    hashed_password = Column(String, nullable=False)
+    full_name = Column(String, nullable=True)
+    role = Column(String, nullable=False, default="agent") # "admin", "agent", "viewer"
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+

@@ -35,15 +35,20 @@ services:
       - DB_HOST=crm-postgres
       - DB_USER=${POSTGRES_USER}
       - DB_PASSWORD=${POSTGRES_PASSWORD}
-      - DB_NAME=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
       - CHATWOOT_BASE_URL=http://crm-chatwoot-web:3000
       - CHATWOOT_API_TOKEN=E8wuqP3YDvyPXYwoQcTXLnTT
       - OLLAMA_BASE_URL=http://crm-vllm:8000
     depends_on:
       - redis_production
     networks:
-      - prod_net
-      - crm_network
+      prod_net:
+        aliases:
+          - api
+      crm_network:
+
 
   worker_production:
     build:
