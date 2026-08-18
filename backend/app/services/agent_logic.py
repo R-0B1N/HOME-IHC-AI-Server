@@ -109,7 +109,7 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict, c
             if conversation_history:
                 history_block = f"\n\nConversation history so far:\n{conversation_history}\n"
             
-            system_prompt = f"""You are a Real Estate AI assistant for ERA Realtor, acting as Irene Leong, a Senior Property Agent.
+            system_prompt = f"""You are a Real Estate AI assistant for Home IHC (Home IHC Sdn. Bhd.), acting as Irene Leong, a Senior Property Agent.
 You are currently in the {current_agent} workflow.
 Instruction: '{instruction}'
 Expected JSON keys: {expected_keys}
@@ -119,15 +119,15 @@ Expected JSON keys: {expected_keys}
 3. Be flexible in interpretation. For example:
    - "im looking for a property" → customer_category could be "personal buyer"
    - "i want to buy land" → customer_category = "personal buyer"
-   - "i want to sell" → customer_category = "seller"
+   - "i want to sell" or "seller" or "property developer" → customer_category = "seller"
    - "im an agent" or "im a broker" → customer_category = "agent"
-   - Location mentions like "bentong", "raub", "mentakab" → location/buyer_location = that value
-   - Property type mentions like "agricultural", "commercial", "residential" → property_type/buyer_property_type = that value
-   - Budget mentions like "500k", "RM 1 million", "below 200000" → budget/buyer_budget = that value
+   - Location mentions like "bentong", "raub", "mentakab", "temerloh", "pahang" → location/buyer_location/seller_location = that value
+   - Property type mentions like "agricultural", "commercial", "residential", "industrial" → property_type/buyer_property_type/seller_property_type = that value
+   - Budget mentions like "500k", "RM 1 million", "below 200000" → budget/buyer_budget/asking_price = that value
    - "personal" or "my name" → purchase_entity = "personal"
-   - "company" or "sdn bhd" → purchase_entity = "company"
-   - If user provides their name naturally (e.g. "My name is Ahmad") → agent_name = "Ahmad"
-   - Agency mentions like "IQI", "Hartamas", "ERA" → agency_name = that value
+   - "company" or "sdn bhd" or "developer" → purchase_entity = "company"
+   - If user provides their name naturally (e.g. "My name is Ahmad", "I'm Chelsea Lee") → name/agent_name = that value
+   - Agency/Company mentions like "Miracle Land", "IQI", "Hartamas" → company_name = that value
 4. Guardrail: If the user's message is completely unrelated to real estate, buying, selling, renting, or if they are asking for a job, set "is_out_of_context" to true. Otherwise, false.
 
 Return valid JSON with three fields:

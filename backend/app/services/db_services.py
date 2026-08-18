@@ -128,42 +128,59 @@ def get_sender_role(phone_number: str) -> str:
     finally:
         db.close()
 
-def search_properties(criteria: dict, limit: int = 15) -> list:
+def search_properties(criteria: dict, limit: int = 10) -> list:
     """
     Search the Property table based on extracted criteria (location, property_type, max_price).
+    Only returns properties that are currently Available, For Sale, or For Rent.
     """
     db: Session = SessionLocal()
     try:
-        query = db.query(Property).filter(Property.listing_status.in_(["Available", "For Sale", "For Rent"]))
+        query = db.query(Property).filter(
+            Property.listing_status.in_(["Available", "For Sale", "For Rent"])
+        )
         
         location = criteria.get("location")
-        if location:
+        if location and str(location).lower() not in ["none", "null", "all"]:
             search_loc = f"%{location}%"
             query = query.filter(or_(
-                Property.location.ilike(search_loc),
-                Property.name.ilike(search_loc),
-                Property.description.ilike(search_loc)
+                Property.city.ilike(search_loc),
+                Property.state.ilike(search_loc),
+                Property.street_address.ilike(search_loc),
+                Property.title.ilike(search_loc),
+                Property.search_corpus_markdown.ilike(search_loc)
             ))
             
         property_type = criteria.get("property_type")
-        if property_type:
+        if property_type and str(property_type).lower() not in ["none", "null", "all"]:
             search_type = f"%{property_type}%"
             query = query.filter(or_(
-                Property.name.ilike(search_type),
-                Property.description.ilike(search_type)
+                Property.title.ilike(search_type),
+                Property.search_corpus_markdown.ilike(search_type)
             ))
             
         max_price = criteria.get("max_price")
         if max_price:
             try:
                 max_price_float = float(max_price)
-                query = query.filter(Property.price <= max_price_float)
-            except ValueError:
+                if max_price_float > 0:
+                    query = query.filter(Property.asking_price_myr <= max_price_float)
+            except (ValueError, TypeError):
                 pass
                 
-        results = query.limit(limit).all()
-        # Convert to dict for easier JSON serialization
-        return [{"id": p.id, "name": p.name, "price": p.price, "location": p.location, "status": p.status} for p in results]
+        results = query.order_by(Property.last_updated_at.desc()).limit(limit).all()
+        return [
+            {
+                "id": str(p.id),
+                "title": p.title,
+                "price": p.asking_price_myr,
+                "city": p.city,
+                "state": p.state,
+                "acres": p.land_area_acres,
+                "status": p.listing_status,
+                "url": p.source_url or f"https://bentongland.com.my/land/{p.id}"
+            }
+            for p in results
+        ]
     except Exception as e:
         logger.error(f"Error searching properties: {e}")
         return []

@@ -74,19 +74,27 @@ def on_startup():
                 db.commit()
                 print(f"✅ Created default Admin account: {default_admin_username} ({default_admin_email})")
                 
-        # 2. Ensure Workflow templates exist
+        # 2. Ensure Workflow templates exist and standardize company name
+        from sqlalchemy import func
         workflow_count = db.query(WorkflowTemplate).count()
         if workflow_count == 0:
             print("🚀 Initializing default workflow templates...")
             from scripts.seed_workflows import seed_workflows
             seed_workflows()
+        else:
+            # Standardize existing templates from ERA Realtor to Home IHC
+            db.query(WorkflowTemplate).filter(
+                (WorkflowTemplate.message_template.like("%ERA Realtor%")) | 
+                (WorkflowTemplate.ai_action_instruction.like("%ERA Realtor%"))
+            ).update({
+                WorkflowTemplate.message_template: func.replace(WorkflowTemplate.message_template, 'ERA Realtor', 'Home IHC'),
+                WorkflowTemplate.ai_action_instruction: func.replace(WorkflowTemplate.ai_action_instruction, 'ERA Realtor', 'Home IHC')
+            }, synchronize_session=False)
+            db.commit()
 
-        # 3. Ensure Property listings exist
-        prop_count = db.query(Property).count()
-        if prop_count == 0:
-            print("🏡 Initializing default property listings...")
-            from scripts.seed_properties import seed_properties
-            seed_properties()
+        # 3. Purge dummy/mock properties so only authentic WordPress listings remain
+        from scripts.seed_properties import purge_dummy_properties
+        purge_dummy_properties()
 
         # 4. Ensure Customer leads are synced from Chatwoot
         cust_count = db.query(Customer).count()

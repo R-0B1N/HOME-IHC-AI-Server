@@ -261,18 +261,64 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
             
             intent = session.get("current_agent", "general").lower()
             response_text = agent_result.get("response", "Sorry, I couldn't process your request.")
-            handover_initiated = agent_result.get("handover", False)
+            handover_from_state = agent_result.get("handover", False)
             assignee_email = agent_result.get("assignee_email")
             
-            # Dynamic lead temperature based on collected data completeness
+            # Dynamic lead temperature based on 80% persona data completeness
+            REQUIRED_PERSONA_KEYS = {
+                "buyer": ["name", "buyer_location", "buyer_property_type", "buyer_budget", "purchase_entity"],
+                "seller": ["name", "is_owner", "property_type", "location", "asking_price"],
+                "tenant": ["name", "current_location", "property_type", "budget", "use_type"],
+                "landlord": ["name", "is_owner", "property_type", "location", "expected_rental"],
+                "agent": ["name", "company_name", "coverage_area", "collaboration_type"],
+                "bank valuer": ["customer_name", "property_address", "property_type", "contact_phone"]
+            }
+            alias_map = {
+                "location": ["buyer_location", "seller_location", "current_location", "coverage_area"],
+                "property_type": ["buyer_property_type", "seller_property_type"],
+                "budget": ["buyer_budget", "asking_price", "expected_rental"]
+            }
+            
             collected = session.get("collected_data", {})
-            filled_keys = [k for k, v in collected.items() if v]
-            if len(filled_keys) >= 5 or handover_initiated:
+            req_keys = REQUIRED_PERSONA_KEYS.get(intent, ["name", "location", "property_type"])
+            filled_count = 0
+            for k in req_keys:
+                if collected.get(k):
+                    filled_count += 1
+                elif k in alias_map and any(collected.get(alt) for alt in alias_map[k]):
+                    filled_count += 1
+            
+            completeness_ratio = (filled_count / len(req_keys)) if req_keys else 0.0
+            
+            if completeness_ratio >= 0.8:
                 lead_temp = "Hot"
-            elif len(filled_keys) >= 2:
+            elif completeness_ratio >= 0.4:
                 lead_temp = "Warm"
             else:
                 lead_temp = "Cold"
+            
+            # Detect explicit meeting / call / direct agent requests
+            user_wants_meeting = any(phrase in final_prompt_text.lower() for phrase in [
+                "arrange a meeting", "schedule a meeting", "meeting with your team",
+                "meet up", "call me", "speak to human", "talk to agent", "contact me directly",
+                "advise your availability", "discuss in meeting", "have a meeting"
+            ])
+            
+            # Handover should ONLY trigger when:
+            # 1. State machine finished workflow (handover_from_state == True)
+            # 2. Or user explicitly asks for a meeting / call
+            # 3. Or bank valuer submission complete
+            handover_initiated = False
+            if role not in ["admin", "employee"]:
+                if handover_from_state:
+                    handover_initiated = True
+                elif user_wants_meeting:
+                    handover_initiated = True
+                    # Append polite wrap-up if not already present
+                    if "senior agent" not in response_text.lower() and "specialist" not in response_text.lower():
+                        response_text += f"\n\nThank you, {contact_name}! 😊 We have noted your request to meet with our team. A senior property specialist from Home IHC will contact you shortly to arrange the meeting."
+                elif intent == "bank valuer" and 'valuer_data' in locals() and valuer_data:
+                    handover_initiated = True
             
             SessionManager.save_session(phone_number, session)
             
@@ -316,113 +362,127 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                     finally:
                         db.close()
 
-        if role not in ["admin", "employee"]:
-            if lead_temp.lower() == "hot" or intent == "bank valuer" or handover_initiated:
-                handover_initiated = True
-                
-                # Assign Agent 1 (ID 4) to the conversation
-                try:
-                    assign_agent(conversation_id, agent_id=4)
-                except Exception as e:
-                    logger.error(f"Failed to assign agent 1 to conversation {conversation_id}: {e}")
-                
-                # Send summary to main lines
-                try:
-                    main_phones = ["+601165144931", "+14709202239"]
-                    for main_phone in main_phones:
-                        contact_id = get_or_create_contact(main_phone, f"Main Line {main_phone}")
-                        if contact_id:
-                            inbox_id = metadata.get("inbox_id") or 4
-                            new_conv_id = create_conversation(contact_id, inbox_id)
-                            if new_conv_id:
-                                from app.services.chatwoot import CHATWOOT_BASE_URL, CHATWOOT_ACCOUNT_ID
-                                clean_phone = phone_number.replace("+", "")
-                                cw_link = f"https://inbox.bentongland.com.my/app/accounts/{CHATWOOT_ACCOUNT_ID}/inbox/{inbox_id}/conversations/{conversation_id}"
-                                wa_link = f"https://wa.me/{clean_phone}"
+        if role not in ["admin", "employee"] and handover_initiated:
+            # Assign Agent 1 (ID 4) to the conversation
+            try:
+                assign_agent(conversation_id, agent_id=4)
+            except Exception as e:
+                logger.error(f"Failed to assign agent 1 to conversation {conversation_id}: {e}")
+            
+            # Send summary and contact card to main lines
+            try:
+                main_phones = ["+601165144931", "+14709202239"]
+                for main_phone in main_phones:
+                    contact_id = get_or_create_contact(main_phone, f"Main Line {main_phone}")
+                    if contact_id:
+                        inbox_id = metadata.get("inbox_id") or 4
+                        new_conv_id = create_conversation(contact_id, inbox_id)
+                        if new_conv_id:
+                            from app.services.chatwoot import CHATWOOT_BASE_URL, CHATWOOT_ACCOUNT_ID
+                            clean_phone = phone_number.replace("+", "")
+                            cw_link = f"https://inbox.bentongland.com.my/app/accounts/{CHATWOOT_ACCOUNT_ID}/inbox/{inbox_id}/conversations/{conversation_id}"
+                            
+                            # Extract enriched lead details for alert template
+                            loc_val = (
+                                collected.get("location") or 
+                                collected.get("seller_location") or 
+                                collected.get("buyer_location") or 
+                                collected.get("current_location") or 
+                                collected.get("coverage_area")
+                            )
+                            location = str(loc_val) if loc_val else "Pahang (To be advised)"
+                            
+                            ptype_val = (
+                                collected.get("property_type") or 
+                                collected.get("seller_property_type") or 
+                                collected.get("buyer_property_type") or 
+                                collected.get("use_type")
+                            )
+                            property_type = str(ptype_val) if ptype_val else "Commercial / Residential / Land"
+                            
+                            budget_val = (
+                                collected.get("budget") or 
+                                collected.get("buyer_budget") or 
+                                collected.get("asking_price") or 
+                                collected.get("expected_rental")
+                            )
+                            budget = str(budget_val) if budget_val else "To be discussed in meeting"
+                            
+                            if intent == "bank valuer" and 'valuer_data' in locals() and valuer_data:
+                                location = str(valuer_data)
+                                property_type = "Bank Valuation"
+                                budget = "N/A"
                                 
-                                if intent == "bank valuer" and 'valuer_data' in locals() and valuer_data:
-                                    location = str(valuer_data)
-                                    property_type = "N/A"
-                                    budget = "N/A"
-                                elif criteria:
-                                    location = criteria.get('location', 'None')
-                                    property_type = criteria.get('property_type', 'None')
-                                    budget = criteria.get('max_price', 'None')
-                                else:
-                                    location = "None"
-                                    property_type = "None"
-                                    budget = "None"
-                                    
-                                conversation_summary = llm_response.get("summary", "No summary available.")
-                                if isinstance(conversation_summary, str):
-                                    conversation_summary = conversation_summary.replace('\n', ' ').replace('\t', ' ')
-                                    # Truncate if too long for template parameter
-                                    if len(conversation_summary) > 500:
-                                        conversation_summary = conversation_summary[:497] + "..."
-                                
-                                # First send the template summary
-                                from app.services.chatwoot import send_whatsapp_contact, send_whatsapp_template
-                                
-                                # We append the AI summary and chatwoot link as parameters 7 and 8
-                                # The Meta template requires 8 parameters: Name, Phone, Intent, Location, Type, Budget, Summary, Link
-                                template_params = [
-                                    contact_name,
-                                    phone_number,
-                                    intent.upper(),
-                                    str(location),
-                                    str(property_type),
-                                    str(budget),
-                                    conversation_summary,
-                                    cw_link
-                                ]
-                                
-                                # The template lives on WABA 926462380020902 (phone: +601163044931)
-                                # which is different from the test inbox WABA, so we must override
-                                TEMPLATE_PHONE_NUMBER_ID = os.getenv(
-                                    "WHATSAPP_TEMPLATE_PHONE_NUMBER_ID",
-                                    "1039310802596891"
-                                )
-                                
-                                send_whatsapp_template(
-                                    inbox_id=inbox_id,
-                                    to_phone=main_phone,
-                                    template_name="new_lead_alert_utility",
-                                    parameters=template_params,
-                                    language_code="en",
-                                    override_phone_number_id=TEMPLATE_PHONE_NUMBER_ID
-                                )
-                                
-                                # Then send the native contact card directly via WhatsApp API
-                                send_whatsapp_contact(
-                                    inbox_id=inbox_id,
-                                    to_phone=main_phone,
-                                    contact_name=contact_name,
-                                    contact_phone=phone_number
-                                )
-                except Exception as e:
-                    logger.error(f"Failed to forward lead to main lines: {e}")
+                            conversation_summary = llm_response.get("summary", "No summary available.")
+                            if isinstance(conversation_summary, str):
+                                conversation_summary = conversation_summary.replace('\n', ' ').replace('\t', ' ')
+                                if len(conversation_summary) > 500:
+                                    conversation_summary = conversation_summary[:497] + "..."
+                            
+                            # Send the template summary
+                            from app.services.chatwoot import send_whatsapp_contact, send_whatsapp_template
+                            
+                            template_params = [
+                                contact_name,
+                                phone_number,
+                                intent.upper(),
+                                str(location),
+                                str(property_type),
+                                str(budget),
+                                conversation_summary,
+                                cw_link
+                            ]
+                            
+                            TEMPLATE_PHONE_NUMBER_ID = os.getenv(
+                                "WHATSAPP_TEMPLATE_PHONE_NUMBER_ID",
+                                "1039310802596891"
+                            )
+                            
+                            send_whatsapp_template(
+                                inbox_id=inbox_id,
+                                to_phone=main_phone,
+                                template_name="new_lead_alert_utility",
+                                parameters=template_params,
+                                language_code="en",
+                                override_phone_number_id=TEMPLATE_PHONE_NUMBER_ID
+                            )
+                            
+                            # Send native WhatsApp contact card directly to main lines
+                            send_whatsapp_contact(
+                                inbox_id=inbox_id,
+                                to_phone=main_phone,
+                                contact_name=contact_name,
+                                contact_phone=phone_number,
+                                override_phone_number_id=TEMPLATE_PHONE_NUMBER_ID
+                            )
+            except Exception as e:
+                logger.error(f"Failed to forward lead to main lines: {e}")
         
-        # Update customer with new intent and temp
-        if customer:
+        # 3. Send response back to Chatwoot FIRST (ensures wrap-up message is delivered)
+        logger.info(f"Sending response to conversation {conversation_id}")
+        send_message(conversation_id, response_text)
+        
+        # Turn typing off
+        try:
+            toggle_typing_status(conversation_id, "off")
+        except Exception as e:
+            logger.warning(f"Failed to turn typing status off: {e}")
+            
+        # Update customer with bypass_ai ONLY after response is sent
+        if customer and handover_initiated:
             db = SessionLocal()
             try:
                 db_cust = db.query(Customer).filter(Customer.id == customer.id).first()
                 if db_cust:
-                    if handover_initiated:
-                        meta = db_cust.metadata_json.copy() if db_cust.metadata_json else {}
-                        meta["bypass_ai"] = True
-                        db_cust.metadata_json = meta
+                    meta = db_cust.metadata_json.copy() if db_cust.metadata_json else {}
+                    meta["bypass_ai"] = True
+                    db_cust.metadata_json = meta
                     db.commit()
             except Exception as e:
-                logger.error(f"Failed to update customer intent: {e}")
+                logger.error(f"Failed to update customer bypass_ai flag: {e}")
                 db.rollback()
             finally:
                 db.close()
-
-        
-        # 3. Send response back to Chatwoot
-        logger.info(f"Sending response to conversation {conversation_id}")
-        send_message(conversation_id, response_text)
         
         # Turn typing off
         try:

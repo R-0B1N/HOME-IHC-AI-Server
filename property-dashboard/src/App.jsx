@@ -460,8 +460,8 @@ function App() {
             <Home size={22} color="#d4af37" />
           </div>
           <div>
-            <div className="lux-brand-title">ERA Realtor • BentongLand DB</div>
-            <div className="lux-brand-sub">Real Estate CRM, AI State Engine & RBAC Access</div>
+            <div className="lux-brand-title">Home IHC • BentongLand DB</div>
+            <div className="lux-brand-sub">Real Estate Intelligence & Operations</div>
           </div>
         </div>
 

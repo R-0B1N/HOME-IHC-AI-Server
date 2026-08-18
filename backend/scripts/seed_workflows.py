@@ -28,7 +28,7 @@ def seed_workflows():
             "step_number": 1,
             "step_name": "Greeting & Intro",
             "ai_action_instruction": "Greet the customer, introduce Irene Leong, and send the digital name card. Collect basic location and property type preferences.",
-            "message_template": "Good day! 😊\nI'm Irene Leong, a Senior Property Agent from ERA Realtor \n\nHere is my digital name card:\nhttps://my.mecard.my/1733211127 \n\nThank you for contacting us.\n\nTo help us assist you more efficiently, could you kindly provide the following information?\n\n📸 Property Link / Screenshot: (If applicable)\n📍 Preferred Location:\n\t•\tBentong\n\t•\tTemerloh / Mentakab\n\t•\tRaub\n\n🏠 Property Type:\n\t•\tResidential Property\n\t•\tCommercial Property\n\t•\tIndustrial Property\n\t•\tAgricultural Land\n\nPlease send us the above information, and we'll recommend the most suitable properties for you as soon as possible. 😊",
+            "message_template": "Good day! 😊\nI'm Irene Leong, a Senior Property Agent from Home IHC \n\nHere is my digital name card:\nhttps://my.mecard.my/1733211127 \n\nThank you for contacting us.\n\nTo help us assist you more efficiently, could you kindly provide the following information?\n\n📸 Property Link / Screenshot: (If applicable)\n📍 Preferred Location:\n\t•\tBentong\n\t•\tTemerloh / Mentakab\n\t•\tRaub\n\n🏠 Property Type:\n\t•\tResidential Property\n\t•\tCommercial Property\n\t•\tIndustrial Property\n\t•\tAgricultural Land\n\nPlease send us the above information, and we'll recommend the most suitable properties for you as soon as possible. 😊",
             "expected_data_keys": ["location", "property_type"],
             "next_step": 2
         },
@@ -126,7 +126,7 @@ def seed_workflows():
             "step_number": 10,
             "step_name": "Seller Greeting",
             "ai_action_instruction": "Greet the Seller/Owner and explain the process.",
-            "message_template": "Good day! 😊\nThank you for contacting ERA Realtor\nI'm Irene Leong, a Senior Property Agent. I'll be happy to assist you with selling your land or property.\nTo better understand your property and recommend the most suitable marketing strategy, may I ask you a few questions?",
+            "message_template": "Good day! 😊\nThank you for contacting Home IHC\nI'm Irene Leong, a Senior Property Agent. I'll be happy to assist you with selling your land or property.\nTo better understand your property and recommend the most suitable marketing strategy, may I ask you a few questions?",
             "expected_data_keys": [],
             "next_step": 11
         },
@@ -224,7 +224,7 @@ def seed_workflows():
             "step_number": 10,
             "step_name": "Landlord Greeting",
             "ai_action_instruction": "Greet the Landlord and explain the process.",
-            "message_template": "Good day! 😊\nThank you for contacting ERA Realtor\nI'm Irene Leong, a Senior Property Agent. I'll be happy to assist you with renting out your land or property.\nTo better understand your property and recommend the most suitable marketing strategy, may I ask you a few questions?",
+            "message_template": "Good day! 😊\nThank you for contacting Home IHC\nI'm Irene Leong, a Senior Property Agent. I'll be happy to assist you with renting out your land or property.\nTo better understand your property and recommend the most suitable marketing strategy, may I ask you a few questions?",
             "expected_data_keys": [],
             "next_step": 11
         },
@@ -264,7 +264,7 @@ def seed_workflows():
             "step_number": 10,
             "step_name": "Agent Greeting",
             "ai_action_instruction": "Greet the agent/broker and introduce co-agency collaboration process.",
-            "message_template": "Good day! 😊\nThank you for contacting ERA Realtor.\nI'm Irene Leong, a Senior Property Agent.\n\nI'd be happy to explore co-agency collaboration opportunities with you.\nTo better understand your needs, may I ask you a few questions?",
+            "message_template": "Good day! 😊\nThank you for contacting Home IHC.\nI'm Irene Leong, a Senior Property Agent.\n\nI'd be happy to explore co-agency collaboration opportunities with you.\nTo better understand your needs, may I ask you a few questions?",
             "expected_data_keys": [],
             "next_step": 11
         },

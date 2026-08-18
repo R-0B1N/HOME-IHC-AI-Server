@@ -51,10 +51,19 @@ def read_properties(skip: int = 0, limit: int = 500, db: Session = Depends(get_d
     properties = db.query(Property).offset(skip).limit(limit).all()
     return properties
 
+@router.post("/cleanup-dummy")
+def cleanup_dummy_properties(db: Session = Depends(get_db)):
+    """
+    Purges synthetic mock/dummy properties from the database so only authentic WordPress listings exist.
+    """
+    from scripts.seed_properties import purge_dummy_properties
+    deleted = purge_dummy_properties()
+    return {"status": "success", "deleted_count": deleted, "remaining_properties": db.query(Property).count()}
+
 @router.post("/seed-defaults")
 def seed_default_properties(db: Session = Depends(get_db)):
     """
-    Seeds initial BentongLand property listings if database is empty.
+    Purges dummy properties and maintains authentic listings.
     """
     from scripts.seed_properties import seed_properties
     seed_properties()

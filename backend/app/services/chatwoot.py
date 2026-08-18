@@ -77,18 +77,18 @@ def get_inbox_details(inbox_id: int):
         logger.error(f"Failed to get inbox {inbox_id} details: {e}")
         return {}
 
-def send_whatsapp_contact(inbox_id: int, to_phone: str, contact_name: str, contact_phone: str):
+def send_whatsapp_contact(inbox_id: int, to_phone: str, contact_name: str, contact_phone: str, override_phone_number_id: str = None):
     """
     Sends a native WhatsApp Contact Card directly using the WhatsApp Cloud API.
-    Uses the credentials stored in the Chatwoot inbox's provider_config.
+    Uses the credentials stored in the Chatwoot inbox's provider_config, with env fallbacks.
     """
     inbox = get_inbox_details(inbox_id)
     provider_config = inbox.get("provider_config", {})
-    api_key = provider_config.get("api_key")
-    phone_number_id = provider_config.get("phone_number_id")
+    api_key = provider_config.get("api_key") or os.getenv("WHATSAPP_API_TOKEN") or os.getenv("WHATSAPP_APP_SECRET")
+    phone_number_id = override_phone_number_id or provider_config.get("phone_number_id") or os.getenv("WHATSAPP_TEMPLATE_PHONE_NUMBER_ID", "1039310802596891")
     
     if not api_key or not phone_number_id:
-        logger.error(f"Missing API key or phone number ID in inbox {inbox_id} for sending contact card")
+        logger.error(f"Missing API key or phone number ID for sending contact card to {to_phone}")
         return None
         
     url = f"https://graph.facebook.com/v21.0/{phone_number_id}/messages"
@@ -97,8 +97,8 @@ def send_whatsapp_contact(inbox_id: int, to_phone: str, contact_name: str, conta
         "Content-Type": "application/json"
     }
     
-    clean_contact_phone = contact_phone.replace("+", "")
-    clean_to_phone = to_phone.replace("+", "")
+    clean_contact_phone = contact_phone.replace("+", "").replace(" ", "").replace("-", "")
+    clean_to_phone = to_phone.replace("+", "").replace(" ", "").replace("-", "")
     
     payload = {
         "messaging_product": "whatsapp",
@@ -112,7 +112,7 @@ def send_whatsapp_contact(inbox_id: int, to_phone: str, contact_name: str, conta
                 },
                 "phones": [
                     {
-                        "phone": contact_phone,
+                        "phone": f"+{clean_contact_phone}",
                         "type": "CELL",
                         "wa_id": clean_contact_phone
                     }
@@ -122,12 +122,12 @@ def send_whatsapp_contact(inbox_id: int, to_phone: str, contact_name: str, conta
     }
     
     try:
-        response = requests.post(url, headers=headers, json=payload)
+        response = requests.post(url, headers=headers, json=payload, timeout=10)
         response.raise_for_status()
         logger.info(f"Successfully sent native WhatsApp contact card to {clean_to_phone}")
         return response.json()
     except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to send native whatsapp contact: {e}")
+        logger.error(f"Failed to send native whatsapp contact to {clean_to_phone}: {e}")
         if hasattr(e, 'response') and e.response is not None:
             logger.error(f"Response: {e.response.text}")
         return None
