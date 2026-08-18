@@ -255,7 +255,8 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
             
             agent_result = process_persona_state_machine(
                 phone_number, final_prompt_text, session,
-                conversation_history=conversation_history
+                conversation_history=conversation_history,
+                contact_name=contact_name
             )
             session = agent_result.get("updated_session", session)
             
@@ -263,6 +264,7 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
             response_text = agent_result.get("response", "Sorry, I couldn't process your request.")
             handover_from_state = agent_result.get("handover", False)
             assignee_email = agent_result.get("assignee_email")
+            images_to_send = agent_result.get("images_to_send", [])
             
             # Dynamic lead temperature based on 80% persona data completeness
             REQUIRED_PERSONA_KEYS = {
@@ -458,7 +460,26 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
             except Exception as e:
                 logger.error(f"Failed to forward lead to main lines: {e}")
         
-        # 3. Send response back to Chatwoot FIRST (ensures wrap-up message is delivered)
+        # 3. Dispatch native images if requested
+        if images_to_send:
+            from app.services.chatwoot import send_whatsapp_image, send_chatwoot_image_attachment
+            inbox_id = metadata.get("inbox_id") or 4
+            for img_url in images_to_send:
+                try:
+                    logger.info(f"Dispatching native image: {img_url} to {phone_number}")
+                    send_whatsapp_image(
+                        inbox_id=inbox_id,
+                        to_phone=phone_number,
+                        image_url=img_url
+                    )
+                    send_chatwoot_image_attachment(
+                        conversation_id=conversation_id,
+                        image_url=img_url
+                    )
+                except Exception as img_err:
+                    logger.error(f"Failed to dispatch native image {img_url}: {img_err}")
+
+        # 4. Send response back to Chatwoot FIRST (ensures wrap-up message is delivered)
         logger.info(f"Sending response to conversation {conversation_id}")
         send_message(conversation_id, response_text)
         

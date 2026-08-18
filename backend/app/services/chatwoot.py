@@ -61,6 +61,81 @@ def send_message_with_attachment(conversation_id: int, content: str, file_name: 
         raise e
 
 
+def send_whatsapp_image(inbox_id: int, to_phone: str, image_url: str, caption: str = None, override_phone_number_id: str = None):
+    """
+    Sends a native WhatsApp Image directly via WhatsApp Cloud API.
+    """
+    if not image_url or not to_phone:
+        return None
+        
+    inbox = get_inbox_details(inbox_id)
+    provider_config = inbox.get("provider_config", {})
+    api_key = provider_config.get("api_key") or os.getenv("WHATSAPP_API_TOKEN") or os.getenv("WHATSAPP_APP_SECRET")
+    phone_number_id = override_phone_number_id or provider_config.get("phone_number_id") or os.getenv("WHATSAPP_TEMPLATE_PHONE_NUMBER_ID", "1039310802596891")
+    
+    if not api_key or not phone_number_id:
+        logger.warning(f"Missing API key or phone number ID for sending native image to {to_phone}")
+        return None
+        
+    url = f"https://graph.facebook.com/v21.0/{phone_number_id}/messages"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    clean_to_phone = to_phone.replace("+", "").replace(" ", "").replace("-", "")
+    
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": clean_to_phone,
+        "type": "image",
+        "image": {
+            "link": image_url
+        }
+    }
+    if caption:
+        payload["image"]["caption"] = caption
+        
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=10)
+        response.raise_for_status()
+        logger.info(f"Successfully sent native WhatsApp image to {clean_to_phone}")
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to send native whatsapp image to {clean_to_phone}: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            logger.error(f"Response: {e.response.text}")
+        return None
+
+
+def send_chatwoot_image_attachment(conversation_id: int, image_url: str, caption: str = None):
+    """
+    Downloads image from URL and uploads as attachment to the Chatwoot conversation.
+    """
+    if not conversation_id or not image_url:
+        return None
+        
+    try:
+        # Download image bytes with safe timeout
+        img_resp = requests.get(image_url, timeout=10)
+        img_resp.raise_for_status()
+        
+        file_name = image_url.split("/")[-1].split("?")[0] or "property_photo.jpg"
+        if not (file_name.endswith(".jpg") or file_name.endswith(".jpeg") or file_name.endswith(".png") or file_name.endswith(".webp")):
+            file_name += ".jpg"
+            
+        content_type = img_resp.headers.get("Content-Type", "image/jpeg")
+        return send_message_with_attachment(
+            conversation_id=conversation_id,
+            content=caption or "",
+            file_name=file_name,
+            file_content=img_resp.content,
+            content_type=content_type
+        )
+    except Exception as e:
+        logger.error(f"Failed to attach image from {image_url} to Chatwoot conv {conversation_id}: {e}")
+        return None
+
+
 def get_inbox_details(inbox_id: int):
     """
     Fetches the inbox details, including provider config (WhatsApp API key).
