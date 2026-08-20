@@ -63,6 +63,7 @@ function App() {
   });
 
   const [masterAiEnabled, setMasterAiEnabled] = useState(true);
+  const [environment, setEnvironment] = useState('production'); // 'production' | 'staging'
   const [isSyncingLeads, setIsSyncingLeads] = useState(false);
   const [isSeedingProps, setIsSeedingProps] = useState(false);
 
@@ -105,7 +106,10 @@ function App() {
 
   const fetchMasterAiStatus = async () => {
     try {
-      const response = await axios.get(`${API_BASE_URL}/settings/ai-status`);
+      const endpoint = environment === 'staging' 
+        ? `${API_BASE_URL}/settings/staging/ai-status`
+        : `${API_BASE_URL}/settings/ai-status`;
+      const response = await axios.get(endpoint);
       setMasterAiEnabled(response.data.enabled);
     } catch (error) {
       console.error('Failed to fetch master AI status:', error);
@@ -115,7 +119,10 @@ function App() {
   const toggleMasterAi = async () => {
     try {
       const newStatus = !masterAiEnabled;
-      const response = await axios.post(`${API_BASE_URL}/settings/ai-status`, { enabled: newStatus });
+      const endpoint = environment === 'staging'
+        ? `${API_BASE_URL}/settings/staging/ai-status`
+        : `${API_BASE_URL}/settings/ai-status`;
+      const response = await axios.post(endpoint, { enabled: newStatus });
       setMasterAiEnabled(response.data.enabled);
     } catch (error) {
       console.error('Failed to toggle master AI status:', error);
@@ -125,7 +132,10 @@ function App() {
 
   const fetchLeads = async () => {
     try {
-      const response = await axios.get(`${API_BASE_URL}/customers`);
+      const endpoint = environment === 'staging'
+        ? `${API_BASE_URL}/customers/staging`
+        : `${API_BASE_URL}/customers`;
+      const response = await axios.get(endpoint);
       setLeads(response.data);
     } catch (error) {
       console.error('Failed to fetch leads:', error);
@@ -147,7 +157,7 @@ function App() {
   };
 
 
-  // Fetch data on tab change + auto-refresh every 30s for real-time updates
+  // Fetch data on tab or environment change + auto-refresh every 30s for real-time updates
   useEffect(() => {
     fetchMasterAiStatus();
     
@@ -167,7 +177,7 @@ function App() {
     }, 30000);
 
     return () => clearInterval(interval);
-  }, [activeTab]);
+  }, [activeTab, environment]);
   // Sync selectedProperty details with updated properties data (keep modals in sync)
   useEffect(() => {
     if (selectedProperty) {
@@ -466,14 +476,56 @@ function App() {
         </div>
 
         <div className="lux-header-actions-group">
+          {/* Admin-Only Environment Switcher */}
+          {isAdmin && (
+            <div style={{ display: 'flex', alignItems: 'center', background: 'rgba(255,255,255,0.06)', borderRadius: '8px', padding: '3px', border: '1px solid rgba(255,255,255,0.1)' }}>
+              <button 
+                style={{
+                  padding: '5px 12px',
+                  fontSize: '0.75rem',
+                  fontWeight: 700,
+                  borderRadius: '6px',
+                  border: 'none',
+                  cursor: 'pointer',
+                  background: environment === 'production' ? '#10b981' : 'transparent',
+                  color: environment === 'production' ? '#ffffff' : '#94a3b8',
+                  transition: 'all 0.2s ease',
+                  letterSpacing: '0.03em'
+                }}
+                onClick={() => setEnvironment('production')}
+                title="Switch to Live Production Environment"
+              >
+                🟢 Production
+              </button>
+              <button 
+                style={{
+                  padding: '5px 12px',
+                  fontSize: '0.75rem',
+                  fontWeight: 700,
+                  borderRadius: '6px',
+                  border: 'none',
+                  cursor: 'pointer',
+                  background: environment === 'staging' ? '#f59e0b' : 'transparent',
+                  color: environment === 'staging' ? '#000000' : '#94a3b8',
+                  transition: 'all 0.2s ease',
+                  letterSpacing: '0.03em'
+                }}
+                onClick={() => setEnvironment('staging')}
+                title="Switch to Staging / Development Environment"
+              >
+                🟡 Staging
+              </button>
+            </div>
+          )}
+
           {/* Master AI Toggle Pill */}
           <button 
             className={`lux-ai-toggle-pill ${masterAiEnabled ? 'active' : 'disabled'}`}
             onClick={toggleMasterAi}
-            title={masterAiEnabled ? "Click to disable all AI automated responses" : "Click to enable all AI automated responses"}
+            title={masterAiEnabled ? `Click to disable ${environment} AI automated responses` : `Click to enable ${environment} AI automated responses`}
           >
             <span className={`lux-status-dot ${masterAiEnabled ? 'active' : 'disabled'}`}></span>
-            Master AI: <strong>{masterAiEnabled ? 'ON' : 'OFF'}</strong>
+            {environment === 'staging' ? 'Staging AI' : 'Master AI'}: <strong>{masterAiEnabled ? 'ON' : 'OFF'}</strong>
           </button>
 
           {/* Authenticated User Capsule */}
@@ -497,6 +549,29 @@ function App() {
           </div>
         </div>
       </header>
+
+      {/* Staging Notification Banner */}
+      {environment === 'staging' && (
+        <div style={{
+          background: 'linear-gradient(90deg, rgba(245, 158, 11, 0.2) 0%, rgba(245, 158, 11, 0.08) 100%)',
+          borderBottom: '1px solid rgba(245, 158, 11, 0.4)',
+          color: '#fbbf24',
+          padding: '8px 24px',
+          fontSize: '0.82rem',
+          fontWeight: 600,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between'
+        }}>
+          <div>
+            ⚠️ <strong>STAGING / DEVELOPMENT ENVIRONMENT ACTIVE</strong> — Viewing staging leads and controlling staging AI responses.
+          </div>
+          <span style={{ fontSize: '0.75rem', opacity: 0.85, background: 'rgba(245, 158, 11, 0.2)', padding: '2px 8px', borderRadius: '4px' }}>
+            Isolated Staging Redis & Database
+          </span>
+        </div>
+      )}
+
 
       {/* Tier 2: Sub-Nav Bar (Tabs on Left, Action CTAs on Right) */}
       <div className="lux-subnav-bar">

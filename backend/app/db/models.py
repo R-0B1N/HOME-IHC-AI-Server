@@ -76,6 +76,11 @@ class Lead(Base):
     shortlisted_properties = Column(ARRAY(UUID(as_uuid=True)), default=list)
 
 
+try:
+    from pgvector.sqlalchemy import Vector
+except ImportError:
+    Vector = None
+
 class Property(Base):
     __tablename__ = "properties"
 
@@ -83,37 +88,57 @@ class Property(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     source_url = Column(String, nullable=True)
     title = Column(String)
-    listing_status = Column(String)
+    listing_status = Column(String, default="For Sale")
     property_category = Column(ARRAY(String), default=list)
+    property_type_sub = Column(String, nullable=True)  # e.g., "Durian Land", "Semi-D House", "Warehouse", "Shop"
 
     # 2. Financial Metrics
-    asking_price_myr = Column(Float)
+    asking_price_myr = Column(Float, nullable=True)
     currency = Column(String, default="MYR")
+    price_per_acre_myr = Column(Float, nullable=True)
+    price_per_sqft_myr = Column(Float, nullable=True)
     monthly_rental_income_myr = Column(Float, nullable=True)
     implied_yield_pct = Column(Float, nullable=True)
 
     # 3. Physical & Dimensional Specs
-    land_area_sqft = Column(Float, nullable=True)
     land_area_acres = Column(Float, nullable=True)
+    land_area_sqft = Column(Float, nullable=True)
     land_area_sqm = Column(Float, nullable=True)
     built_up_area_sqft = Column(Float, nullable=True)
-    tenure_type = Column(String, nullable=True)
-    zoning_type = Column(String, nullable=True)
+    tenure_type = Column(String, nullable=True)  # Freehold, Leasehold, Malay Reserved
+    zoning_type = Column(String, nullable=True)  # Agricultural, Residential, Commercial, Industrial
+    title_status = Column(String, nullable=True)  # Individual Title, Master Title, Commercial Building Title
 
-    # 4. Infrastructure & Technical Capabilities
-    power_supply_amp = Column(Integer, nullable=True)
-    utilities_available = Column(ARRAY(String), default=list)
+    # 4. Agricultural & Crop Profile (Bentong/Raub Land specific)
+    crop_types = Column(ARRAY(String), default=list)  # ["Musang King", "Black Thorn", "Rubber", "Oil Palm"]
+    tree_count_estimate = Column(Integer, nullable=True)
+    tree_age_years = Column(String, nullable=True)  # e.g., "6-8 years (Mature Fruit-Bearing)"
+    harvest_readiness = Column(String, nullable=True)  # Fruit-Bearing, Young Planting, Vacant/Cleared
+
+    # 5. Topography & Environmental Resources
+    topography = Column(String, nullable=True)  # Flat, Gentle Slope, Hilly/Terraced, Hilltop View
+    water_source_types = Column(ARRAY(String), default=list)  # ["Natural River Stream", "Pond", "PAIP Water"]
+    has_natural_stream = Column(Boolean, default=False)
+    has_pond = Column(Boolean, default=False)
+    has_piping_system = Column(Boolean, default=False)
+    is_flood_free = Column(Boolean, default=True)
+
+    # 6. Infrastructure & Technical Capabilities
+    power_supply_amp = Column(Integer, nullable=True)  # 60, 100, 300, 1200
+    utilities_available = Column(ARRAY(String), default=list)  # ["Electricity", "Water Supply"]
     has_office = Column(Boolean, default=False)
     office_features = Column(String, nullable=True)
-    road_access_quality = Column(String, nullable=True)
+    road_access_quality = Column(String, nullable=True)  # Facing Main Road, Tar Road, Concrete Road, 4WD Required
+    is_fenced = Column(Boolean, default=False)
+    has_worker_quarters = Column(Boolean, default=False)
 
-    # 5. Tenancy & Commercial Status
+    # 7. Tenancy & Commercial Status
     is_tenanted = Column(Boolean, default=False)
     lease_start_date = Column(DateTime, nullable=True)
     lease_end_date = Column(DateTime, nullable=True)
     current_tenant_use = Column(String, nullable=True)
 
-    # 6. Location & Geospatial
+    # 8. Location & Geospatial
     street_address = Column(String, nullable=True)
     area = Column(String, nullable=True)
     city = Column(String, nullable=True)
@@ -121,36 +146,42 @@ class Property(Base):
     country = Column(String, default="Malaysia")
     latitude = Column(Float, nullable=True)
     longitude = Column(Float, nullable=True)
+    nearby_landmarks = Column(ARRAY(String), default=list)
 
-    # 7. AI, RAG & Semantic Search
+    # 9. AI, RAG & Categorized Vector Embeddings
     suitable_industries = Column(ARRAY(String), default=list)
+    key_highlights = Column(ARRAY(String), default=list)
     search_corpus_markdown = Column(String, nullable=True)
-    # embedding_vector = Column(Vector(1536), nullable=True)
+    
+    # 5-Aspect pgvector Embeddings (384-dimensional dense vectors)
+    embedding_location = Column(Vector(384) if Vector is not None else ARRAY(Float), nullable=True)
+    embedding_specs = Column(Vector(384) if Vector is not None else ARRAY(Float), nullable=True)
+    embedding_features = Column(Vector(384) if Vector is not None else ARRAY(Float), nullable=True)
+    embedding_suitability = Column(Vector(384) if Vector is not None else ARRAY(Float), nullable=True)
+    embedding_overview = Column(Vector(384) if Vector is not None else ARRAY(Float), nullable=True)
 
-    # 8. Agency & Contact Metadata
+    # 10. Agency & Contact Metadata
     agency_name = Column(String, default="HOME IHC SDN. BHD.")
     agent_name = Column(String, nullable=True)
     agent_phone = Column(String, nullable=True)
     agent_whatsapp_url = Column(String, nullable=True)
 
-    # 9. Pipeline & State Management
+    # 11. Pipeline & State Management
     scraped_at = Column(DateTime, default=datetime.datetime.utcnow)
     last_updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
     source_hash = Column(String, nullable=True)
     is_active_listing = Column(Boolean, default=True)
 
-    # 10. Multimodal Assets
+    # 12. Multimodal Assets & AI Analytics
     image_urls = Column(ARRAY(String), default=list)
     floor_plan_url = Column(String, nullable=True)
-
-    # 11. AI-Derived Analytics
-    key_highlights = Column(ARRAY(String), default=list)
     months_to_lease_expiry = Column(Integer, nullable=True)
     risk_flags = Column(ARRAY(String), default=list)
     
     order_id = Column(Integer, ForeignKey("orders.id"), nullable=True)
     customer_id = Column(String, ForeignKey("customers.id"), nullable=True)
     metadata_json = Column(JSON, nullable=True)
+
 
 class Transaction(Base):
     __tablename__ = "transactions"

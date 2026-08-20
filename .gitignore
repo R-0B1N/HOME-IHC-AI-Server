@@ -13,7 +13,7 @@ node_modules/
 
 # Local Databases and Data
 data/
-db/
+/db/
 docs/
 *.sqlite
 *.sqlite3

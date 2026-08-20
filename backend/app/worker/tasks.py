@@ -583,7 +583,6 @@ def process_wordpress_property(self, payload: dict):
         image_urls = payload.get("image_urls", [])
         if isinstance(image_urls, str):
             image_urls = [image_urls]
-            
         db = SessionLocal()
         try:
             from app.db.models import Property
@@ -595,83 +594,147 @@ def process_wordpress_property(self, payload: dict):
                 existing.search_corpus_markdown = payload.get("description", existing.search_corpus_markdown)
                 existing.source_url = payload.get("source_url", existing.source_url)
                 if latitude is not None: existing.latitude = latitude
+                elif extracted_data.get("latitude") is not None: existing.latitude = extracted_data.get("latitude")
+                
                 if longitude is not None: existing.longitude = longitude
+                elif extracted_data.get("longitude") is not None: existing.longitude = extracted_data.get("longitude")
+                
                 if image_urls: existing.image_urls = image_urls
                 
                 # Fields from extraction
+                existing.property_type_sub = extracted_data.get("property_type_sub", existing.property_type_sub)
                 existing.asking_price_myr = extracted_data.get("asking_price_myr", existing.asking_price_myr)
                 existing.monthly_rental_income_myr = extracted_data.get("monthly_rental_income_myr", existing.monthly_rental_income_myr)
+                existing.price_per_acre_myr = extracted_data.get("price_per_acre_myr", existing.price_per_acre_myr)
+                existing.price_per_sqft_myr = extracted_data.get("price_per_sqft_myr", existing.price_per_sqft_myr)
                 existing.implied_yield_pct = extracted_data.get("implied_yield_pct", existing.implied_yield_pct)
-                existing.property_category = extracted_data.get("category", existing.property_category)
+                existing.property_category = extracted_data.get("property_category", existing.property_category)
                 existing.land_area_sqft = extracted_data.get("land_area_sqft", existing.land_area_sqft)
                 existing.land_area_acres = extracted_data.get("land_area_acres", existing.land_area_acres)
                 existing.land_area_sqm = extracted_data.get("land_area_sqm", existing.land_area_sqm)
                 existing.built_up_area_sqft = extracted_data.get("built_up_area_sqft", existing.built_up_area_sqft)
                 existing.tenure_type = extracted_data.get("tenure_type", existing.tenure_type)
                 existing.zoning_type = extracted_data.get("zoning_type", existing.zoning_type)
+                existing.title_status = extracted_data.get("title_status", existing.title_status)
+                
+                existing.crop_types = extracted_data.get("crop_types", existing.crop_types)
+                existing.tree_count_estimate = extracted_data.get("tree_count_estimate", existing.tree_count_estimate)
+                existing.tree_age_years = extracted_data.get("tree_age_years", existing.tree_age_years)
+                existing.harvest_readiness = extracted_data.get("harvest_readiness", existing.harvest_readiness)
+                
+                existing.topography = extracted_data.get("topography", existing.topography)
+                existing.water_source_types = extracted_data.get("water_source_types", existing.water_source_types)
+                existing.has_natural_stream = extracted_data.get("has_natural_stream", existing.has_natural_stream)
+                existing.has_pond = extracted_data.get("has_pond", existing.has_pond)
+                existing.has_piping_system = extracted_data.get("has_piping_system", existing.has_piping_system)
+                existing.is_flood_free = extracted_data.get("is_flood_free", existing.is_flood_free)
+                
                 existing.power_supply_amp = extracted_data.get("power_supply_amp", existing.power_supply_amp)
                 existing.utilities_available = extracted_data.get("utilities_available", existing.utilities_available)
                 existing.has_office = extracted_data.get("has_office", existing.has_office)
                 existing.office_features = extracted_data.get("office_features", existing.office_features)
                 existing.road_access_quality = extracted_data.get("road_access_quality", existing.road_access_quality)
+                existing.is_fenced = extracted_data.get("is_fenced", existing.is_fenced)
+                existing.has_worker_quarters = extracted_data.get("has_worker_quarters", existing.has_worker_quarters)
+                
                 existing.is_tenanted = extracted_data.get("is_tenanted", existing.is_tenanted)
                 existing.lease_start_date = extracted_data.get("lease_start_date", existing.lease_start_date)
                 existing.lease_end_date = extracted_data.get("lease_end_date", existing.lease_end_date)
                 existing.current_tenant_use = extracted_data.get("current_tenant_use", existing.current_tenant_use)
+                
                 existing.street_address = extracted_data.get("street_address", existing.street_address)
                 existing.area = extracted_data.get("area", existing.area)
                 existing.city = extracted_data.get("city", existing.city)
                 existing.state = extracted_data.get("state", existing.state)
+                existing.nearby_landmarks = extracted_data.get("nearby_landmarks", existing.nearby_landmarks)
+                
                 existing.suitable_industries = extracted_data.get("suitable_industries", existing.suitable_industries)
                 existing.key_highlights = extracted_data.get("key_highlights", existing.key_highlights)
                 existing.risk_flags = extracted_data.get("risk_flags", existing.risk_flags)
-                existing.listing_status = extracted_data.get("status", existing.listing_status)
+                existing.listing_status = extracted_data.get("listing_status", existing.listing_status)
+                
+                if extracted_data.get("embedding_location") is not None:
+                    existing.embedding_location = extracted_data["embedding_location"]
+                if extracted_data.get("embedding_specs") is not None:
+                    existing.embedding_specs = extracted_data["embedding_specs"]
+                if extracted_data.get("embedding_features") is not None:
+                    existing.embedding_features = extracted_data["embedding_features"]
+                if extracted_data.get("embedding_suitability") is not None:
+                    existing.embedding_suitability = extracted_data["embedding_suitability"]
+                if extracted_data.get("embedding_overview") is not None:
+                    existing.embedding_overview = extracted_data["embedding_overview"]
                 
                 db.commit()
-                logger.info(f"Updated property {title} in DB.")
+                logger.info(f"Updated property: {existing.title} with full 12-category data and 5-aspect embeddings.")
                 return {"status": "success", "action": "updated"}
             else:
                 # Create new property
-                new_property = Property(
+                new_prop = Property(
                     id=str(uuid.uuid4()),
-                    title=title,
-                    search_corpus_markdown=payload.get("description", ""),
                     source_url=payload.get("source_url", ""),
-                    latitude=latitude,
-                    longitude=longitude,
-                    image_urls=image_urls,
-                    
+                    title=title,
+                    listing_status=extracted_data.get("listing_status", "For Sale"),
+                    property_category=extracted_data.get("property_category", []),
+                    property_type_sub=extracted_data.get("property_type_sub"),
                     asking_price_myr=extracted_data.get("asking_price_myr", 0.0),
+                    currency="MYR",
+                    price_per_acre_myr=extracted_data.get("price_per_acre_myr"),
+                    price_per_sqft_myr=extracted_data.get("price_per_sqft_myr"),
                     monthly_rental_income_myr=extracted_data.get("monthly_rental_income_myr"),
                     implied_yield_pct=extracted_data.get("implied_yield_pct"),
-                    property_category=extracted_data.get("category", []),
+                    land_area_acres=extracted_data.get("land_area_acres"),
                     land_area_sqft=extracted_data.get("land_area_sqft"),
-                    land_area_acres=extracted_data.get("land_area_acres", 0.0),
                     land_area_sqm=extracted_data.get("land_area_sqm"),
                     built_up_area_sqft=extracted_data.get("built_up_area_sqft"),
                     tenure_type=extracted_data.get("tenure_type"),
                     zoning_type=extracted_data.get("zoning_type"),
+                    title_status=extracted_data.get("title_status"),
+                    crop_types=extracted_data.get("crop_types", []),
+                    tree_count_estimate=extracted_data.get("tree_count_estimate"),
+                    tree_age_years=extracted_data.get("tree_age_years"),
+                    harvest_readiness=extracted_data.get("harvest_readiness"),
+                    topography=extracted_data.get("topography"),
+                    water_source_types=extracted_data.get("water_source_types", []),
+                    has_natural_stream=extracted_data.get("has_natural_stream", False),
+                    has_pond=extracted_data.get("has_pond", False),
+                    has_piping_system=extracted_data.get("has_piping_system", False),
+                    is_flood_free=extracted_data.get("is_flood_free", True),
                     power_supply_amp=extracted_data.get("power_supply_amp"),
                     utilities_available=extracted_data.get("utilities_available", []),
                     has_office=extracted_data.get("has_office", False),
                     office_features=extracted_data.get("office_features"),
                     road_access_quality=extracted_data.get("road_access_quality"),
+                    is_fenced=extracted_data.get("is_fenced", False),
+                    has_worker_quarters=extracted_data.get("has_worker_quarters", False),
                     is_tenanted=extracted_data.get("is_tenanted", False),
                     lease_start_date=extracted_data.get("lease_start_date"),
                     lease_end_date=extracted_data.get("lease_end_date"),
                     current_tenant_use=extracted_data.get("current_tenant_use"),
                     street_address=extracted_data.get("street_address"),
                     area=extracted_data.get("area"),
-                    city=extracted_data.get("city", ""),
-                    state=extracted_data.get("state", ""),
+                    city=extracted_data.get("city"),
+                    state=extracted_data.get("state", "Pahang"),
+                    country="Malaysia",
+                    latitude=latitude or extracted_data.get("latitude"),
+                    longitude=longitude or extracted_data.get("longitude"),
+                    nearby_landmarks=extracted_data.get("nearby_landmarks", []),
                     suitable_industries=extracted_data.get("suitable_industries", []),
                     key_highlights=extracted_data.get("key_highlights", []),
                     risk_flags=extracted_data.get("risk_flags", []),
-                    listing_status=extracted_data.get("status", "Available")
+                    search_corpus_markdown=payload.get("description", f"{title}\n\n"),
+                    agency_name="HOME IHC SDN. BHD.",
+                    agent_name="Irene Leong",
+                    agent_phone="+6011-65144931",
+                    agent_whatsapp_url="https://my.mecard.my/1733211127",
+                    image_urls=image_urls or extracted_data.get("image_urls", []),
+                    embedding_location=extracted_data.get("embedding_location"),
+                    embedding_specs=extracted_data.get("embedding_specs"),
+                    embedding_features=extracted_data.get("embedding_features"),
+                    embedding_suitability=extracted_data.get("embedding_suitability"),
+                    embedding_overview=extracted_data.get("embedding_overview"),
                 )
-                db.add(new_property)
+                db.add(new_prop)
                 db.commit()
-                logger.info(f"Created property {title} in DB.")
                 return {"status": "success", "action": "created"}
         finally:
             db.close()

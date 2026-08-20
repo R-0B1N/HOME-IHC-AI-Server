@@ -230,65 +230,133 @@ def extract_valuer_data(prompt: str, conversation_history: str = "") -> dict:
         logger.error(f"Failed to extract valuer data: {e}")
         return {}
 
+TOWN_COORDINATES = {
+    "bentong": (3.5222, 101.9085),
+    "raub": (3.7899, 101.8570),
+    "karak": (3.4182, 102.0460),
+    "temerloh": (3.4485, 102.4173),
+    "mentakab": (3.4854, 102.3484),
+    "cheroh": (3.9167, 101.8333),
+    "tras": (3.7500, 101.8000),
+    "bukit tinggi": (3.3500, 101.8333),
+    "janda baik": (3.3167, 101.8833),
+    "triang": (3.2500, 102.4167),
+    "kuala lipis": (4.1833, 102.0500),
+    "lipis": (4.1833, 102.0500),
+    "teluk intan": (4.0042, 101.0360),
+    "kuantan": (3.8077, 103.3260),
+}
+
 def extract_wordpress_property(payload: dict) -> dict:
     """
     Extracts structured property details from the raw WordPress webhook payload using the LLM.
+    Populates all 12 database categories: Core, Financials, Physical Specs, Agricultural/Crops,
+    Topography/Water, Infrastructure, Tenancy, Geospatial, Vector Embeddings, Agency, and AI Analytics.
     """
+    from app.services.embeddings import generate_property_5_embeddings
+
     title = payload.get("title", "")
     description = payload.get("description", "")
     
     system_prompt = f"""
-    You are an intelligent data extractor for real estate operations.
-    Analyze the provided raw WordPress property title and description.
+    You are an expert real estate data engineer and valuation analyst for Malaysia (Pahang, Perak, Selangor).
+    Analyze the provided raw WordPress property title, description, and specifications.
     
-    Output strictly as a JSON object with these exact fields. Use null if a value is not specified or cannot be inferred:
-    - "asking_price_myr": Float. The listed asking price.
-    - "monthly_rental_income_myr": Float. Current or estimated monthly rental income.
-    - "implied_yield_pct": Float. Estimated gross ROI percentage per annum.
-    - "category": List of strings (e.g., ["Commercial", "Shop"]).
-    - "land_area_sqft": Float.
-    - "land_area_acres": Float.
-    - "land_area_sqm": Float.
-    - "built_up_area_sqft": Float.
-    - "tenure_type": String (e.g., "Freehold", "Leasehold").
-    - "zoning_type": String (e.g., "Commercial", "Industrial").
-    - "power_supply_amp": Integer.
-    - "utilities_available": List of strings (e.g., ["Electricity", "Water"]).
-    - "has_office": Boolean. True if the property has an office.
+    Extract and output strictly as a JSON object with these exact structured fields. Use null if a value is not found:
+    - "property_type_sub": String (e.g., "Durian Land", "Rubber Land", "Oil Palm Land", "Vacant Land", "Commercial Land", "Shop", "Warehouse", "Factory", "Semi-D House", "Bungalow", "Terrace House").
+    - "category": List of strings (e.g., ["Agricultural Land", "Durian Land"] or ["Commercial", "Shop"] or ["Industrial", "Warehouse"]).
+    - "asking_price_myr": Float. Listed selling price (or 0.0 if for rent).
+    - "monthly_rental_income_myr": Float. Current or estimated monthly rental income / rental fee.
+    - "price_per_acre_myr": Float. Price per acre if mentioned or calculable.
+    - "price_per_sqft_myr": Float. Price per sqft if mentioned or calculable.
+    - "implied_yield_pct": Float. Estimated gross ROI / yield percentage per annum.
+    - "land_area_acres": Float. Total land size in acres.
+    - "land_area_sqft": Float. Total land size in square feet.
+    - "land_area_sqm": Float. Total land size in square meters or hectares converted to sqm.
+    - "built_up_area_sqft": Float. Warehouse/Factory/House built-up floor area.
+    - "tenure_type": String (e.g., "Freehold", "Leasehold", "Malay Reserved").
+    - "zoning_type": String (e.g., "Agricultural", "Residential", "Commercial", "Industrial").
+    - "title_status": String (e.g., "Individual Title", "Master Title", "Commercial Building Title", "Agricultural Title").
+    
+    Agricultural & Land Fields (for durian/fruit/rubber/oil palm land):
+    - "crop_types": List of strings (e.g., ["Musang King", "Black Thorn", "D24", "Rubber", "Oil Palm", "Mixed Fruit"]).
+    - "tree_count_estimate": Integer. Total estimated number of trees.
+    - "tree_age_years": String (e.g., "6-8 years (Mature Fruit-Bearing)", "2-3 years young").
+    - "harvest_readiness": String ("Mature Fruit-Bearing", "Young Planting", "Vacant/Cleared").
+    
+    Topography & Water Resources:
+    - "topography": String ("Flat", "Gentle Slope", "Hilly/Terraced", "Hilltop View", "Undulating").
+    - "water_source_types": List of strings (e.g., ["Natural River Stream", "Pond", "PAIP Water", "Spring/Well", "Irrigation Piping Installed"]).
+    - "has_natural_stream": Boolean. True if natural river/stream on or bordering land.
+    - "has_pond": Boolean. True if water pond/lake on site.
+    - "has_piping_system": Boolean. True if irrigation system/piping installed.
+    - "is_flood_free": Boolean. True if mentioned as flood-free or high ground.
+    
+    Infrastructure & Technical:
+    - "power_supply_amp": Integer (e.g., 60, 100, 300, 1200).
+    - "utilities_available": List of strings (e.g., ["Electricity (TNB)", "Water (PAIP)"]).
+    - "has_office": Boolean. True if office/workers quarters present.
     - "office_features": String.
-    - "road_access_quality": String.
-    - "is_tenanted": Boolean. True if currently tenanted.
-    - "lease_start_date": String (YYYY-MM-DD).
-    - "lease_end_date": String (YYYY-MM-DD).
+    - "road_access_quality": String (e.g., "Main Road Frontage", "Tar Road Access", "Concrete Road", "4WD Required").
+    - "is_fenced": Boolean. True if compound is fenced/gated.
+    - "has_worker_quarters": Boolean. True if worker house or quarters built on site.
+    
+    Tenancy & Commercial Status:
+    - "is_tenanted": Boolean.
+    - "lease_start_date": String (YYYY-MM-DD) or null.
+    - "lease_end_date": String (YYYY-MM-DD) or null.
     - "current_tenant_use": String.
-    - "street_address": String.
-    - "area": String (e.g., "Taman Desa Damai").
-    - "city": String (e.g., "Bentong").
-    - "state": String (e.g., "Pahang").
-    - "suitable_industries": List of strings.
-    - "key_highlights": List of strings.
-    - "risk_flags": List of strings (e.g., upcoming lease expiry).
-    - "status": String (e.g., "For Sale", "Available").
+    
+    Location & Geospatial:
+    - "street_address": String (e.g., "Jalan Industri 3", "Telemong Batu 34").
+    - "area": String (e.g., "Bukit Bendera", "Cheroh", "Taman Jaya 7").
+    - "city": String (e.g., "Bentong", "Raub", "Karak", "Temerloh", "Mentakab", "Teluk Intan").
+    - "state": String (e.g., "Pahang", "Perak", "Selangor").
+    - "nearby_landmarks": List of strings (e.g., ["Opposite Mentakab Star Mall", "Near ECRL", "Near Karak Highway Exit"]).
+    
+    AI Analytics:
+    - "suitable_industries": List of strings (e.g., ["durian plantation", "homestay resort", "glamping", "courier logistics", "showroom"]).
+    - "key_highlights": List of strings (Top 3-5 high-impact bullet points for buyers).
+    - "risk_flags": List of strings (e.g., ["Malay Reserved Land - Malay buyers only", "4WD required for access"]).
+    - "status": String ("For Sale", "For Rent", "Available", "Sold", "Pending").
     """
     
     content = f"Title: {title}\n\nDescription: {description}"
     
     extracted_data = {
+        "title": title,
+        "property_type_sub": None,
+        "property_category": payload.get("categories", []),
         "asking_price_myr": 0.0,
+        "currency": "MYR",
         "monthly_rental_income_myr": None,
+        "price_per_acre_myr": None,
+        "price_per_sqft_myr": None,
         "implied_yield_pct": None,
-        "category": [],
-        "land_area_sqft": None,
         "land_area_acres": None,
+        "land_area_sqft": None,
         "land_area_sqm": None,
         "built_up_area_sqft": None,
         "tenure_type": None,
         "zoning_type": None,
+        "title_status": None,
+        "crop_types": [],
+        "tree_count_estimate": None,
+        "tree_age_years": None,
+        "harvest_readiness": None,
+        "topography": None,
+        "water_source_types": [],
+        "has_natural_stream": False,
+        "has_pond": False,
+        "has_piping_system": False,
+        "is_flood_free": True,
         "power_supply_amp": None,
         "utilities_available": [],
         "has_office": False,
         "office_features": None,
         "road_access_quality": None,
+        "is_fenced": False,
+        "has_worker_quarters": False,
         "is_tenanted": False,
         "lease_start_date": None,
         "lease_end_date": None,
@@ -296,11 +364,28 @@ def extract_wordpress_property(payload: dict) -> dict:
         "street_address": None,
         "area": None,
         "city": None,
-        "state": None,
+        "state": "Pahang",
+        "country": "Malaysia",
+        "latitude": None,
+        "longitude": None,
+        "nearby_landmarks": [],
         "suitable_industries": [],
         "key_highlights": [],
         "risk_flags": [],
-        "status": payload.get("status", "Available")
+        "listing_status": payload.get("status", "For Sale"),
+        "search_corpus_markdown": f"{title}\n\n{description}",
+        "agency_name": "HOME IHC SDN. BHD.",
+        "agent_name": "Irene Leong",
+        "agent_phone": "+6011-65144931",
+        "agent_whatsapp_url": "https://my.mecard.my/1733211127",
+        "image_urls": payload.get("image_urls", []),
+        "floor_plan_url": None,
+        "months_to_lease_expiry": None,
+        "embedding_location": None,
+        "embedding_specs": None,
+        "embedding_features": None,
+        "embedding_suitability": None,
+        "embedding_overview": None,
     }
     
     try:
@@ -326,28 +411,65 @@ def extract_wordpress_property(payload: dict) -> dict:
             def safe_int(val):
                 if val is None: return None
                 try:
-                    return int(str(val).replace(",", "").strip())
+                    return int(float(str(val).replace(",", "").strip()))
                 except ValueError:
                     return None
 
+            extracted_data["property_type_sub"] = parsed.get("property_type_sub")
+            if parsed.get("category") and isinstance(parsed.get("category"), list):
+                extracted_data["property_category"] = parsed.get("category")
+                
             extracted_data["asking_price_myr"] = safe_float(parsed.get("asking_price_myr")) or 0.0
             extracted_data["monthly_rental_income_myr"] = safe_float(parsed.get("monthly_rental_income_myr"))
+            extracted_data["price_per_acre_myr"] = safe_float(parsed.get("price_per_acre_myr"))
+            extracted_data["price_per_sqft_myr"] = safe_float(parsed.get("price_per_sqft_myr"))
             extracted_data["implied_yield_pct"] = safe_float(parsed.get("implied_yield_pct"))
             
-            extracted_data["category"] = parsed.get("category", []) if isinstance(parsed.get("category"), list) else []
+            # Auto-calculate implied yield if not set
+            if extracted_data["monthly_rental_income_myr"] and extracted_data["asking_price_myr"] and extracted_data["asking_price_myr"] > 0:
+                if not extracted_data["implied_yield_pct"]:
+                    extracted_data["implied_yield_pct"] = round((extracted_data["monthly_rental_income_myr"] * 12 / extracted_data["asking_price_myr"]) * 100, 2)
             
-            extracted_data["land_area_sqft"] = safe_float(parsed.get("land_area_sqft"))
             extracted_data["land_area_acres"] = safe_float(parsed.get("land_area_acres"))
+            extracted_data["land_area_sqft"] = safe_float(parsed.get("land_area_sqft"))
             extracted_data["land_area_sqm"] = safe_float(parsed.get("land_area_sqm"))
             extracted_data["built_up_area_sqft"] = safe_float(parsed.get("built_up_area_sqft"))
             
+            # Auto-calculate derived areas
+            if extracted_data["land_area_acres"] and not extracted_data["land_area_sqft"]:
+                extracted_data["land_area_sqft"] = round(extracted_data["land_area_acres"] * 43560.0, 2)
+            if extracted_data["land_area_sqft"] and not extracted_data["land_area_acres"]:
+                extracted_data["land_area_acres"] = round(extracted_data["land_area_sqft"] / 43560.0, 4)
+            if extracted_data["asking_price_myr"] and extracted_data["land_area_acres"] and extracted_data["land_area_acres"] > 0:
+                if not extracted_data["price_per_acre_myr"]:
+                    extracted_data["price_per_acre_myr"] = round(extracted_data["asking_price_myr"] / extracted_data["land_area_acres"], 2)
+            if extracted_data["asking_price_myr"] and extracted_data["land_area_sqft"] and extracted_data["land_area_sqft"] > 0:
+                if not extracted_data["price_per_sqft_myr"]:
+                    extracted_data["price_per_sqft_myr"] = round(extracted_data["asking_price_myr"] / extracted_data["land_area_sqft"], 2)
+
             extracted_data["tenure_type"] = parsed.get("tenure_type")
             extracted_data["zoning_type"] = parsed.get("zoning_type")
+            extracted_data["title_status"] = parsed.get("title_status")
+            
+            extracted_data["crop_types"] = parsed.get("crop_types", []) if isinstance(parsed.get("crop_types"), list) else []
+            extracted_data["tree_count_estimate"] = safe_int(parsed.get("tree_count_estimate"))
+            extracted_data["tree_age_years"] = parsed.get("tree_age_years")
+            extracted_data["harvest_readiness"] = parsed.get("harvest_readiness")
+            
+            extracted_data["topography"] = parsed.get("topography")
+            extracted_data["water_source_types"] = parsed.get("water_source_types", []) if isinstance(parsed.get("water_source_types"), list) else []
+            extracted_data["has_natural_stream"] = bool(parsed.get("has_natural_stream"))
+            extracted_data["has_pond"] = bool(parsed.get("has_pond"))
+            extracted_data["has_piping_system"] = bool(parsed.get("has_piping_system"))
+            extracted_data["is_flood_free"] = bool(parsed.get("is_flood_free", True))
+            
             extracted_data["power_supply_amp"] = safe_int(parsed.get("power_supply_amp"))
             extracted_data["utilities_available"] = parsed.get("utilities_available", []) if isinstance(parsed.get("utilities_available"), list) else []
             extracted_data["has_office"] = bool(parsed.get("has_office"))
             extracted_data["office_features"] = parsed.get("office_features")
             extracted_data["road_access_quality"] = parsed.get("road_access_quality")
+            extracted_data["is_fenced"] = bool(parsed.get("is_fenced"))
+            extracted_data["has_worker_quarters"] = bool(parsed.get("has_worker_quarters"))
             
             extracted_data["is_tenanted"] = bool(parsed.get("is_tenanted"))
             extracted_data["lease_start_date"] = parsed.get("lease_start_date")
@@ -357,14 +479,31 @@ def extract_wordpress_property(payload: dict) -> dict:
             extracted_data["street_address"] = parsed.get("street_address")
             extracted_data["area"] = parsed.get("area")
             extracted_data["city"] = parsed.get("city")
-            extracted_data["state"] = parsed.get("state")
+            extracted_data["state"] = parsed.get("state") or "Pahang"
+            extracted_data["nearby_landmarks"] = parsed.get("nearby_landmarks", []) if isinstance(parsed.get("nearby_landmarks"), list) else []
+            
+            # Geocoding approximate lat/lng from town/city
+            city_lower = (extracted_data["city"] or "").lower().strip()
+            area_lower = (extracted_data["area"] or "").lower().strip()
+            for town_key, coords in TOWN_COORDINATES.items():
+                if town_key in city_lower or town_key in area_lower:
+                    extracted_data["latitude"] = coords[0]
+                    extracted_data["longitude"] = coords[1]
+                    break
             
             extracted_data["suitable_industries"] = parsed.get("suitable_industries", []) if isinstance(parsed.get("suitable_industries"), list) else []
             extracted_data["key_highlights"] = parsed.get("key_highlights", []) if isinstance(parsed.get("key_highlights"), list) else []
             extracted_data["risk_flags"] = parsed.get("risk_flags", []) if isinstance(parsed.get("risk_flags"), list) else []
             
             if parsed.get("status"):
-                extracted_data["status"] = parsed.get("status")
+                extracted_data["listing_status"] = parsed.get("status")
+                
+            # Generate 5-aspect vector embeddings
+            try:
+                embeddings_dict = generate_property_5_embeddings(extracted_data)
+                extracted_data.update(embeddings_dict)
+            except Exception as emb_err:
+                logger.warning(f"Could not generate embeddings for {title}: {emb_err}")
                 
     except Exception as e:
         logger.error(f"Failed to extract WordPress property data: {e}")
