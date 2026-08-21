@@ -6,7 +6,7 @@ import time
 # Ensure python path is set to backend
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from app.db.models import SessionLocal, Property
+from app.db.models import SessionLocal, Property, engine, run_schema_migrations
 from app.services.llm import extract_wordpress_property
 from app.services.embeddings import generate_property_5_embeddings
 
@@ -14,6 +14,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("reprocess_properties")
 
 def reprocess_all():
+    logger.info("Ensuring all 12-category schema columns and vector extensions exist in database...")
+    run_schema_migrations(engine)
+    
     db = SessionLocal()
     try:
         properties = db.query(Property).all()

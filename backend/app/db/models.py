@@ -270,3 +270,54 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
+
+def run_schema_migrations(eng):
+    """Ensures pgvector extension and all 12-category columns exist in properties table."""
+    from sqlalchemy import text
+    try:
+        with eng.connect() as conn:
+            try:
+                conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
+                conn.commit()
+            except Exception as e:
+                logger.warning(f"Could not enable pgvector extension: {e}")
+                
+            migrations = [
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS property_type_sub VARCHAR;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS price_per_acre_myr FLOAT;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS price_per_sqft_myr FLOAT;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS title_status VARCHAR;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS crop_types JSON;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS tree_count_estimate INTEGER;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS tree_age_years VARCHAR;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS harvest_readiness VARCHAR;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS topography VARCHAR;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS water_source_types JSON;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS has_natural_stream BOOLEAN DEFAULT FALSE;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS has_pond BOOLEAN DEFAULT FALSE;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS has_piping_system BOOLEAN DEFAULT FALSE;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS is_flood_free BOOLEAN DEFAULT TRUE;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS is_fenced BOOLEAN DEFAULT FALSE;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS has_worker_quarters BOOLEAN DEFAULT FALSE;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS nearby_landmarks JSON;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS embedding_location vector(384);",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS embedding_specs vector(384);",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS embedding_features vector(384);",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS embedding_suitability vector(384);",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS embedding_overview vector(384);"
+            ]
+            for query in migrations:
+                try:
+                    conn.execute(text(query))
+                    conn.commit()
+                except Exception as e:
+                    pass
+    except Exception as e:
+        logger.error(f"Migration error: {e}")
+
+try:
+    run_schema_migrations(engine)
+except Exception:
+    pass
+
+
