@@ -138,41 +138,48 @@ def reprocess_all():
     run_schema_migrations(engine)
     
     db = SessionLocal()
+    count = 0
     try:
         count = db.query(Property).count()
-        if count == 0:
-            logger.info("Database has 0 properties. Syncing authentic listings from bentongland.com.my WordPress...")
-            from scripts.scrape_and_ingest_all_properties import fetch_and_ingest_all
-            fetch_and_ingest_all()
-            
-        prop_ids = [p.id for p in db.query(Property.id).all()]
-        total = len(prop_ids)
-        logger.info(f"Starting parallel reprocessing, 12-category enrichment, and 5-aspect vector embedding for {total} properties...")
-        
-        updated_count = 0
-        error_count = 0
-        
-        # Concurrently process in parallel threads (10 workers)
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            future_to_id = {executor.submit(process_single_property, pid): pid for pid in prop_ids}
-            for idx, future in enumerate(as_completed(future_to_id), start=1):
-                pid = future_to_id[future]
-                try:
-                    success = future.result()
-                    if success:
-                        updated_count += 1
-                    else:
-                        error_count += 1
-                except Exception as exc:
-                    logger.error(f"Property {pid} generated exception: {exc}")
-                    error_count += 1
-                
-                if idx % 10 == 0 or idx == total:
-                    logger.info(f"Progress: [{idx}/{total}] completed. (Success: {updated_count}, Errors: {error_count})")
-        
-        logger.info(f"Reprocessing completed! Total: {total}, Successfully Updated: {updated_count}, Errors: {error_count}")
     finally:
         db.close()
+        
+    if count == 0:
+        logger.info("Database has 0 properties. Syncing authentic listings from bentongland.com.my WordPress...")
+        from scripts.scrape_and_ingest_all_properties import fetch_and_ingest_all
+        fetch_and_ingest_all()
+        
+    db = SessionLocal()
+    try:
+        prop_ids = [p.id for p in db.query(Property.id).all()]
+    finally:
+        db.close()
+        
+    total = len(prop_ids)
+    logger.info(f"Starting parallel reprocessing, 12-category enrichment, and 5-aspect vector embedding for {total} properties...")
+    
+    updated_count = 0
+    error_count = 0
+    
+    # Concurrently process in parallel threads (10 workers)
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        future_to_id = {executor.submit(process_single_property, pid): pid for pid in prop_ids}
+        for idx, future in enumerate(as_completed(future_to_id), start=1):
+            pid = future_to_id[future]
+            try:
+                success = future.result()
+                if success:
+                    updated_count += 1
+                else:
+                    error_count += 1
+            except Exception as exc:
+                logger.error(f"Property {pid} generated exception: {exc}")
+                error_count += 1
+            
+            if idx % 10 == 0 or idx == total:
+                logger.info(f"Progress: [{idx}/{total}] completed. (Success: {updated_count}, Errors: {error_count})")
+    
+    logger.info(f"Reprocessing completed! Total: {total}, Successfully Updated: {updated_count}, Errors: {error_count}")
 
 if __name__ == "__main__":
     reprocess_all()

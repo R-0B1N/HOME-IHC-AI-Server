@@ -277,6 +277,13 @@ def run_schema_migrations(eng):
     try:
         with eng.connect() as conn:
             try:
+                conn.execute(text("SET statement_timeout = 10000;"))
+                conn.execute(text("SET lock_timeout = 5000;"))
+                conn.commit()
+            except Exception:
+                pass
+                
+            try:
                 conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
                 conn.commit()
             except Exception as e:
@@ -310,34 +317,32 @@ def run_schema_migrations(eng):
                 try:
                     conn.execute(text(query))
                     conn.commit()
-                except Exception as e:
+                except Exception:
                     pass
                     
-            # Fix any mismatching column types if previously created as JSON
-            fix_queries = [
-                "ALTER TABLE properties ALTER COLUMN crop_types TYPE TEXT[] USING crop_types::TEXT[];",
-                "ALTER TABLE properties ALTER COLUMN water_source_types TYPE TEXT[] USING water_source_types::TEXT[];",
-                "ALTER TABLE properties ALTER COLUMN nearby_landmarks TYPE TEXT[] USING nearby_landmarks::TEXT[];"
-            ]
-            for fq in fix_queries:
-                try:
-                    conn.execute(text(fq))
-                    conn.commit()
-                except Exception:
-                    try:
-                        col = fq.split()[4]
-                        conn.execute(text(f"ALTER TABLE properties DROP COLUMN IF EXISTS {col} CASCADE;"))
-                        conn.execute(text(f"ALTER TABLE properties ADD COLUMN {col} TEXT[] DEFAULT '{{}}';"))
-                        conn.commit()
-                    except Exception:
-                        pass
+            # Only alter column type if not already ARRAY/TEXT[]
+            try:
+                res = conn.execute(text(
+                    "SELECT column_name, data_type FROM information_schema.columns "
+                    "WHERE table_name = 'properties' AND column_name IN ('crop_types', 'water_source_types', 'nearby_landmarks');"
+                )).fetchall()
+                for col_name, dtype in res:
+                    if dtype != 'ARRAY':
+                        try:
+                            conn.execute(text(f"ALTER TABLE properties ALTER COLUMN {col_name} TYPE TEXT[] USING {col_name}::TEXT[];"))
+                            conn.commit()
+                        except Exception:
+                            try:
+                                conn.execute(text(f"ALTER TABLE properties DROP COLUMN IF EXISTS {col_name} CASCADE;"))
+                                conn.execute(text(f"ALTER TABLE properties ADD COLUMN {col_name} TEXT[] DEFAULT '{{}}';"))
+                                conn.commit()
+                            except Exception:
+                                pass
+            except Exception:
+                pass
 
     except Exception as e:
         logger.error(f"Migration error: {e}")
 
-try:
-    run_schema_migrations(engine)
-except Exception:
-    pass
 
 

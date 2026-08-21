@@ -65,6 +65,10 @@ def parse_acres(text: str) -> float:
             pass
     return 0.0
 
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
+
 def fetch_and_ingest_all():
     logger.info("Ensuring database schema migrations are applied...")
     run_schema_migrations(engine)
@@ -81,8 +85,8 @@ def fetch_and_ingest_all():
             logger.info(f"Fetching page {page} from {url}...")
             
             try:
-                res = requests.get(url, timeout=30)
-                if res.status_code == 400 or res.status_code == 404:
+                res = requests.get(url, headers=HEADERS, timeout=15)
+                if res.status_code in (400, 404):
                     logger.info("Reached last page of WordPress API.")
                     break
                 res.raise_for_status()
