@@ -338,7 +338,7 @@ def extract_wordpress_property(payload: dict) -> dict:
     - "status": String ("For Sale", "For Rent", "Available", "Sold", "Pending").
     """
     
-    content = f"Title: {title}\n\nDescription: {description}"[:2500]
+    content = f"Title: {title}\n\nDescription: {description}"[:1800]
     
     extracted_data = {
         "title": title,
@@ -413,9 +413,10 @@ def extract_wordpress_property(payload: dict) -> dict:
                 {"role": "user", "content": content}
             ],
             response_format={"type": "json_object"},
-            max_tokens=1024
+            max_tokens=800
         )
         raw_text = response.choices[0].message.content
+
 
         parsed = _parse_json_from_llm(raw_text)
         
