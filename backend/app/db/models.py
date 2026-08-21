@@ -320,26 +320,26 @@ def run_schema_migrations(eng):
                 except Exception:
                     pass
                     
-            # Only alter column type if not already ARRAY/TEXT[]
-            try:
-                res = conn.execute(text(
-                    "SELECT column_name, data_type FROM information_schema.columns "
-                    "WHERE table_name = 'properties' AND column_name IN ('crop_types', 'water_source_types', 'nearby_landmarks');"
-                )).fetchall()
-                for col_name, dtype in res:
-                    if dtype != 'ARRAY':
-                        try:
-                            conn.execute(text(f"ALTER TABLE properties ALTER COLUMN {col_name} TYPE TEXT[] USING {col_name}::TEXT[];"))
-                            conn.commit()
-                        except Exception:
-                            try:
-                                conn.execute(text(f"ALTER TABLE properties DROP COLUMN IF EXISTS {col_name} CASCADE;"))
-                                conn.execute(text(f"ALTER TABLE properties ADD COLUMN {col_name} TEXT[] DEFAULT '{{}}';"))
-                                conn.commit()
-                            except Exception:
-                                pass
-            except Exception:
-                pass
+            # Ensure all ARRAY columns are true PostgreSQL TEXT[] arrays and not legacy JSON
+            array_cols = [
+                'crop_types', 'water_source_types', 'nearby_landmarks', 
+                'property_category', 'utilities_available', 'suitable_industries', 
+                'key_highlights', 'image_urls', 'risk_flags'
+            ]
+            for col_name in array_cols:
+                try:
+                    res = conn.execute(text(
+                        f"SELECT data_type FROM information_schema.columns "
+                        f"WHERE table_name = 'properties' AND column_name = '{col_name}';"
+                    )).fetchone()
+                    if res and res[0] != 'ARRAY':
+                        conn.rollback()
+                        conn.execute(text(f"ALTER TABLE properties DROP COLUMN IF EXISTS {col_name} CASCADE;"))
+                        conn.execute(text(f"ALTER TABLE properties ADD COLUMN {col_name} TEXT[] DEFAULT '{{}}';"))
+                        conn.commit()
+                except Exception as ex:
+                    conn.rollback()
+                    logger.warning(f"Error checking/migrating array column {col_name}: {ex}")
 
     except Exception as e:
         logger.error(f"Migration error: {e}")
