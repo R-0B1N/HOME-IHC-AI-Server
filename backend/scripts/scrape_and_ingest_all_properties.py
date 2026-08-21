@@ -10,7 +10,7 @@ from bs4 import BeautifulSoup
 # Ensure backend directory is in sys.path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.db.models import SessionLocal, Property
+from app.db.models import SessionLocal, Property, engine, run_schema_migrations
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -66,6 +66,8 @@ def parse_acres(text: str) -> float:
     return 0.0
 
 def fetch_and_ingest_all():
+    logger.info("Ensuring database schema migrations are applied...")
+    run_schema_migrations(engine)
     logger.info("Starting complete ingestion of all listings from bentongland.com.my WordPress REST API...")
     
     db = SessionLocal()

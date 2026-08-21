@@ -287,19 +287,19 @@ def run_schema_migrations(eng):
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS price_per_acre_myr FLOAT;",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS price_per_sqft_myr FLOAT;",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS title_status VARCHAR;",
-                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS crop_types JSON;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS crop_types TEXT[] DEFAULT '{}';",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS tree_count_estimate INTEGER;",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS tree_age_years VARCHAR;",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS harvest_readiness VARCHAR;",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS topography VARCHAR;",
-                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS water_source_types JSON;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS water_source_types TEXT[] DEFAULT '{}';",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS has_natural_stream BOOLEAN DEFAULT FALSE;",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS has_pond BOOLEAN DEFAULT FALSE;",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS has_piping_system BOOLEAN DEFAULT FALSE;",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS is_flood_free BOOLEAN DEFAULT TRUE;",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS is_fenced BOOLEAN DEFAULT FALSE;",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS has_worker_quarters BOOLEAN DEFAULT FALSE;",
-                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS nearby_landmarks JSON;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS nearby_landmarks TEXT[] DEFAULT '{}';",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS embedding_location vector(384);",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS embedding_specs vector(384);",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS embedding_features vector(384);",
@@ -312,6 +312,26 @@ def run_schema_migrations(eng):
                     conn.commit()
                 except Exception as e:
                     pass
+                    
+            # Fix any mismatching column types if previously created as JSON
+            fix_queries = [
+                "ALTER TABLE properties ALTER COLUMN crop_types TYPE TEXT[] USING crop_types::TEXT[];",
+                "ALTER TABLE properties ALTER COLUMN water_source_types TYPE TEXT[] USING water_source_types::TEXT[];",
+                "ALTER TABLE properties ALTER COLUMN nearby_landmarks TYPE TEXT[] USING nearby_landmarks::TEXT[];"
+            ]
+            for fq in fix_queries:
+                try:
+                    conn.execute(text(fq))
+                    conn.commit()
+                except Exception:
+                    try:
+                        col = fq.split()[4]
+                        conn.execute(text(f"ALTER TABLE properties DROP COLUMN IF EXISTS {col} CASCADE;"))
+                        conn.execute(text(f"ALTER TABLE properties ADD COLUMN {col} TEXT[] DEFAULT '{{}}';"))
+                        conn.commit()
+                    except Exception:
+                        pass
+
     except Exception as e:
         logger.error(f"Migration error: {e}")
 
