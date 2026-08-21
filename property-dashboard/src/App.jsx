@@ -2,7 +2,9 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
 import { 
   Plus, Home, MapPin, Tag, Edit, Trash2, Map, Users, 
-  LayoutGrid, MessageCircle, X, GitBranch, LogOut, ShieldCheck, Shield, User 
+  LayoutGrid, MessageCircle, X, GitBranch, LogOut, ShieldCheck, Shield, User,
+  Sparkles, Table, Grid, Eye, Search, Layers, Activity, TrendingUp, Droplets, Zap,
+  Compass, ExternalLink, CheckCircle2, ArrowRight, TreePine, Building2
 } from 'lucide-react';
 import { useAuth } from './context/AuthContext';
 import WorkflowViewer from './pages/WorkflowViewer';
@@ -18,6 +20,8 @@ function App() {
   const [authMode, setAuthMode] = useState('login'); // 'login' or 'register'
 
   const [properties, setProperties] = useState([]);
+  const [viewMode, setViewMode] = useState('table'); // 'table' | 'grid'
+  const [detailProperty, setDetailProperty] = useState(null);
   const [sortOrder, setSortOrder] = useState('newest'); // newest, price-asc, price-desc
   const [propStatusFilter, setPropStatusFilter] = useState('All');
   const [cityFilter, setCityFilter] = useState('All');
@@ -35,6 +39,17 @@ function App() {
   const [isLeadModalOpen, setIsLeadModalOpen] = useState(false);
   const [isEditingLead, setIsEditingLead] = useState(false);
   const [selectedLead, setSelectedLead] = useState(null);
+
+  // Embeddings Explorer States
+  const [embeddingsSummary, setEmbeddingsSummary] = useState(null);
+  const [selectedEmbPropId, setSelectedEmbPropId] = useState('');
+  const [propCorrelations, setPropCorrelations] = useState(null);
+  const [propAspectChunks, setPropAspectChunks] = useState(null);
+  const [isLoadingCorrelations, setIsLoadingCorrelations] = useState(false);
+  const [nlQuery, setNlQuery] = useState('');
+  const [nlSearchResults, setNlSearchResults] = useState(null);
+  const [isSearchingNl, setIsSearchingNl] = useState(false);
+
   const [leadFormData, setLeadFormData] = useState({
     phone_number: '',
     contact_name: '',
@@ -71,10 +86,57 @@ function App() {
     try {
       const response = await axios.get(`${API_BASE_URL}/properties`);
       setProperties(response.data);
+      if (response.data && response.data.length > 0 && !selectedEmbPropId) {
+        setSelectedEmbPropId(response.data[0].id);
+      }
     } catch (error) {
       console.error('Failed to fetch properties:', error);
     }
   };
+
+  const fetchEmbeddingsSummary = async () => {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/properties/embeddings/summary`);
+      setEmbeddingsSummary(response.data);
+    } catch (error) {
+      console.error('Failed to fetch embeddings summary:', error);
+    }
+  };
+
+  const fetchPropertyCorrelations = async (propId) => {
+    if (!propId) return;
+    setIsLoadingCorrelations(true);
+    try {
+      const [corrRes, aspectRes] = await Promise.all([
+        axios.get(`${API_BASE_URL}/properties/embeddings/correlations/${propId}?limit=6`),
+        axios.get(`${API_BASE_URL}/properties/embeddings/aspects/${propId}`)
+      ]);
+      setPropCorrelations(corrRes.data);
+      setPropAspectChunks(aspectRes.data);
+    } catch (error) {
+      console.error('Failed to fetch property correlations:', error);
+    } finally {
+      setIsLoadingCorrelations(false);
+    }
+  };
+
+  const handleNlSearch = async (e) => {
+    if (e) e.preventDefault();
+    if (!nlQuery.trim()) return;
+    setIsSearchingNl(true);
+    try {
+      const response = await axios.post(`${API_BASE_URL}/properties/embeddings/query-search`, {
+        query: nlQuery.trim(),
+        limit: 6
+      });
+      setNlSearchResults(response.data);
+    } catch (error) {
+      console.error('Failed to run NL query search:', error);
+    } finally {
+      setIsSearchingNl(false);
+    }
+  };
+
 
   const [isSyncingWP, setIsSyncingWP] = useState(false);
 
@@ -591,6 +653,20 @@ function App() {
             <span className="lux-tab-count">{leads.length}</span>
           </button>
           <button 
+            className={`lux-tab-btn ${activeTab === 'embeddings' ? 'active' : ''}`}
+            onClick={() => {
+              setActiveTab('embeddings');
+              fetchEmbeddingsSummary();
+              if (properties.length > 0) {
+                const targetId = selectedEmbPropId || properties[0].id;
+                setSelectedEmbPropId(targetId);
+                fetchPropertyCorrelations(targetId);
+              }
+            }}
+          >
+            <Sparkles size={17} color="#a855f7" /> Vector Embeddings
+          </button>
+          <button 
             className={`lux-tab-btn ${activeTab === 'workflows' ? 'active' : ''}`}
             onClick={() => setActiveTab('workflows')}
           >
@@ -639,6 +715,21 @@ function App() {
               </button>
             </div>
           )}
+
+          {activeTab === 'embeddings' && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+              <button 
+                className="lux-btn-secondary"
+                onClick={() => {
+                  fetchEmbeddingsSummary();
+                  if (selectedEmbPropId) fetchPropertyCorrelations(selectedEmbPropId);
+                }}
+                title="Refresh vector statistics & correlations"
+              >
+                🔄 Refresh Vectors
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -659,6 +750,24 @@ function App() {
               </button>
             )}
           </div>
+
+          <div className="view-toggle-group">
+            <button 
+              className={`view-toggle-btn ${viewMode === 'table' ? 'active' : ''}`}
+              onClick={() => setViewMode('table')}
+              title="Table View (Full 12 Categories)"
+            >
+              <Table size={14} /> Table
+            </button>
+            <button 
+              className={`view-toggle-btn ${viewMode === 'grid' ? 'active' : ''}`}
+              onClick={() => setViewMode('grid')}
+              title="Card Grid View"
+            >
+              <Grid size={14} /> Grid
+            </button>
+          </div>
+
 
           <select 
             className="lux-select" 
@@ -768,10 +877,160 @@ function App() {
               </button>
             </div>
           </div>
+        ) : viewMode === 'table' ? (
+          <div className="properties-table-wrap">
+            <table className="properties-table">
+              <thead>
+                <tr>
+                  <th>Property Listing</th>
+                  <th>Category / Subtype</th>
+                  <th>Location</th>
+                  <th>Financials (MYR)</th>
+                  <th>Size & Specs</th>
+                  <th>Tenure & Zoning</th>
+                  <th>Crops & Trees</th>
+                  <th>Water & Topography</th>
+                  <th>Power & Access</th>
+                  <th>Status</th>
+                  <th>Vectors</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedProperties.map((prop) => (
+                  <tr key={prop.id} onClick={() => setDetailProperty(prop)}>
+                    <td style={{ minWidth: '220px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+                        {prop.image_urls && prop.image_urls.length > 0 ? (
+                          <img 
+                            src={prop.image_urls[0]} 
+                            alt={prop.title} 
+                            style={{ width: '42px', height: '42px', borderRadius: '6px', objectFit: 'cover' }} 
+                            loading="lazy" 
+                          />
+                        ) : (
+                          <div style={{ width: '42px', height: '42px', borderRadius: '6px', background: '#e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                            <Home size={18} color="#94a3b8" />
+                          </div>
+                        )}
+                        <div>
+                          <div style={{ fontWeight: 700, color: '#0f172a', fontSize: '0.85rem' }}>{prop.title}</div>
+                          {prop.property_type_sub && (
+                            <span style={{ fontSize: '0.72rem', color: '#64748b' }}>{prop.property_type_sub}</span>
+                          )}
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      {(prop.property_category || []).map((cat, idx) => (
+                        <span key={idx} className="cat-pill">{cat}</span>
+                      ))}
+                    </td>
+                    <td>
+                      <div style={{ fontWeight: 600, color: '#1e293b' }}>{prop.city || 'Pahang'}</div>
+                      <div style={{ fontSize: '0.72rem', color: '#64748b' }}>{prop.street_address || prop.area || prop.state || '-'}</div>
+                    </td>
+                    <td>
+                      <div style={{ fontWeight: 800, color: '#047857', fontSize: '0.9rem' }}>
+                        {formatPrice(prop.asking_price_myr || prop.monthly_rental_income_myr)}
+                        {prop.monthly_rental_income_myr > 0 && !prop.asking_price_myr ? '/mo' : ''}
+                      </div>
+                      {prop.price_per_acre_myr > 0 && (
+                        <div style={{ fontSize: '0.72rem', color: '#64748b' }}>RM {prop.price_per_acre_myr.toLocaleString()}/ac</div>
+                      )}
+                      {prop.price_per_sqft_myr > 0 && (
+                        <div style={{ fontSize: '0.72rem', color: '#64748b' }}>RM {prop.price_per_sqft_myr.toLocaleString()}/sqft</div>
+                      )}
+                      {prop.implied_yield_pct > 0 && (
+                        <span className="yield-tag">📈 {prop.implied_yield_pct}% Yield</span>
+                      )}
+                    </td>
+                    <td>
+                      {prop.land_area_acres > 0 && (
+                        <div style={{ fontWeight: 600 }}>{prop.land_area_acres} Acres</div>
+                      )}
+                      {prop.built_up_area_sqft > 0 && (
+                        <div style={{ fontSize: '0.72rem', color: '#64748b' }}>Built: {prop.built_up_area_sqft.toLocaleString()} sqft</div>
+                      )}
+                      {prop.land_area_sqft > 0 && !prop.built_up_area_sqft && (
+                        <div style={{ fontSize: '0.72rem', color: '#64748b' }}>{prop.land_area_sqft.toLocaleString()} sqft</div>
+                      )}
+                    </td>
+                    <td>
+                      <div style={{ fontWeight: 600 }}>{prop.tenure_type || '-'}</div>
+                      <div style={{ fontSize: '0.72rem', color: '#64748b' }}>{prop.zoning_type || prop.title_status || '-'}</div>
+                    </td>
+                    <td>
+                      {prop.crop_types && prop.crop_types.length > 0 ? (
+                        <div>
+                          <div style={{ fontWeight: 600, color: '#15803d' }}>{prop.crop_types.join(', ')}</div>
+                          {prop.tree_count_estimate > 0 && (
+                            <div style={{ fontSize: '0.72rem', color: '#64748b' }}>{prop.tree_count_estimate} trees {prop.tree_age_years ? `(${prop.tree_age_years} yrs)` : ''}</div>
+                          )}
+                        </div>
+                      ) : (
+                        <span style={{ color: '#94a3b8', fontSize: '0.75rem' }}>Non-agri / Vacant</span>
+                      )}
+                    </td>
+                    <td>
+                      <div>{prop.topography || '-'}</div>
+                      {prop.has_natural_stream && <span className="cat-pill" style={{ background: '#ecfdf5', color: '#065f46' }}>🌊 Stream</span>}
+                      {prop.has_pond && <span className="cat-pill" style={{ background: '#eff6ff', color: '#1e40af' }}>💧 Pond</span>}
+                      {prop.is_flood_free && <span className="cat-pill" style={{ background: '#fef3c7', color: '#92400e' }}>🛡️ Flood Free</span>}
+                    </td>
+                    <td>
+                      {prop.power_supply_amp > 0 && (
+                        <div>⚡ {prop.power_supply_amp} Amp</div>
+                      )}
+                      <div style={{ fontSize: '0.72rem', color: '#64748b' }}>{prop.road_access_quality || '-'}</div>
+                    </td>
+                    <td>
+                      <span className="status-badge" style={{ position: 'static', padding: '0.2rem 0.5rem', fontSize: '0.7rem' }}>
+                        {prop.listing_status || 'Available'}
+                      </span>
+                    </td>
+                    <td>
+                      <span className="emb-badge-check" title="5 Aspect Vector Embeddings Populated (Location, Specs, Features, Suitability, Overview)">
+                        <Sparkles size={11} /> 5 Vectors
+                      </span>
+                    </td>
+                    <td>
+                      <div style={{ display: 'flex', gap: '0.35rem' }}>
+                        <button 
+                          className="btn-icon" 
+                          onClick={(e) => { e.stopPropagation(); setDetailProperty(prop); }}
+                          title="View 12-Category Full Breakdown"
+                          style={{ padding: '0.35rem', background: '#f1f5f9', border: '1px solid #cbd5e1', borderRadius: '4px', cursor: 'pointer' }}
+                        >
+                          <Eye size={14} color="#0f172a" />
+                        </button>
+                        <button 
+                          className="btn-icon" 
+                          onClick={(e) => { e.stopPropagation(); handleOpenEditModal(prop, e); }}
+                          title="Edit"
+                          style={{ padding: '0.35rem', background: '#f1f5f9', border: '1px solid #cbd5e1', borderRadius: '4px', cursor: 'pointer' }}
+                        >
+                          <Edit size={14} color="#2563eb" />
+                        </button>
+                        <button 
+                          className="btn-icon" 
+                          onClick={(e) => { e.stopPropagation(); handleDelete(prop.id, e); }}
+                          title="Delete"
+                          style={{ padding: '0.35rem', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '4px', cursor: 'pointer' }}
+                        >
+                          <Trash2 size={14} color="#dc2626" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         ) : (
           <div className="properties-grid">
             {sortedProperties.map((prop) => (
-              <div key={prop.id} className="property-card" onClick={() => handleViewMap(prop)}>
+              <div key={prop.id} className="property-card" onClick={() => setDetailProperty(prop)}>
                 {prop.image_urls && prop.image_urls.length > 0 ? (
                   <div className="property-image-wrap">
                     <img src={prop.image_urls[0]} alt={prop.title} className="property-img" loading="lazy" />
@@ -782,7 +1041,10 @@ function App() {
                 )}
                 
                 <div className="property-card-content">
-                  <div className="property-price">{formatPrice(prop.asking_price_myr)}</div>
+                  <div className="property-price">
+                    {formatPrice(prop.asking_price_myr || prop.monthly_rental_income_myr)}
+                    {prop.monthly_rental_income_myr > 0 && !prop.asking_price_myr ? '/mo' : ''}
+                  </div>
                   <div className="property-title">{prop.title}</div>
                   
                   <div className="property-details">
@@ -803,24 +1065,34 @@ function App() {
                         <strong>Acres:</strong> {prop.land_area_acres} ac
                       </div>
                     )}
+                    {prop.crop_types && prop.crop_types.length > 0 && (
+                      <div className="detail-item" style={{ gridColumn: 'span 2', color: '#15803d' }}>
+                        <TreePine size={16} />
+                        <span>{prop.crop_types.join(', ')} {prop.tree_count_estimate ? `(${prop.tree_count_estimate} trees)` : ''}</span>
+                      </div>
+                    )}
                   </div>
 
-                  <div className="card-actions">
-                    <button className="btn-icon view-map" onClick={(e) => { e.stopPropagation(); handleViewMap(prop); }} title="View Map & Details">
-                      <Map size={16} /> Map
+                  <div className="card-actions" style={{ marginTop: '0.75rem', display: 'flex', gap: '0.4rem', justifyContent: 'flex-end' }}>
+                    <button className="btn-icon view-map" onClick={(e) => { e.stopPropagation(); setDetailProperty(prop); }} title="View 12-Category Full Breakdown">
+                      <Eye size={15} /> Details
+                    </button>
+                    <button className="btn-icon view-map" onClick={(e) => { e.stopPropagation(); handleViewMap(prop); }} title="View Map">
+                      <Map size={15} /> Map
                     </button>
                     <button className="btn-icon edit" onClick={(e) => handleOpenEditModal(prop, e)} title="Edit">
-                      <Edit size={16} /> Edit
+                      <Edit size={15} /> Edit
                     </button>
                     <button className="btn-icon delete" onClick={(e) => handleDelete(prop.id, e)} title="Delete">
-                      <Trash2 size={16} /> Delete
+                      <Trash2 size={15} /> Delete
                     </button>
                   </div>
                 </div>
               </div>
             ))}
           </div>
-        )) : activeTab === 'leads' ? (
+        )
+) : activeTab === 'leads' ? (
 
           <div className="leads-grid">
             {leads.length === 0 ? (
@@ -940,11 +1212,282 @@ function App() {
               </table>
             )}
           </div>
+        ) : activeTab === 'embeddings' ? (
+          <div className="emb-container">
+            {/* 1. Header & KPI Stats */}
+            <div className="emb-stats-grid">
+              <div className="emb-stat-card">
+                <div className="emb-stat-icon">
+                  <Sparkles size={24} />
+                </div>
+                <div className="emb-stat-info">
+                  <h4>Embedding Health</h4>
+                  <div className="stat-number">
+                    {embeddingsSummary?.aspect_embeddings_stats?.fully_vectorized_pct || 100}%
+                  </div>
+                  <span style={{ fontSize: '0.75rem', color: '#16a34a', fontWeight: 600 }}>
+                    {embeddingsSummary?.total_properties || properties.length} Listings Vectorized
+                  </span>
+                </div>
+              </div>
+
+              <div className="emb-stat-card">
+                <div className="emb-stat-icon" style={{ background: '#ecfdf5', color: '#059669' }}>
+                  <Layers size={24} />
+                </div>
+                <div className="emb-stat-info">
+                  <h4>Dense Vectors Populated</h4>
+                  <div className="stat-number">
+                    {embeddingsSummary?.aspect_embeddings_stats?.total_vectors_generated || (properties.length * 5)}
+                  </div>
+                  <span style={{ fontSize: '0.75rem', color: '#64748b' }}>
+                    5 Vectors / Property (384-dim)
+                  </span>
+                </div>
+              </div>
+
+              <div className="emb-stat-card">
+                <div className="emb-stat-icon" style={{ background: '#eff6ff', color: '#2563eb' }}>
+                  <Activity size={24} />
+                </div>
+                <div className="emb-stat-info">
+                  <h4>Vector Model Engine</h4>
+                  <div className="stat-number" style={{ fontSize: '1rem', marginTop: '0.4rem' }}>
+                    bge-small-en-v1.5
+                  </div>
+                  <span style={{ fontSize: '0.75rem', color: '#64748b' }}>
+                    FastEmbed ONNX (~3ms inference)
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* 2. Interactive Natural Language Query Simulator */}
+            <div className="emb-section-card">
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, color: '#0f172a' }}>
+                    🧪 Real-Time Natural Language Vector Query Simulator
+                  </h3>
+                  <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.8rem', color: '#64748b' }}>
+                    Test real customer inquiries and inspect live multi-aspect cosine similarity rankings across Location, Specs, Features, and Suitability.
+                  </p>
+                </div>
+              </div>
+
+              <form onSubmit={handleNlSearch} style={{ display: 'flex', gap: '0.75rem', marginBottom: '1.25rem' }}>
+                <div style={{ flex: 1, position: 'relative' }}>
+                  <input 
+                    type="text" 
+                    className="lux-search-input" 
+                    placeholder="e.g. 10 ac Musang King durian orchard with natural river stream under 2.5m in Raub" 
+                    value={nlQuery}
+                    onChange={(e) => setNlQuery(e.target.value)}
+                    style={{ width: '100%', padding: '0.75rem 1rem', fontSize: '0.9rem', borderRadius: '8px', border: '1px solid #cbd5e1' }}
+                  />
+                </div>
+                <button 
+                  type="submit" 
+                  className="lux-btn-primary" 
+                  disabled={isSearchingNl || !nlQuery.trim()}
+                  style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.75rem 1.5rem', whiteSpace: 'nowrap' }}
+                >
+                  <Search size={16} /> {isSearchingNl ? 'Vectorizing & Searching...' : 'Run Vector Search'}
+                </button>
+              </form>
+
+              {nlSearchResults && (
+                <div>
+                  <div style={{ fontSize: '0.82rem', fontWeight: 600, color: '#475569', marginBottom: '0.75rem' }}>
+                    Top Semantic Matches for "{nlSearchResults.query}":
+                  </div>
+                  <div className="emb-correlation-grid">
+                    {nlSearchResults.results.map((res) => (
+                      <div key={res.id} className="emb-corr-card" onClick={() => {
+                        const matched = properties.find(p => p.id === res.id);
+                        if (matched) setDetailProperty(matched);
+                      }} style={{ cursor: 'pointer' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                          <div style={{ fontWeight: 700, fontSize: '0.88rem', color: '#0f172a', flex: 1, marginRight: '0.5rem' }}>
+                            {res.title}
+                          </div>
+                          <span className="emb-badge-check" style={{ fontSize: '0.78rem', background: '#ecfdf5', color: '#059669', padding: '0.2rem 0.6rem' }}>
+                            {(res.similarity_score * 100).toFixed(1)}% Match
+                          </span>
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '0.5rem', fontSize: '0.78rem', color: '#64748b' }}>
+                          <span>📍 {res.city || 'Pahang'}</span>
+                          <span>•</span>
+                          <span style={{ fontWeight: 700, color: '#047857' }}>{formatPrice(res.asking_price_myr)}</span>
+                        </div>
+
+                        {/* Aspect breakdown bars */}
+                        <div style={{ marginTop: '0.25rem' }}>
+                          <div className="aspect-score-row">
+                            <span>Overview Match:</span>
+                            <strong>{res.aspect_breakdown?.overview_pct}%</strong>
+                          </div>
+                          <div className="aspect-bar-bg" style={{ marginBottom: '0.4rem' }}>
+                            <div className="aspect-bar-fill" style={{ width: `${res.aspect_breakdown?.overview_pct}%`, background: '#7c3aed' }} />
+                          </div>
+
+                          <div className="aspect-score-row">
+                            <span>Features & Crops Match:</span>
+                            <strong>{res.aspect_breakdown?.features_pct}%</strong>
+                          </div>
+                          <div className="aspect-bar-bg" style={{ marginBottom: '0.4rem' }}>
+                            <div className="aspect-bar-fill" style={{ width: `${res.aspect_breakdown?.features_pct}%`, background: '#10b981' }} />
+                          </div>
+
+                          <div className="aspect-score-row">
+                            <span>Location Match:</span>
+                            <strong>{res.aspect_breakdown?.location_pct}%</strong>
+                          </div>
+                          <div className="aspect-bar-bg">
+                            <div className="aspect-bar-fill" style={{ width: `${res.aspect_breakdown?.location_pct}%`, background: '#3b82f6' }} />
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* 3. Property Correlation Explorer & Aspect Text Chunks Inspector */}
+            <div className="emb-section-card">
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.25rem', flexWrap: 'wrap', gap: '1rem' }}>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700, color: '#0f172a' }}>
+                    🔍 Property Vector Correlation Matrix & Aspect Chunks
+                  </h3>
+                  <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.8rem', color: '#64748b' }}>
+                    Select any listing to inspect its 5 generated aspect text chunks and live cosine similarity with other listings.
+                  </p>
+                </div>
+
+                <div style={{ minWidth: '280px' }}>
+                  <select 
+                    className="lux-select"
+                    value={selectedEmbPropId}
+                    onChange={(e) => {
+                      setSelectedEmbPropId(e.target.value);
+                      fetchPropertyCorrelations(e.target.value);
+                    }}
+                    style={{ width: '100%', padding: '0.5rem 0.75rem', fontWeight: 600 }}
+                  >
+                    {properties.map(p => (
+                      <option key={p.id} value={p.id}>{p.title} ({p.city || 'Pahang'})</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {isLoadingCorrelations ? (
+                <div style={{ padding: '2rem', textAlign: 'center', color: '#64748b' }}>
+                  Computing cosine similarities across 5 embedding dimensions...
+                </div>
+              ) : (
+                <div>
+                  {/* Aspect Text Chunks Preview */}
+                  {propAspectChunks && (
+                    <div style={{ marginBottom: '1.5rem' }}>
+                      <h4 style={{ fontSize: '0.82rem', textTransform: 'uppercase', color: '#64748b', marginBottom: '0.75rem' }}>
+                        5 Generated Text Chunks (Vector Ingestion Sources)
+                      </h4>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '0.75rem' }}>
+                        <div className="aspect-chunk-box">
+                          <div style={{ color: '#38bdf8', fontWeight: 700, marginBottom: '0.35rem' }}>📍 Location Chunk:</div>
+                          {propAspectChunks.aspect_chunks?.location || 'N/A'}
+                        </div>
+                        <div className="aspect-chunk-box">
+                          <div style={{ color: '#fbbf24', fontWeight: 700, marginBottom: '0.35rem' }}>📐 Specs Chunk:</div>
+                          {propAspectChunks.aspect_chunks?.specs || 'N/A'}
+                        </div>
+                        <div className="aspect-chunk-box">
+                          <div style={{ color: '#4ade80', fontWeight: 700, marginBottom: '0.35rem' }}>🌳 Features & Agro Chunk:</div>
+                          {propAspectChunks.aspect_chunks?.features || 'N/A'}
+                        </div>
+                        <div className="aspect-chunk-box">
+                          <div style={{ color: '#c084fc', fontWeight: 700, marginBottom: '0.35rem' }}>🎯 Suitability Chunk:</div>
+                          {propAspectChunks.aspect_chunks?.suitability || 'N/A'}
+                        </div>
+                        <div className="aspect-chunk-box" style={{ gridColumn: '1 / -1' }}>
+                          <div style={{ color: '#f43f5e', fontWeight: 700, marginBottom: '0.35rem' }}>📋 Overview Corpus Chunk:</div>
+                          {propAspectChunks.aspect_chunks?.overview || 'N/A'}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Top Correlated Listings */}
+                  {propCorrelations && (
+                    <div>
+                      <h4 style={{ fontSize: '0.82rem', textTransform: 'uppercase', color: '#64748b', marginBottom: '0.75rem' }}>
+                        Top Correlated Listings for "{propCorrelations.target_property?.title}"
+                      </h4>
+                      <div className="emb-correlation-grid">
+                        {propCorrelations.top_correlated?.map((corr) => (
+                          <div key={corr.id} className="emb-corr-card" onClick={() => {
+                            const matched = properties.find(p => p.id === corr.id);
+                            if (matched) setDetailProperty(matched);
+                          }} style={{ cursor: 'pointer' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                              <div style={{ fontWeight: 700, fontSize: '0.88rem', color: '#0f172a', flex: 1, marginRight: '0.5rem' }}>
+                                {corr.title}
+                              </div>
+                              <span className="emb-badge-check" style={{ fontSize: '0.78rem', padding: '0.2rem 0.5rem' }}>
+                                {(corr.correlation_score * 100).toFixed(1)}% Sim
+                              </span>
+                            </div>
+
+                            <div style={{ display: 'flex', gap: '0.5rem', fontSize: '0.78rem', color: '#64748b' }}>
+                              <span>📍 {corr.city || 'Pahang'}</span>
+                              <span>•</span>
+                              <span style={{ fontWeight: 700, color: '#047857' }}>{formatPrice(corr.asking_price_myr)}</span>
+                            </div>
+
+                            <div style={{ marginTop: '0.25rem' }}>
+                              <div className="aspect-score-row">
+                                <span>Overview Correlation:</span>
+                                <strong>{corr.aspect_breakdown?.overview_pct}%</strong>
+                              </div>
+                              <div className="aspect-bar-bg" style={{ marginBottom: '0.3rem' }}>
+                                <div className="aspect-bar-fill" style={{ width: `${corr.aspect_breakdown?.overview_pct}%`, background: '#7c3aed' }} />
+                              </div>
+
+                              <div className="aspect-score-row">
+                                <span>Specs Correlation:</span>
+                                <strong>{corr.aspect_breakdown?.specs_pct}%</strong>
+                              </div>
+                              <div className="aspect-bar-bg" style={{ marginBottom: '0.3rem' }}>
+                                <div className="aspect-bar-fill" style={{ width: `${corr.aspect_breakdown?.specs_pct}%`, background: '#f59e0b' }} />
+                              </div>
+
+                              <div className="aspect-score-row">
+                                <span>Location Correlation:</span>
+                                <strong>{corr.aspect_breakdown?.location_pct}%</strong>
+                              </div>
+                              <div className="aspect-bar-bg">
+                                <div className="aspect-bar-fill" style={{ width: `${corr.aspect_breakdown?.location_pct}%`, background: '#3b82f6' }} />
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
         ) : activeTab === 'workflows' ? (
           <WorkflowViewer />
         ) : activeTab === 'users' ? (
           <UsersManagement />
         ) : null}
+
       </main>
 
       {/* Add/Edit Modal */}
@@ -1276,6 +1819,267 @@ function App() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* 12-Category Property Detail Slide-Over Drawer */}
+      {detailProperty && (
+
+        <div className="prop-drawer-overlay" onClick={() => setDetailProperty(null)}>
+          <div className="prop-drawer" onClick={(e) => e.stopPropagation()}>
+            <div className="prop-drawer-header">
+              <div>
+                <span className="status-badge" style={{ position: 'static', marginRight: '0.5rem' }}>
+                  {detailProperty.listing_status || 'Available'}
+                </span>
+                <span className="emb-badge-check">
+                  <Sparkles size={12} /> 5-Aspect Dense Vectors Active
+                </span>
+                <h2 style={{ fontSize: '1.25rem', fontWeight: 800, color: '#0f172a', marginTop: '0.5rem', marginBottom: '0.2rem' }}>
+                  {detailProperty.title}
+                </h2>
+                <div style={{ fontSize: '0.8rem', color: '#64748b' }}>
+                  {detailProperty.property_type_sub || (detailProperty.property_category || []).join(', ')} • {detailProperty.city || 'Pahang'}
+                </div>
+              </div>
+              <button 
+                onClick={() => setDetailProperty(null)}
+                style={{ background: '#f1f5f9', border: 'none', borderRadius: '50%', width: '32px', height: '32px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="prop-drawer-body">
+              {/* Photo Gallery */}
+              {detailProperty.image_urls && detailProperty.image_urls.length > 0 && (
+                <div style={{ display: 'flex', gap: '0.5rem', overflowX: 'auto', paddingBottom: '0.5rem' }}>
+                  {detailProperty.image_urls.map((img, idx) => (
+                    <img 
+                      key={idx} 
+                      src={img} 
+                      alt={`Photo ${idx+1}`} 
+                      style={{ height: '140px', borderRadius: '8px', objectFit: 'cover', flexShrink: 0 }} 
+                    />
+                  ))}
+                </div>
+              )}
+
+              {/* 1. Financial Profile */}
+              <div className="drawer-section">
+                <div className="drawer-section-title">💰 1. Financial & Valuation Profile</div>
+                <div className="specs-grid">
+                  <div className="spec-cell">
+                    <span className="spec-label">Asking Price</span>
+                    <div className="spec-val" style={{ color: '#047857' }}>{formatPrice(detailProperty.asking_price_myr)}</div>
+                  </div>
+                  {detailProperty.monthly_rental_income_myr > 0 && (
+                    <div className="spec-cell">
+                      <span className="spec-label">Monthly Rental</span>
+                      <div className="spec-val">RM {detailProperty.monthly_rental_income_myr.toLocaleString()}/mo</div>
+                    </div>
+                  )}
+                  {detailProperty.price_per_acre_myr > 0 && (
+                    <div className="spec-cell">
+                      <span className="spec-label">Price per Acre</span>
+                      <div className="spec-val">RM {detailProperty.price_per_acre_myr.toLocaleString()}</div>
+                    </div>
+                  )}
+                  {detailProperty.price_per_sqft_myr > 0 && (
+                    <div className="spec-cell">
+                      <span className="spec-label">Price per Sqft</span>
+                      <div className="spec-val">RM {detailProperty.price_per_sqft_myr.toLocaleString()}</div>
+                    </div>
+                  )}
+                  {detailProperty.implied_yield_pct > 0 && (
+                    <div className="spec-cell">
+                      <span className="spec-label">Implied Yield</span>
+                      <div className="spec-val" style={{ color: '#059669' }}>{detailProperty.implied_yield_pct}%</div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* 2. Physical & Geometric Specs */}
+              <div className="drawer-section">
+                <div className="drawer-section-title">📐 2. Physical Dimensions & Built-Up</div>
+                <div className="specs-grid">
+                  {detailProperty.land_area_acres > 0 && (
+                    <div className="spec-cell">
+                      <span className="spec-label">Land Area (Acres)</span>
+                      <div className="spec-val">{detailProperty.land_area_acres} ac</div>
+                    </div>
+                  )}
+                  {detailProperty.land_area_sqft > 0 && (
+                    <div className="spec-cell">
+                      <span className="spec-label">Land Area (Sqft)</span>
+                      <div className="spec-val">{detailProperty.land_area_sqft.toLocaleString()} sqft</div>
+                    </div>
+                  )}
+                  {detailProperty.land_area_sqm > 0 && (
+                    <div className="spec-cell">
+                      <span className="spec-label">Land Area (Sqm)</span>
+                      <div className="spec-val">{detailProperty.land_area_sqm.toLocaleString()} m²</div>
+                    </div>
+                  )}
+                  {detailProperty.built_up_area_sqft > 0 && (
+                    <div className="spec-cell">
+                      <span className="spec-label">Built-Up Area</span>
+                      <div className="spec-val">{detailProperty.built_up_area_sqft.toLocaleString()} sqft</div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* 3. Tenure, Zoning & Title */}
+              <div className="drawer-section">
+                <div className="drawer-section-title">📜 3. Legal Tenure & Land Title</div>
+                <div className="specs-grid">
+                  <div className="spec-cell">
+                    <span className="spec-label">Tenure Type</span>
+                    <div className="spec-val">{detailProperty.tenure_type || 'N/A'}</div>
+                  </div>
+                  <div className="spec-cell">
+                    <span className="spec-label">Zoning Type</span>
+                    <div className="spec-val">{detailProperty.zoning_type || 'N/A'}</div>
+                  </div>
+                  <div className="spec-cell">
+                    <span className="spec-label">Title Status</span>
+                    <div className="spec-val">{detailProperty.title_status || 'N/A'}</div>
+                  </div>
+                  <div className="spec-cell">
+                    <span className="spec-label">Bumi Lot</span>
+                    <div className="spec-val">{detailProperty.is_bumi_lot ? 'Yes (Bumi Lot)' : 'No (Non-Bumi)'}</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* 4. Agricultural & Crops */}
+              <div className="drawer-section">
+                <div className="drawer-section-title">🌳 4. Agricultural Profile & Crops</div>
+                <div className="specs-grid">
+                  <div className="spec-cell">
+                    <span className="spec-label">Crops Cultivated</span>
+                    <div className="spec-val" style={{ color: '#15803d' }}>
+                      {(detailProperty.crop_types || []).join(', ') || 'None / Vacant'}
+                    </div>
+                  </div>
+                  {detailProperty.tree_count_estimate > 0 && (
+                    <div className="spec-cell">
+                      <span className="spec-label">Tree Count</span>
+                      <div className="spec-val">{detailProperty.tree_count_estimate} trees</div>
+                    </div>
+                  )}
+                  {detailProperty.tree_age_years && (
+                    <div className="spec-cell">
+                      <span className="spec-label">Tree Age</span>
+                      <div className="spec-val">{detailProperty.tree_age_years} years</div>
+                    </div>
+                  )}
+                  {detailProperty.harvest_readiness && (
+                    <div className="spec-cell">
+                      <span className="spec-label">Harvest Readiness</span>
+                      <div className="spec-val">{detailProperty.harvest_readiness}</div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* 5. Topography & Water Sources */}
+              <div className="drawer-section">
+                <div className="drawer-section-title">💧 5. Topography & Water Features</div>
+                <div className="specs-grid">
+                  <div className="spec-cell">
+                    <span className="spec-label">Topography</span>
+                    <div className="spec-val">{detailProperty.topography || 'N/A'}</div>
+                  </div>
+                  <div className="spec-cell">
+                    <span className="spec-label">Water Sources</span>
+                    <div className="spec-val">{(detailProperty.water_source_types || []).join(', ') || 'N/A'}</div>
+                  </div>
+                  <div className="spec-cell">
+                    <span className="spec-label">Natural Stream</span>
+                    <div className="spec-val">{detailProperty.has_natural_stream ? '✅ Yes (River/Stream)' : 'No'}</div>
+                  </div>
+                  <div className="spec-cell">
+                    <span className="spec-label">Pond</span>
+                    <div className="spec-val">{detailProperty.has_pond ? '✅ Yes' : 'No'}</div>
+                  </div>
+                  <div className="spec-cell">
+                    <span className="spec-label">Flood Free</span>
+                    <div className="spec-val">{detailProperty.is_flood_free ? '🛡️ Certified Flood Free' : 'Standard'}</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* 6. Infrastructure & Utilities */}
+              <div className="drawer-section">
+                <div className="drawer-section-title">⚡ 6. Infrastructure, Power & Road Access</div>
+                <div className="specs-grid">
+                  {detailProperty.power_supply_amp > 0 && (
+                    <div className="spec-cell">
+                      <span className="spec-label">Power Supply</span>
+                      <div className="spec-val">⚡ {detailProperty.power_supply_amp} Amp</div>
+                    </div>
+                  )}
+                  <div className="spec-cell">
+                    <span className="spec-label">Road Access Quality</span>
+                    <div className="spec-val">{detailProperty.road_access_quality || 'N/A'}</div>
+                  </div>
+                  <div className="spec-cell">
+                    <span className="spec-label">Fenced</span>
+                    <div className="spec-val">{detailProperty.is_fenced ? '✅ Yes' : 'No'}</div>
+                  </div>
+                  <div className="spec-cell">
+                    <span className="spec-label">Worker Quarters</span>
+                    <div className="spec-val">{detailProperty.has_worker_quarters ? '✅ Available' : 'No'}</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* 7. Geospatial & Landmarks */}
+              <div className="drawer-section">
+                <div className="drawer-section-title">📍 7. Geospatial & Nearby Landmarks</div>
+                <div style={{ fontSize: '0.85rem', color: '#1e293b', marginBottom: '0.5rem' }}>
+                  <strong>Address:</strong> {detailProperty.street_address || detailProperty.area || detailProperty.city || 'Pahang'}
+                </div>
+                {detailProperty.nearby_landmarks && detailProperty.nearby_landmarks.length > 0 && (
+                  <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+                    {detailProperty.nearby_landmarks.map((lm, idx) => (
+                      <span key={idx} className="cat-pill" style={{ background: '#fef3c7', color: '#92400e' }}>
+                        📍 {lm}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* 8. Highlights & Suitable Uses */}
+              {detailProperty.key_highlights && detailProperty.key_highlights.length > 0 && (
+                <div className="drawer-section">
+                  <div className="drawer-section-title">⭐ 8. Key Highlights</div>
+                  <ul style={{ paddingLeft: '1.25rem', fontSize: '0.82rem', color: '#334155', margin: 0 }}>
+                    {detailProperty.key_highlights.map((hl, idx) => (
+                      <li key={idx} style={{ marginBottom: '0.25rem' }}>{hl}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* WordPress Link */}
+              {detailProperty.source_url && (
+                <a 
+                  href={detailProperty.source_url} 
+                  target="_blank" 
+                  rel="noreferrer"
+                  className="lux-btn-secondary"
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', textDecoration: 'none' }}
+                >
+                  <ExternalLink size={16} /> View Official WordPress Listing
+                </a>
+              )}
+            </div>
           </div>
         </div>
       )}

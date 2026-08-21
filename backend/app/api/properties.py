@@ -80,7 +80,172 @@ def sync_wordpress_all(db: Session = Depends(get_db)):
 
 
 
+@router.get("/embeddings/summary")
+def get_embeddings_summary(db: Session = Depends(get_db)):
+    """
+    Returns summary statistics for the 5-aspect vector embeddings across all listings.
+    """
+    total = db.query(Property).count()
+    with_overview = db.query(Property).filter(Property.embedding_overview.isnot(None)).count()
+    with_location = db.query(Property).filter(Property.embedding_location.isnot(None)).count()
+    with_specs = db.query(Property).filter(Property.embedding_specs.isnot(None)).count()
+    with_features = db.query(Property).filter(Property.embedding_features.isnot(None)).count()
+    with_suitability = db.query(Property).filter(Property.embedding_suitability.isnot(None)).count()
+    
+    return {
+        "total_properties": total,
+        "aspect_embeddings_stats": {
+            "overview_count": with_overview,
+            "location_count": with_location,
+            "specs_count": with_specs,
+            "features_count": with_features,
+            "suitability_count": with_suitability,
+            "total_vectors_generated": (with_overview + with_location + with_specs + with_features + with_suitability),
+            "fully_vectorized_pct": round((with_overview / total * 100), 1) if total > 0 else 0
+        },
+        "embedding_dimensions": 384,
+        "embedding_model": "BAAI/bge-small-en-v1.5 (FastEmbed ONNX)"
+    }
+
+@router.get("/embeddings/aspects/{property_id}")
+def get_property_aspects(property_id: str, db: Session = Depends(get_db)):
+    """
+    Returns the 5 aspect text chunks and vector status for a specific property.
+    """
+    prop = db.query(Property).filter(Property.id == property_id).first()
+    if not prop:
+        return {"error": "Property not found"}
+    
+    from app.services.embeddings import build_property_aspect_chunks
+    chunks = build_property_aspect_chunks(prop)
+    
+    return {
+        "property_id": str(prop.id),
+        "title": prop.title,
+        "city": prop.city,
+        "category": prop.property_category or [],
+        "price": prop.asking_price_myr,
+        "has_embeddings": {
+            "overview": prop.embedding_overview is not None,
+            "location": prop.embedding_location is not None,
+            "specs": prop.embedding_specs is not None,
+            "features": prop.embedding_features is not None,
+            "suitability": prop.embedding_suitability is not None,
+        },
+        "aspect_chunks": chunks
+    }
+
+class QuerySearchRequest(BaseModel):
+    query: str
+    limit: int = 6
+
+@router.post("/embeddings/query-search")
+def search_embeddings_query(req: QuerySearchRequest, db: Session = Depends(get_db)):
+    """
+    Simulates natural language vector search and computes multi-aspect similarity against listings.
+    """
+    from app.services.embeddings import generate_embedding
+    from app.services.db_services import _cosine_similarity
+    
+    q_vec = generate_embedding(req.query)
+    if not q_vec:
+        return {"results": [], "query": req.query, "message": "Could not vectorize query"}
+        
+    properties = db.query(Property).filter(Property.embedding_overview.isnot(None)).all()
+    scored = []
+    
+    for p in properties:
+        ov_sim = _cosine_similarity(q_vec, p.embedding_overview) if p.embedding_overview else 0.0
+        loc_sim = _cosine_similarity(q_vec, p.embedding_location) if p.embedding_location else 0.0
+        spec_sim = _cosine_similarity(q_vec, p.embedding_specs) if p.embedding_specs else 0.0
+        feat_sim = _cosine_similarity(q_vec, p.embedding_features) if p.embedding_features else 0.0
+        suit_sim = _cosine_similarity(q_vec, p.embedding_suitability) if p.embedding_suitability else 0.0
+        
+        composite = (ov_sim * 0.35) + (loc_sim * 0.20) + (spec_sim * 0.20) + (feat_sim * 0.15) + (suit_sim * 0.10)
+        
+        scored.append({
+            "id": str(p.id),
+            "title": p.title,
+            "city": p.city,
+            "category": p.property_category or [],
+            "asking_price_myr": p.asking_price_myr,
+            "land_area_acres": p.land_area_acres,
+            "built_up_area_sqft": p.built_up_area_sqft,
+            "image_url": p.image_urls[0] if p.image_urls else None,
+            "similarity_score": round(composite, 4),
+            "aspect_breakdown": {
+                "overview_pct": round(ov_sim * 100, 1),
+                "location_pct": round(loc_sim * 100, 1),
+                "specs_pct": round(spec_sim * 100, 1),
+                "features_pct": round(feat_sim * 100, 1),
+                "suitability_pct": round(suit_sim * 100, 1),
+            }
+        })
+        
+    scored.sort(key=lambda x: x["similarity_score"], reverse=True)
+    return {"query": req.query, "results": scored[:req.limit]}
+
+@router.get("/embeddings/correlations/{property_id}")
+def get_property_correlations(property_id: str, limit: int = 6, db: Session = Depends(get_db)):
+    """
+    Computes dense cosine similarity correlations between a target property and other listings across all 5 aspects.
+    """
+    ref_prop = db.query(Property).filter(Property.id == property_id).first()
+    if not ref_prop:
+        return {"error": "Target property not found"}
+        
+    from app.services.db_services import _cosine_similarity
+    
+    candidates = db.query(Property).filter(
+        Property.id != property_id,
+        Property.embedding_overview.isnot(None)
+    ).all()
+    
+    correlations = []
+    for p in candidates:
+        loc_sim = _cosine_similarity(ref_prop.embedding_location, p.embedding_location) if ref_prop.embedding_location and p.embedding_location else 0.0
+        spec_sim = _cosine_similarity(ref_prop.embedding_specs, p.embedding_specs) if ref_prop.embedding_specs and p.embedding_specs else 0.0
+        feat_sim = _cosine_similarity(ref_prop.embedding_features, p.embedding_features) if ref_prop.embedding_features and p.embedding_features else 0.0
+        suit_sim = _cosine_similarity(ref_prop.embedding_suitability, p.embedding_suitability) if ref_prop.embedding_suitability and p.embedding_suitability else 0.0
+        ov_sim = _cosine_similarity(ref_prop.embedding_overview, p.embedding_overview) if ref_prop.embedding_overview and p.embedding_overview else 0.0
+        
+        overall = (ov_sim * 0.35) + (loc_sim * 0.20) + (spec_sim * 0.20) + (feat_sim * 0.15) + (suit_sim * 0.10)
+        
+        correlations.append({
+            "id": str(p.id),
+            "title": p.title,
+            "city": p.city,
+            "category": p.property_category or [],
+            "asking_price_myr": p.asking_price_myr,
+            "land_area_acres": p.land_area_acres,
+            "built_up_area_sqft": p.built_up_area_sqft,
+            "image_url": p.image_urls[0] if p.image_urls else None,
+            "correlation_score": round(overall, 4),
+            "aspect_breakdown": {
+                "location_pct": round(loc_sim * 100, 1),
+                "specs_pct": round(spec_sim * 100, 1),
+                "features_pct": round(feat_sim * 100, 1),
+                "suitability_pct": round(suit_sim * 100, 1),
+                "overview_pct": round(ov_sim * 100, 1),
+            }
+        })
+        
+    correlations.sort(key=lambda x: x["correlation_score"], reverse=True)
+    
+    return {
+        "target_property": {
+            "id": str(ref_prop.id),
+            "title": ref_prop.title,
+            "city": ref_prop.city,
+            "category": ref_prop.property_category or [],
+            "asking_price_myr": ref_prop.asking_price_myr,
+            "image_url": ref_prop.image_urls[0] if ref_prop.image_urls else None
+        },
+        "top_correlated": correlations[:limit]
+    }
+
 import uuid
+
 
 @router.post("")
 def create_property(prop: PropertyCreate, db: Session = Depends(get_db)):

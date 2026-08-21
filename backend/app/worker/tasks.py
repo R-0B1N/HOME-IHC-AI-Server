@@ -462,22 +462,19 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
         
         # 3. Dispatch native images if requested
         if images_to_send:
-            from app.services.chatwoot import send_whatsapp_image, send_chatwoot_image_attachment
-            inbox_id = metadata.get("inbox_id") or 4
-            for img_url in images_to_send:
+            import time
+            from app.services.chatwoot import send_chatwoot_image_attachment
+            for idx, img_url in enumerate(images_to_send):
                 try:
-                    logger.info(f"Dispatching native image: {img_url} to {phone_number}")
-                    send_whatsapp_image(
-                        inbox_id=inbox_id,
-                        to_phone=phone_number,
-                        image_url=img_url
-                    )
+                    logger.info(f"Dispatching transcoded image {idx+1}/{len(images_to_send)}: {img_url} to conv {conversation_id}")
                     send_chatwoot_image_attachment(
                         conversation_id=conversation_id,
                         image_url=img_url
                     )
+                    time.sleep(0.4)
                 except Exception as img_err:
-                    logger.error(f"Failed to dispatch native image {img_url}: {img_err}")
+                    logger.error(f"Failed to dispatch image {img_url}: {img_err}")
+
 
         # 4. Send response back to Chatwoot FIRST (ensures wrap-up message is delivered)
         logger.info(f"Sending response to conversation {conversation_id}")

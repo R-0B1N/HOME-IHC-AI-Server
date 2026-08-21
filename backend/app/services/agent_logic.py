@@ -153,7 +153,8 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict, c
     if asked_photos and cached_prop:
         prop_images = cached_prop.get("image_urls") or []
         if prop_images:
-            images_to_send = prop_images[:3]
+            images_to_send = [img for img in prop_images if isinstance(img, str) and img.startswith("http")][:5]
+
 
     # 6. Handle Similar Properties Suggestion (Alternatives / Sold listing)
     if asked_alternatives or (cached_prop and cached_prop.get("status") not in ["Available", "For Sale", "For Rent"]):

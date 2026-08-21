@@ -109,31 +109,48 @@ def send_whatsapp_image(inbox_id: int, to_phone: str, image_url: str, caption: s
 
 def send_chatwoot_image_attachment(conversation_id: int, image_url: str, caption: str = None):
     """
-    Downloads image from URL and uploads as attachment to the Chatwoot conversation.
+    Downloads image from URL, converts WebP/other formats to standard JPEG via Pillow,
+    and uploads as a clean image attachment to the Chatwoot conversation.
     """
     if not conversation_id or not image_url:
         return None
         
     try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
         # Download image bytes with safe timeout
-        img_resp = requests.get(image_url, timeout=10)
+        img_resp = requests.get(image_url, headers=headers, timeout=15)
         img_resp.raise_for_status()
         
-        file_name = image_url.split("/")[-1].split("?")[0] or "property_photo.jpg"
-        if not (file_name.endswith(".jpg") or file_name.endswith(".jpeg") or file_name.endswith(".png") or file_name.endswith(".webp")):
-            file_name += ".jpg"
+        raw_bytes = img_resp.content
+        content_type = "image/jpeg"
+        file_name = "property_photo.jpg"
+        
+        # Transcode to JPEG using Pillow to guarantee WhatsApp & Chatwoot compatibility
+        try:
+            import io
+            from PIL import Image
+            image = Image.open(io.BytesIO(raw_bytes))
+            if image.mode in ("RGBA", "P", "LA"):
+                image = image.convert("RGB")
+            out_buffer = io.BytesIO()
+            image.save(out_buffer, format="JPEG", quality=85, optimize=True)
+            raw_bytes = out_buffer.getvalue()
+        except Exception as conv_err:
+            logger.warning(f"Pillow image conversion fallback for {image_url}: {conv_err}")
             
-        content_type = img_resp.headers.get("Content-Type", "image/jpeg")
         return send_message_with_attachment(
             conversation_id=conversation_id,
             content=caption or "",
             file_name=file_name,
-            file_content=img_resp.content,
+            file_content=raw_bytes,
             content_type=content_type
         )
     except Exception as e:
         logger.error(f"Failed to attach image from {image_url} to Chatwoot conv {conversation_id}: {e}")
         return None
+
 
 
 def get_inbox_details(inbox_id: int):
