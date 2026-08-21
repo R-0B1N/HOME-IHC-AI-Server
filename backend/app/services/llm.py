@@ -55,15 +55,32 @@ def transcribe_audio(audio_url: str) -> str:
         return ""
 
 def _parse_json_from_llm(raw_text: str) -> dict:
-    """Helper to extract and parse JSON from LLM output."""
-    raw_text = raw_text.replace('“', '"').replace('”', '"').replace("‘", "'").replace("’", "'")
+    """Helper to extract and parse JSON from LLM output with auto-repair fallback."""
+    if not raw_text or not raw_text.strip():
+        return None
+    raw_text = raw_text.replace('“', '"').replace('”', '"').replace("‘", "'").replace("’", "'").strip()
     json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
     clean_json = json_match.group(0) if json_match else raw_text
     
     try:
         return json.loads(clean_json)
     except json.JSONDecodeError:
-        logger.error(f"Failed to parse LLM JSON: {raw_text}")
+        # Fallback: attempt to repair truncated JSON (e.g. unclosed brackets)
+        try:
+            repaired = clean_json.rstrip()
+            if not repaired.endswith("}"):
+                repaired = repaired + "}"
+            return json.loads(repaired)
+        except Exception:
+            try:
+                # Try trimming up to last comma and adding closing bracket
+                last_comma = clean_json.rfind(",")
+                if last_comma != -1:
+                    repaired_comma = clean_json[:last_comma] + "}"
+                    return json.loads(repaired_comma)
+            except Exception:
+                pass
+        logger.error(f"Failed to parse LLM JSON: {raw_text[:200]}...")
         return None
 
 def generate_response(prompt: str, contact_info: dict, db_context: dict = None, images: list = None, conversation_history: str = "") -> dict:
@@ -395,7 +412,8 @@ def extract_wordpress_property(payload: dict) -> dict:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": content}
             ],
-            response_format={"type": "json_object"}
+            response_format={"type": "json_object"},
+            max_tokens=2048
         )
         raw_text = response.choices[0].message.content
         parsed = _parse_json_from_llm(raw_text)

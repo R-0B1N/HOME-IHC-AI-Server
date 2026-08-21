@@ -62,49 +62,55 @@ def generate_batch_embeddings(texts: List[str]) -> List[Optional[List[float]]]:
         logger.error(f"Error in generate_batch_embeddings: {e}")
         return [None] * len(texts)
 
-def build_property_aspect_chunks(property_data: Dict[str, Any]) -> Dict[str, str]:
+def _get_val(obj: Any, attr: str, default: Any = None) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(attr, default)
+    val = getattr(obj, attr, default)
+    return val if val is not None else default
+
+def build_property_aspect_chunks(property_data: Any) -> Dict[str, str]:
     """
-    Constructs the 5 specialized textual chunks from a property dictionary or model
+    Constructs the 5 specialized textual chunks from a property dictionary or SQLAlchemy model
     to generate distinct vector embeddings for Location, Specs, Features, Suitability, and Overview.
     """
-    title = property_data.get("title", "") or ""
-    city = property_data.get("city", "") or ""
-    state = property_data.get("state", "Pahang") or "Pahang"
-    area = property_data.get("area", "") or ""
-    street = property_data.get("street_address", "") or ""
-    landmarks = ", ".join(property_data.get("nearby_landmarks", []) or [])
+    title = _get_val(property_data, "title", "") or ""
+    city = _get_val(property_data, "city", "") or ""
+    state = _get_val(property_data, "state", "Pahang") or "Pahang"
+    area = _get_val(property_data, "area", "") or ""
+    street = _get_val(property_data, "street_address", "") or ""
+    landmarks = ", ".join(_get_val(property_data, "nearby_landmarks", []) or [])
     
-    category = ", ".join(property_data.get("property_category", []) or [])
-    sub_type = property_data.get("property_type_sub", "") or ""
-    tenure = property_data.get("tenure_type", "") or ""
-    zoning = property_data.get("zoning_type", "") or ""
-    title_status = property_data.get("title_status", "") or ""
-    acres = property_data.get("land_area_acres")
+    category = ", ".join(_get_val(property_data, "property_category", []) or [])
+    sub_type = _get_val(property_data, "property_type_sub", "") or ""
+    tenure = _get_val(property_data, "tenure_type", "") or ""
+    zoning = _get_val(property_data, "zoning_type", "") or ""
+    title_status = _get_val(property_data, "title_status", "") or ""
+    acres = _get_val(property_data, "land_area_acres")
     acres_str = f"{acres} acres" if acres else ""
-    sqft = property_data.get("built_up_area_sqft") or property_data.get("land_area_sqft")
+    sqft = _get_val(property_data, "built_up_area_sqft") or _get_val(property_data, "land_area_sqft")
     sqft_str = f"{sqft} sqft" if sqft else ""
-    price = property_data.get("asking_price_myr")
+    price = _get_val(property_data, "asking_price_myr")
     price_str = f"RM {price:,.0f}" if price else ""
-    rental = property_data.get("monthly_rental_income_myr")
+    rental = _get_val(property_data, "monthly_rental_income_myr")
     rental_str = f"RM {rental:,.0f}/month" if rental else ""
     
-    crops = ", ".join(property_data.get("crop_types", []) or [])
-    trees = f"{property_data.get('tree_count_estimate')} trees" if property_data.get("tree_count_estimate") else ""
-    tree_age = property_data.get("tree_age_years", "") or ""
-    harvest = property_data.get("harvest_readiness", "") or ""
-    topo = property_data.get("topography", "") or ""
-    waters = ", ".join(property_data.get("water_source_types", []) or [])
-    stream = "natural river stream" if property_data.get("has_natural_stream") else ""
-    pond = "water pond" if property_data.get("has_pond") else ""
-    flood = "flood free area" if property_data.get("is_flood_free") else ""
-    power = f"{property_data.get('power_supply_amp')} Amp power supply" if property_data.get("power_supply_amp") else ""
-    road = property_data.get("road_access_quality", "") or ""
-    fencing = "fully fenced" if property_data.get("is_fenced") else ""
-    quarters = "worker quarters" if property_data.get("has_worker_quarters") else ""
+    crops = ", ".join(_get_val(property_data, "crop_types", []) or [])
+    trees = f"{_get_val(property_data, 'tree_count_estimate')} trees" if _get_val(property_data, 'tree_count_estimate') else ""
+    tree_age = _get_val(property_data, "tree_age_years", "") or ""
+    harvest = _get_val(property_data, "harvest_readiness", "") or ""
+    topo = _get_val(property_data, "topography", "") or ""
+    waters = ", ".join(_get_val(property_data, "water_source_types", []) or [])
+    stream = "natural river stream" if _get_val(property_data, "has_natural_stream") else ""
+    pond = "water pond" if _get_val(property_data, "has_pond") else ""
+    flood = "flood free area" if _get_val(property_data, "is_flood_free") else ""
+    power = f"{_get_val(property_data, 'power_supply_amp')} Amp power supply" if _get_val(property_data, 'power_supply_amp') else ""
+    road = _get_val(property_data, "road_access_quality", "") or ""
+    fencing = "fully fenced" if _get_val(property_data, "is_fenced") else ""
+    quarters = "worker quarters" if _get_val(property_data, "has_worker_quarters") else ""
     
-    industries = ", ".join(property_data.get("suitable_industries", []) or [])
-    highlights = ". ".join(property_data.get("key_highlights", []) or [])
-    corpus = property_data.get("search_corpus_markdown", "") or ""
+    industries = ", ".join(_get_val(property_data, "suitable_industries", []) or [])
+    highlights = ". ".join(_get_val(property_data, "key_highlights", []) or [])
+    corpus = _get_val(property_data, "search_corpus_markdown", "") or ""
 
     # 1. Location Chunk
     loc_parts = [p for p in [title, street, area, city, state, f"Landmarks: {landmarks}" if landmarks else "", road] if p]
@@ -133,7 +139,7 @@ def build_property_aspect_chunks(property_data: Dict[str, Any]) -> Dict[str, str
         "overview": overview_chunk
     }
 
-def generate_property_5_embeddings(property_data: Dict[str, Any]) -> Dict[str, Optional[List[float]]]:
+def generate_property_5_embeddings(property_data: Any) -> Dict[str, Optional[List[float]]]:
     """
     Builds the 5 categorized chunks and generates their corresponding 384-dimensional embeddings.
     """
