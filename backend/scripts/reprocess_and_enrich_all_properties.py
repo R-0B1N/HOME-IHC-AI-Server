@@ -19,9 +19,15 @@ def reprocess_all():
     
     db = SessionLocal()
     try:
+        count = db.query(Property).count()
+        if count == 0:
+            logger.info("Database has 0 properties. Syncing authentic listings from bentongland.com.my WordPress...")
+            from scripts.scrape_and_ingest_all_properties import fetch_and_ingest_all
+            fetch_and_ingest_all()
+            
         properties = db.query(Property).all()
         total = len(properties)
-        logger.info(f"Starting reprocessing and enrichment for {total} properties...")
+        logger.info(f"Starting reprocessing, 12-category enrichment, and 5-aspect vector embedding for {total} properties...")
         
         updated_count = 0
         error_count = 0
