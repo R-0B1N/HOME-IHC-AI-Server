@@ -21,21 +21,29 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SSH_PASSWORD }}
           script: |
-            echo "=== CONTAINER STATUS ==="
-            docker ps -a --format '{{.Names}} | {{.Status}} | {{.Ports}}' | grep -iE 'whatsapp|staging|production' || true
+            echo "==================== 1. ALL RUNNING CONTAINERS ===================="
+            docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
             
-            echo "=== PRODUCTION API LOGS ==="
-            docker logs whatsapp_ai_api_production --tail 100 2>&1 || true
+            echo "==================== 2. STAGING WORKER LOGS (CELERY) ===================="
+            docker logs whatsapp_ai_worker_staging --tail 150 2>&1 || true
             
-            echo "=== PRODUCTION WORKER LOGS ==="
-            docker logs whatsapp_ai_worker_production --tail 100 2>&1 || true
+            echo "==================== 3. STAGING API LOGS (FASTAPI) ===================="
+            docker logs whatsapp_ai_api_staging --tail 150 2>&1 || true
             
-            echo "=== PRODUCTION DB LOGS ==="
-            docker logs whatsapp_ai_db_production --tail 20 2>&1 || true
+            echo "==================== 4. STAGING REDIS QUEUES & KEYS ===================="
+            docker exec whatsapp_ai_redis_staging redis-cli keys "*" 2>&1 || true
+            docker exec whatsapp_ai_redis_staging redis-cli get master_ai_enabled 2>&1 || true
+            
+            echo "==================== 5. PRODUCTION WORKER LOGS ===================="
+            docker logs whatsapp_ai_worker_production --tail 150 2>&1 || true
+            
+            echo "==================== 6. PRODUCTION API LOGS ===================="
+            docker logs whatsapp_ai_api_production --tail 150 2>&1 || true
+            
+            echo "==================== 7. CHATWOOT WEBHOOK DISPATCH LOGS ===================="
+            docker logs crm-chatwoot-web --tail 80 2>&1 || true
+            
+            echo "==================== 8. VLLM MODEL CONTAINER LOGS ===================="
+            docker logs crm-vllm --tail 50 2>&1 || docker ps -a | grep vllm || echo "vLLM container check"
 
-            echo "=== STAGING API LOGS ==="
-            docker logs whatsapp_ai_api_staging --tail 100 2>&1 || true
-            
-            echo "=== STAGING WORKER LOGS ==="
-            docker logs whatsapp_ai_worker_staging --tail 100 2>&1 || true
 
