@@ -20,14 +20,21 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SSH_PASSWORD }}
           script: |
+            echo "=== TRIGGERING TEST WEBHOOK TO STAGING API ==="
+            curl -s -X POST http://localhost:8001/api/v1/webhooks/chatwoot \
+              -H "Content-Type: application/json" \
+              -d '{"event":"message_created","message_type":"incoming","id":99999999,"content":"Hello, looking for durian land in Bentong","account":{"id":1},"inbox":{"id":1},"conversation":{"id":69,"inbox_id":1,"status":"open"},"sender":{"id":999,"name":"Diagnostics Test User","phone_number":"+60126761818"}}'
+            
+            echo ""
+            echo "=== WAITING 15s FOR DEBOUNCER & CELERY WORKER ==="
+            sleep 15
+            
             echo "=== STAGING WORKER RECENT LOGS ==="
             docker logs whatsapp_ai_worker_staging --tail 60 2>&1 || true
             
             echo "=== STAGING API RECENT LOGS ==="
-            docker logs whatsapp_ai_api_staging --tail 60 2>&1 || true
-            
-            echo "=== CHATWOOT WEBHOOK DISPATCH STATUS ==="
-            docker logs crm-chatwoot-web --tail 40 2>&1 || true
+            docker logs whatsapp_ai_api_staging --tail 40 2>&1 || true
+
 
 
 
