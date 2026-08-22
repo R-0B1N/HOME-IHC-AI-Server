@@ -61,26 +61,9 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
 
         # If we reach here, it's been at least 10 seconds since the last message and AI is ON.
         
-        # Human Override Check
-        try:
-            chatwoot_messages = get_conversation_messages(conversation_id)
-            if chatwoot_messages:
-                chatwoot_messages.sort(key=lambda x: x.get("created_at", 0))
-                last_msg = chatwoot_messages[-1]
-                # If the last message is outgoing and NOT from our AI/bot (e.g., from a human agent)
-                # Chatwoot marks bot messages with sender_type = "AgentBot" or user_id for humans
-                sender = last_msg.get("sender", {})
-                sender_type = sender.get("type", "")
-                if last_msg.get("message_type") == "outgoing" and sender_type != "agent_bot" and sender.get("id") != 0:
-                    logger.info(f"Human agent replied to conversation {conversation_id}. Clearing queue and skipping.")
-                    queue_key = f"convo_queue_{conversation_id}"
-                    pipe = redis_client.pipeline()
-                    pipe.delete(queue_key)
-                    pipe.delete(active_key)
-                    pipe.execute()
-                    return {"status": "skipped", "reason": "human override"}
-        except Exception as e:
-            logger.error(f"Failed to check for human override: {e}")
+        # Human Override Check: Only skip if the conversation has been explicitly assigned to a human or flagged
+        # Note: Chatwoot API tokens create messages with sender_type='user', so we do not blindly drop on outgoing messages.
+
 
         # Let's atomically grab all messages in the queue and delete the queue.
         queue_key = f"convo_queue_{conversation_id}"
