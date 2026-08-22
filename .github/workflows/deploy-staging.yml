@@ -39,10 +39,12 @@ jobs:
           timeout: 30m
           script: |
             cd ~/whatsapp-ai-staging
+            docker compose -f docker-compose.staging.yml down --remove-orphans
             docker compose -f docker-compose.staging.yml up -d --build --remove-orphans
             
             echo "=== SERVER CONTAINERS STATUS ==="
             docker ps -a
+
             
             echo "=== SLEEPING 5s TO CAPTURE WORKER STARTUP LOGS ==="
             sleep 5

@@ -29,11 +29,10 @@ jobs:
             echo "=== WAITING 15s FOR DEBOUNCER & CELERY WORKER ==="
             sleep 15
             
-            echo "=== STAGING WORKER RECENT LOGS ==="
-            docker logs whatsapp_ai_worker_staging --tail 60 2>&1 || true
-            
-            echo "=== STAGING API RECENT LOGS ==="
-            docker logs whatsapp_ai_api_staging --tail 40 2>&1 || true
+            echo "=== STAGING COMPOSE LOGS ==="
+            cd ~/whatsapp-ai-staging
+            docker compose -f docker-compose.staging.yml logs --tail 60 worker_staging api_staging
+
 
 
 
