@@ -12,7 +12,9 @@ router = APIRouter()
 
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
 from app.core.auth import require_admin
+
 
 REDIS_STAGING_HOST = os.getenv("REDIS_STAGING_HOST", "whatsapp_ai_redis_staging")
 REDIS_STAGING_PORT = int(os.getenv("REDIS_STAGING_PORT", "6379"))

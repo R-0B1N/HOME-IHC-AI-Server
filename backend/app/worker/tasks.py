@@ -6,7 +6,7 @@ import redis
 import requests
 import base64
 from app.worker.celery_app import celery_app
-from app.services.chatwoot import send_message, apply_label, set_priority, toggle_typing_status, get_conversation_messages, get_or_create_contact, create_conversation, assign_agent
+from app.services.chatwoot import send_message, apply_label, set_priority, toggle_typing_status, get_conversation_messages, get_or_create_contact, create_conversation, assign_agent, send_chatwoot_image_attachment
 from app.services.llm import generate_response, transcribe_audio, extract_property_search_criteria, extract_valuer_data, extract_wordpress_property
 from app.services.document_parser import extract_text_from_document
 from app.services.db_services import get_or_create_customer, get_sender_role, search_properties
@@ -445,9 +445,8 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
         
         # 3. Dispatch native images if requested
         if images_to_send:
-            import time
-            from app.services.chatwoot import send_chatwoot_image_attachment
             for idx, img_url in enumerate(images_to_send):
+
                 try:
                     logger.info(f"Dispatching transcoded image {idx+1}/{len(images_to_send)}: {img_url} to conv {conversation_id}")
                     send_chatwoot_image_attachment(
