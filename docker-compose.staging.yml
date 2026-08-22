@@ -53,8 +53,9 @@ services:
       dockerfile: Dockerfile
     container_name: whatsapp_ai_worker_staging
     restart: unless-stopped
-    command: celery -A app.worker.celery_app worker --pool=gevent --concurrency=20 --loglevel=info
+    command: celery -A app.worker.celery_app worker --pool=threads --concurrency=10 --loglevel=info
     environment:
+
       - REDIS_HOST=whatsapp_ai_redis_staging
       - REDIS_PORT=6379
       - DB_HOST=whatsapp_ai_db_staging

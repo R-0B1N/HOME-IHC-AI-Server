@@ -21,7 +21,7 @@ REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
 
-TIMEOUT_SECONDS = 15
+TIMEOUT_SECONDS = 10
 
 @celery_app.task(bind=True, max_retries=3)
 def process_conversation_queue(self, conversation_id: int, task_scheduled_time: float):

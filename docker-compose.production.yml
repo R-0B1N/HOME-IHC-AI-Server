@@ -56,8 +56,9 @@ services:
       dockerfile: Dockerfile
     container_name: whatsapp_ai_worker_production
     restart: unless-stopped
-    command: celery -A app.worker.celery_app worker --pool=gevent --concurrency=20 --loglevel=info
+    command: celery -A app.worker.celery_app worker --pool=threads --concurrency=10 --loglevel=info
     env_file:
+
       - .env
     environment:
       - REDIS_HOST=whatsapp_ai_redis_production
