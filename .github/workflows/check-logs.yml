@@ -20,12 +20,15 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SSH_PASSWORD }}
           script: |
-            echo "=== PRE-MIGRATION BACKUP INSPECTION ==="
-            head -n 50 /home/*/opt/Whatsapp_AI/backend/scripts/db_backup_pre_migration.sql 2>/dev/null || true
-            grep -E "INSERT INTO public.properties|INSERT INTO properties|INSERT INTO public.customers|INSERT INTO customers" /home/*/opt/Whatsapp_AI/backend/scripts/db_backup_pre_migration.sql 2>/dev/null | head -n 10 || true
-            grep -c "INSERT INTO" /home/*/opt/Whatsapp_AI/backend/scripts/db_backup_pre_migration.sql 2>/dev/null || true
-            echo "=== CHECKING FOR ANY OTHER SQL FILES ON SERVER ==="
-            find / -name "*property*.sql" -o -name "*backup*.sql" -o -name "*n8n*.sql" 2>/dev/null | grep -v "/proc" | head -n 20 || true
+            echo "=== STAGING WORKER RECENT LOGS ==="
+            docker logs whatsapp_ai_worker_staging --tail 60 2>&1 || true
+            
+            echo "=== STAGING API RECENT LOGS ==="
+            docker logs whatsapp_ai_api_staging --tail 60 2>&1 || true
+            
+            echo "=== CHATWOOT WEBHOOK DISPATCH STATUS ==="
+            docker logs crm-chatwoot-web --tail 40 2>&1 || true
+
 
 
 
