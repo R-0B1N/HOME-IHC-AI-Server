@@ -34,41 +34,67 @@ class CustomerUpdate(BaseModel):
 from app.core.auth import require_admin
 
 @router.get("")
-def get_customers(db: Session = Depends(get_db)):
+def get_customers(inbox_id: Optional[int] = None, db: Session = Depends(get_db)):
     customers = db.query(Customer).order_by(Customer.last_interaction.desc()).all()
     result = []
     for c in customers:
+        meta = c.metadata_json or {}
+        cust_inbox = meta.get("inbox_id")
+        if inbox_id is not None and cust_inbox != inbox_id:
+            continue
+            
         result.append({
             "id": c.id,
             "phone_number": c.id, # id is phone_number
             "contact_name": c.contact_name,
             "email": c.email,
             "country": c.country,
-            "conversation_ids": c.conversation_ids,
+            "intent_category": meta.get("intent_category", "general"),
+            "intention_tag": meta.get("intention_tag", "Cold"),
+            "inbox_id": cust_inbox,
+            "conversation_ids": c.conversation_ids or [],
             "metadata_json": c.metadata_json,
             "last_interaction": c.last_interaction.isoformat() if c.last_interaction else None
         })
     return result
 
 @router.get("/staging")
-def get_staging_customers(admin=Depends(require_admin), db: Session = Depends(get_db)):
+def get_staging_customers(inbox_id: Optional[int] = None, admin=Depends(require_admin), db: Session = Depends(get_db)):
     """
     Admin-only endpoint to get customer leads for Staging environment.
     """
     customers = db.query(Customer).order_by(Customer.last_interaction.desc()).all()
     result = []
     for c in customers:
+        meta = c.metadata_json or {}
+        cust_inbox = meta.get("inbox_id")
+        if inbox_id is not None and cust_inbox != inbox_id:
+            continue
+            
         result.append({
             "id": c.id,
             "phone_number": c.id,
             "contact_name": c.contact_name,
             "email": c.email,
             "country": c.country,
-            "conversation_ids": c.conversation_ids,
+            "intent_category": meta.get("intent_category", "general"),
+            "intention_tag": meta.get("intention_tag", "Cold"),
+            "inbox_id": cust_inbox,
+            "conversation_ids": c.conversation_ids or [],
             "metadata_json": c.metadata_json,
             "last_interaction": c.last_interaction.isoformat() if c.last_interaction else None
         })
     return result
+
+@router.delete("/staging/reset")
+def reset_staging_customers(admin=Depends(require_admin), db: Session = Depends(get_db)):
+    """
+    Admin-only endpoint to wipe bulk-imported leads from the staging database,
+    keeping staging completely clean for test-number interactions only.
+    """
+    deleted_count = db.query(Customer).delete()
+    db.commit()
+    return {"status": "success", "message": f"Successfully reset {deleted_count} staging leads."}
 
 @router.patch("/staging/{customer_id}")
 def update_staging_customer(customer_id: str, update_data: CustomerUpdate, admin=Depends(require_admin), db: Session = Depends(get_db)):
@@ -93,6 +119,7 @@ def update_staging_customer(customer_id: str, update_data: CustomerUpdate, admin
     db.commit()
     db.refresh(customer)
     return {"status": "success", "id": customer.id, "bypass_ai": (customer.metadata_json or {}).get("bypass_ai", False)}
+
 
 
 @router.post("/sync-chatwoot")

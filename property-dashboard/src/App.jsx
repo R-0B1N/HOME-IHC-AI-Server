@@ -218,6 +218,19 @@ function App() {
     }
   };
 
+  const handleResetStagingLeads = async () => {
+    if (!window.confirm('Are you sure you want to clear all staging leads? Only fresh incoming messages to the test WhatsApp number will be recorded.')) return;
+    try {
+      await axios.delete(`${API_BASE_URL}/customers/staging/reset`);
+      await fetchLeads();
+      alert('Staging leads reset successfully. Only fresh test conversations will be stored.');
+    } catch (error) {
+      console.error('Failed to reset staging leads:', error);
+      alert('Failed to reset staging leads.');
+    }
+  };
+
+
 
   // Fetch data on tab or environment change + auto-refresh every 30s for real-time updates
   useEffect(() => {
@@ -854,8 +867,20 @@ function App() {
             <option value="oldest">Sort: Oldest</option>
             <option value="hot-first">Priority: Hot First</option>
           </select>
+
+          {environment === 'staging' && (
+            <button 
+              className="lux-btn-secondary" 
+              onClick={handleResetStagingLeads}
+              style={{ fontSize: '0.8rem', padding: '0.5rem 0.85rem', color: '#c5221f', borderColor: '#fca5a5', display: 'flex', alignItems: 'center', gap: '0.35rem', whiteSpace: 'nowrap' }}
+              title="Clear bulk-imported leads from Staging DB"
+            >
+              <Trash2 size={13} /> Reset Staging Leads
+            </button>
+          )}
         </div>
       )}
+
 
       <main className="lux-main-content">
         {activeTab === 'properties' ? (
@@ -1275,26 +1300,25 @@ function App() {
                 </div>
               </div>
 
-              <form onSubmit={handleNlSearch} style={{ display: 'flex', gap: '0.75rem', marginBottom: '1.25rem' }}>
-                <div style={{ flex: 1, position: 'relative' }}>
+              <form onSubmit={handleNlSearch} className="emb-search-form">
+                <div className="emb-search-input-wrap">
                   <input 
                     type="text" 
-                    className="lux-search-input" 
+                    className="emb-search-input" 
                     placeholder="e.g. 10 ac Musang King durian orchard with natural river stream under 2.5m in Raub" 
                     value={nlQuery}
                     onChange={(e) => setNlQuery(e.target.value)}
-                    style={{ width: '100%', padding: '0.75rem 1rem', fontSize: '0.9rem', borderRadius: '8px', border: '1px solid #cbd5e1' }}
                   />
                 </div>
                 <button 
                   type="submit" 
-                  className="lux-btn-primary" 
+                  className="emb-search-btn" 
                   disabled={isSearchingNl || !nlQuery.trim()}
-                  style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.75rem 1.5rem', whiteSpace: 'nowrap' }}
                 >
-                  <Search size={16} /> {isSearchingNl ? 'Vectorizing & Searching...' : 'Run Vector Search'}
+                  <Search size={16} /> {isSearchingNl ? 'Searching...' : 'Run Vector Search'}
                 </button>
               </form>
+
 
               {nlSearchResults && (
                 <div>
