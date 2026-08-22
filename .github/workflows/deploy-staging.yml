@@ -41,14 +41,20 @@ jobs:
             cd ~/whatsapp-ai-staging
             docker compose -f docker-compose.staging.yml up -d --build --remove-orphans
             
-            echo "=== STAGING SERVER NETWORK & ACCESS INFO ==="
-            echo "Server Public IP: $(curl -s https://ifconfig.me || curl -s https://api.ipify.org || echo 'N/A')"
-            echo "Tailscale IP: $(tailscale ip -4 2>/dev/null || echo 'N/A')"
-            echo "Staging Frontend Local Port: http://localhost:3001"
-            echo "Staging API Webhook Port:    http://localhost:8001"
+            echo "=== SERVER CONTAINERS STATUS ==="
+            docker ps -a
             
-            echo "=== EXECUTING 12-CATEGORY SCHEMA & 5-ASPECT VECTOR REPROCESSING ==="
-            docker compose -f docker-compose.staging.yml exec -T api_staging python scripts/reprocess_and_enrich_all_properties.py
+            echo "=== REDIS STAGING STATUS & MASTER AI TOGGLE ==="
+            docker compose -f docker-compose.staging.yml exec -T redis_staging redis-cli get master_ai_enabled || echo "N/A"
+            echo "=== REDIS KEYS IN STAGING ==="
+            docker compose -f docker-compose.staging.yml exec -T redis_staging redis-cli keys "*" || echo "N/A"
+            
+            echo "=== STAGING WORKER LOGS (LAST 200 LINES) ==="
+            docker logs --tail=200 whatsapp_ai_worker_staging || echo "No worker logs"
+            
+            echo "=== STAGING API LOGS (LAST 200 LINES) ==="
+            docker logs --tail=200 whatsapp_ai_api_staging || echo "No api logs"
             
             echo "=== STAGING DEPLOYMENT & VECTORIZATION COMPLETE ==="
+
 

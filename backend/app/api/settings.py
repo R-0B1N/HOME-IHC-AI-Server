@@ -1,9 +1,14 @@
+import os
+import logging
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 import redis
-import os
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
 
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
