@@ -224,7 +224,14 @@ async def chatwoot_webhook(request: Request):
     redis_client.set(active_key, current_time)
     redis_client.expire(active_key, 3600)
     
-    # 3. Schedule the Celery task to check the queue in 10 seconds
+    # 3. Immediately trigger typing indicator so customer sees AI is active
+    try:
+        from app.services.chatwoot import toggle_typing_status
+        toggle_typing_status(conversation_id, "on")
+    except Exception as te:
+        logger.warning(f"Could not immediately trigger typing indicator for conv {conversation_id}: {te}")
+    
+    # 4. Schedule the Celery task to check the queue in 10 seconds
     process_conversation_queue.apply_async(
         args=[conversation_id, current_time], 
         countdown=TIMEOUT_SECONDS

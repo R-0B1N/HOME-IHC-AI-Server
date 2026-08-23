@@ -362,6 +362,9 @@ def toggle_typing_status(conversation_id: int, status: str):
     Toggles the typing status in a Chatwoot conversation.
     status should be "on" or "off".
     """
+    if not conversation_id or not CHATWOOT_BASE_URL:
+        return
+        
     url = f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/toggle_typing_status"
     headers = {
         "api_access_token": CHATWOOT_API_TOKEN,
@@ -373,12 +376,11 @@ def toggle_typing_status(conversation_id: int, status: str):
     }
     
     try:
-        response = requests.post(url, headers=headers, json=payload)
+        response = requests.post(url, headers=headers, json=payload, timeout=5)
         response.raise_for_status()
         logger.info(f"Successfully toggled typing status {status} for conversation {conversation_id}")
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to toggle typing status in Chatwoot conversation: {e}")
-        raise e
+    except Exception as e:
+        logger.warning(f"Failed to toggle typing status in Chatwoot conversation {conversation_id}: {e}")
 
 def get_or_create_contact(phone_number: str, name: str = "Unknown") -> int:
     """

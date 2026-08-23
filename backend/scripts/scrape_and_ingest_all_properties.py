@@ -4,66 +4,132 @@ import re
 import html
 import uuid
 import logging
-import requests
-from bs4 import BeautifulSoup
-
-# Ensure backend directory is in sys.path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from app.db.models import SessionLocal, Property, engine, run_schema_migrations
+try:
+    import requests
+    from bs4 import BeautifulSoup
+    from app.db.models import SessionLocal, Property, engine, run_schema_migrations
+except ImportError:
+    requests = None
+    BeautifulSoup = None
+    SessionLocal = None
+    Property = None
+    engine = None
+    run_schema_migrations = None
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 WP_API_BASE = "https://bentongland.com.my/wp-json/wp/v2"
 
-def parse_price(text: str) -> float:
-    """Extract price in MYR from title or text."""
-    if not text:
-        return 0.0
-    
-    # Check for 'RM 1.5M' or 'RM 1.5 Million' or 'RM 1.5 mil'
-    m_million = re.search(r'RM\s*([\d\.,]+)\s*(?:million|mil|m\b)', text, re.IGNORECASE)
-    if m_million:
-        val_str = m_million.group(1).replace(',', '')
-        try:
-            return float(val_str) * 1_000_000
-        except ValueError:
-            pass
-
-    # Check for 'RM 850k' or 'RM 850,000'
-    m_k = re.search(r'RM\s*([\d\.,]+)\s*(?:k\b|thousand)', text, re.IGNORECASE)
-    if m_k:
-        val_str = m_k.group(1).replace(',', '')
-        try:
-            return float(val_str) * 1_000
-        except ValueError:
-            pass
-
-    # Check for regular RM standard number: 'RM 1,200,000' or 'RM1200000'
-    m_std = re.search(r'RM\s*([\d,]+(?:\.\d+)?)', text, re.IGNORECASE)
-    if m_std:
-        val_str = m_std.group(1).replace(',', '')
-        try:
-            val = float(val_str)
-            if val > 1000:  # Avoid matching small deposit amounts
-                return val
-        except ValueError:
-            pass
-
-    return 0.0
-
 def parse_acres(text: str) -> float:
     """Extract land area in acres from text."""
     if not text:
         return 0.0
-    m = re.search(r'([\d\.]+)\s*(?:acres?|ac\b|ekar)', text, re.IGNORECASE)
+    m = re.search(r'([\d\.]+)\s*[\-]?\s*(?:acres?|ac\b|ekar)', text, re.IGNORECASE)
     if m:
         try:
             return float(m.group(1))
         except ValueError:
             pass
     return 0.0
+
+def parse_listing_financials(title: str, description: str, status: str = "For Sale", acres: float = 0.0) -> dict:
+    """
+    Robust financial extraction distinguishing Total Asking Price, Price Per Acre,
+    Price Per SqFt, and Monthly Rental.
+    """
+    combined = f"{title}\n{description}"
+    result = {
+        "asking_price_myr": 0.0,
+        "price_per_acre_myr": None,
+        "price_per_sqft_myr": None,
+        "monthly_rental_income_myr": None
+    }
+    
+    # 1. Detect Price Per Acre (e.g. 'RM 365,000 / acre', 'RM 365k per acre', 'RM 365,000/ekar')
+    m_ppa = re.search(r'RM\s*([\d\.,]+)\s*(k|thousand|mil|million|m)?\s*(?:/|per)\s*(?:acre|ac|ekar)', combined, re.IGNORECASE)
+    if m_ppa:
+        val_str = m_ppa.group(1).replace(',', '')
+        mult = 1.0
+        unit = (m_ppa.group(2) or '').lower()
+        if unit in ('k', 'thousand'): mult = 1_000.0
+        elif unit in ('mil', 'million', 'm'): mult = 1_000_000.0
+        try:
+            val = float(val_str) * mult
+            if val > 500:
+                result["price_per_acre_myr"] = val
+        except ValueError:
+            pass
+
+    # 2. Detect Price Per SqFt (e.g. 'RM 45 / sqft', 'RM 45 psf', 'RM45/sq.ft')
+    m_psf = re.search(r'RM\s*([\d\.,]+)\s*(?:/|per|\b)\s*(?:sqft|sq\.ft|psf)', combined, re.IGNORECASE)
+    if m_psf:
+        val_str = m_psf.group(1).replace(',', '')
+        try:
+            val = float(val_str)
+            if 1.0 <= val <= 5000.0:
+                result["price_per_sqft_myr"] = val
+        except ValueError:
+            pass
+
+    # 3. Detect Monthly Rental (e.g. 'RM 12,000 / month', 'Rent: RM 12k', 'Rental RM12,000')
+    m_rent = re.search(r'(?:rent|rental|monthly)\s*(?:is|:|\-)?\s*RM\s*([\d\.,]+)\s*(k|thousand)?(?:\s*/\s*month|\s*per\s*month)?', combined, re.IGNORECASE)
+    if not m_rent and status == "For Rent":
+        m_rent = re.search(r'RM\s*([\d\.,]+)\s*(k|thousand)?\s*(?:/|per)\s*month', combined, re.IGNORECASE)
+    if m_rent:
+        val_str = m_rent.group(1).replace(',', '')
+        mult = 1.0
+        unit = (m_rent.group(2) or '').lower()
+        if unit in ('k', 'thousand'): mult = 1_000.0
+        try:
+            val = float(val_str) * mult
+            if val > 100:
+                result["monthly_rental_income_myr"] = val
+        except ValueError:
+            pass
+
+    # 4. Detect Total Price in Millions (e.g. 'RM 3.5M', 'RM 3.5 Million')
+    m_mil = re.search(r'(?:total\s*price|price|selling\s*price|at)?\s*RM\s*([\d\.,]+)\s*(?:million|mil|m\b)', combined, re.IGNORECASE)
+    if m_mil:
+        val_str = m_mil.group(1).replace(',', '')
+        try:
+            result["asking_price_myr"] = float(val_str) * 1_000_000.0
+        except ValueError:
+            pass
+
+    # 5. Detect Standard Total Price (e.g. 'Price: RM 800,000', 'Total: RM 3,500,000')
+    if result["asking_price_myr"] == 0.0:
+        # Match RM explicitly labeled as Total or in title
+        m_tot = re.search(r'(?:total\s*price|selling\s*price|price|asking\s*price|sale\s*price)\s*(?:is|:|\-)?\s*RM\s*([\d,]+(?:\.\d+)?)', combined, re.IGNORECASE)
+        if not m_tot:
+            # Fallback to title RM
+            m_tot = re.search(r'RM\s*([\d,]+(?:\.\d+)?)', title, re.IGNORECASE)
+            
+        if m_tot:
+            val_str = m_tot.group(1).replace(',', '')
+            try:
+                val = float(val_str)
+                # Ignore small numbers that could be deposit or per-sqft
+                if val > 5000:
+                    result["asking_price_myr"] = val
+            except ValueError:
+                pass
+
+    # 6. Mathematical Reconciliation
+    # If listing is For Rent, asking price is 0
+    if status == "For Rent":
+        result["asking_price_myr"] = 0.0
+    else:
+        # If we have price_per_acre and acres, ensure asking_price is total
+        if result["price_per_acre_myr"] and acres and acres > 1.2:
+            ppa = result["price_per_acre_myr"]
+            ask = result["asking_price_myr"]
+            if ask == 0.0 or ask <= (ppa * 1.15):
+                result["asking_price_myr"] = round(ppa * acres, 2)
+        elif result["asking_price_myr"] > 0 and acres > 0 and not result["price_per_acre_myr"]:
+            result["price_per_acre_myr"] = round(result["asking_price_myr"] / acres, 2)
+
+    return result
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -168,16 +234,20 @@ def fetch_and_ingest_all():
                             city = c_candidate
                             break
 
-                    # Price extraction
-                    price = parse_price(title) or parse_price(description)
-                    acres = parse_acres(title) or parse_acres(description)
-
                     # Status
                     status = "Available"
-                    if "for rent" in title.lower():
+                    if "for rent" in title.lower() or "to let" in title.lower():
                         status = "For Rent"
                     elif "for sale" in title.lower():
                         status = "For Sale"
+
+                    # Acreage and Financials extraction
+                    acres = parse_acres(title) or parse_acres(description)
+                    financials = parse_listing_financials(title, description, status=status, acres=acres)
+                    price = financials["asking_price_myr"]
+                    price_per_acre = financials["price_per_acre_myr"]
+                    price_per_sqft = financials["price_per_sqft_myr"]
+                    monthly_rental = financials["monthly_rental_income_myr"]
 
                     # Database Upsert
                     existing = db.query(Property).filter((Property.title == title) | (Property.source_url == link)).first()
@@ -185,7 +255,10 @@ def fetch_and_ingest_all():
                         existing.title = title
                         existing.search_corpus_markdown = description
                         existing.source_url = link
-                        if price > 0: existing.asking_price_myr = price
+                        existing.asking_price_myr = price
+                        if price_per_acre: existing.price_per_acre_myr = price_per_acre
+                        if price_per_sqft: existing.price_per_sqft_myr = price_per_sqft
+                        if monthly_rental: existing.monthly_rental_income_myr = monthly_rental
                         if acres > 0: existing.land_area_acres = acres
                         existing.city = city
                         existing.state = state
@@ -201,6 +274,9 @@ def fetch_and_ingest_all():
                             search_corpus_markdown=description,
                             source_url=link,
                             asking_price_myr=price,
+                            price_per_acre_myr=price_per_acre,
+                            price_per_sqft_myr=price_per_sqft,
+                            monthly_rental_income_myr=monthly_rental,
                             land_area_acres=acres,
                             city=city,
                             state=state,

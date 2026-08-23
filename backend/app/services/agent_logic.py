@@ -64,7 +64,7 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict, c
 
     current_user_name = collected_data.get("name") or (contact_name if is_valid_name(contact_name) else None)
 
-    # 2. Match Specific Property in Database
+    # 2. Match Specific Property in Database or Resolve from History
     matched_prop = find_matching_property(raw_text)
     if matched_prop:
         session["interested_property"] = matched_prop
@@ -81,19 +81,37 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict, c
 
     cached_prop = session.get("interested_property")
 
+    # If no cached property, try to resolve from conversation history
+    if not cached_prop and conversation_history:
+        history_prop = find_matching_property(conversation_history)
+        if history_prop:
+            session["interested_property"] = history_prop
+            cached_prop = history_prop
+
     # 3. Dynamic RAG Property Search based on user message context
     available_properties = []
+    
+    # Check if user explicitly wants to switch criteria
+    is_switching_context = any(phrase in raw_text.lower() for phrase in [
+        "other", "another", "different", "instead", "switch to", "what else",
+        "durian land", "commercial", "industrial", "house in", "shop in", "land in"
+    ]) and not any(p in raw_text.lower() for p in ["picture", "photo", "gambar", "foto", "more picture", "more photo", "detail"])
+
+    if is_switching_context:
+        session["interested_property"] = None
+        cached_prop = None
+
     if not cached_prop:
         # Search DB for properties relevant to the message
         search_loc = None
-        for town in ["bentong", "raub", "karak", "temerloh", "mentakab", "pahang", "bukit tinggi"]:
-            if town in raw_text.lower() or town in conversation_history.lower():
+        for town in ["bentong", "raub", "karak", "temerloh", "mentakab", "pahang", "bukit tinggi", "lanchang", "maran"]:
+            if town in raw_text.lower() or (not is_switching_context and town in conversation_history.lower()):
                 search_loc = town
                 break
         
         search_cat = None
-        for cat in ["shop", "commercial", "semi-d", "semi d", "bungalow", "terrace", "durian", "orchard", "land", "industrial", "house"]:
-            if cat in raw_text.lower() or cat in conversation_history.lower():
+        for cat in ["semi-d", "semi d", "bungalow", "terrace", "durian", "orchard", "shop", "commercial", "warehouse", "factory", "industrial", "land", "house"]:
+            if cat in raw_text.lower() or (not is_switching_context and cat in conversation_history.lower()):
                 search_cat = cat
                 break
                 
@@ -115,12 +133,18 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict, c
             "max_price": max_p or collected_data.get("buyer_budget")
         }
         available_properties = search_properties(criteria, limit=5)
+        
+        # If search found candidates and this is a search intent, lock the top recommendation in session
+        if available_properties and len(available_properties) > 0:
+            cached_prop = available_properties[0]
+            session["interested_property"] = cached_prop
+            collected_data["property_of_interest"] = cached_prop.get("title")
 
     # 4. LLM Intent & Conversational Generation
     llm_analysis = generate_conversational_response(
         text=raw_text,
         cached_property=cached_prop,
-        available_properties=available_properties,
+        available_properties=available_properties if not cached_prop else [],
         conversation_history=conversation_history,
         collected_data=collected_data,
         customer_name=current_user_name
@@ -147,14 +171,36 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict, c
     asked_alternatives = llm_analysis.get("asked_alternatives", False)
     new_constraints = llm_analysis.get("new_constraints", {})
 
+    # Detect photo request via LLM or direct conversational keywords
+    is_photo_request = bool(asked_photos) or any(w in raw_text.lower() for w in [
+        "picture", "pictures", "photo", "photos", "gambar", "foto", "image", "images", "see photo", "show photo"
+    ])
+
     images_to_send = []
 
     # 5. Handle Native WhatsApp Photos
-    if asked_photos and cached_prop:
+    if is_photo_request and cached_prop:
         prop_images = cached_prop.get("image_urls") or []
+        
+        # If cached dict has no image_urls, query DB directly
+        if not prop_images and cached_prop.get("id"):
+            db = SessionLocal()
+            try:
+                p_record = db.query(Property).filter(Property.id == cached_prop["id"]).first()
+                if p_record and p_record.image_urls:
+                    prop_images = p_record.image_urls
+                    cached_prop["image_urls"] = prop_images
+                    session["interested_property"] = cached_prop
+            finally:
+                db.close()
+                
         if prop_images:
-            images_to_send = [img for img in prop_images if isinstance(img, str) and img.startswith("http")][:5]
-
+            # Filter valid HTTP URLs and exclude logo/icon placeholders
+            images_to_send = [
+                img for img in prop_images 
+                if isinstance(img, str) and img.startswith("http") and not any(ex in img.lower() for ex in ["logo", "icon", "favicon"])
+            ][:5]
+            logger.info(f"Resolved {len(images_to_send)} photos to send for property: {cached_prop.get('title')}")
 
     # 6. Handle Similar Properties Suggestion (Alternatives / Sold listing)
     if asked_alternatives or (cached_prop and cached_prop.get("status") not in ["Available", "For Sale", "For Rent"]):
@@ -173,10 +219,6 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict, c
             llm_analysis["similar_options"] = similars
 
     # 7. Check Handover Triggers
-    # ONLY initiate handover if:
-    # 1. User explicitly requests meeting/viewing/call, OR
-    # 2. User confirms they want a senior agent to call them, OR
-    # 3. Bank valuer submission
     handover = False
     response_text = llm_analysis.get("response", "How may I assist you with Home IHC properties today? 😊")
 

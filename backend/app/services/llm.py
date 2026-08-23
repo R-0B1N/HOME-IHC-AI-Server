@@ -279,13 +279,22 @@ def extract_wordpress_property(payload: dict) -> dict:
     You are an expert real estate data engineer and valuation analyst for Malaysia (Pahang, Perak, Selangor).
     Analyze the provided raw WordPress property title, description, and specifications.
     
+    CRITICAL FINANCIAL & PRICING DISAMBIGUATION RULES:
+    1. "asking_price_myr": The TOTAL listed selling price for the WHOLE property parcel in Malaysian Ringgit.
+       - If the listing says "RM 365,000 / acre" or "RM 365k per acre" for a 9.7-acre parcel, calculate: asking_price_myr = 365,000 * 9.7 = 3,540,500. DO NOT put 365,000 as asking_price_myr when the parcel is 9.7 acres!
+       - If the listing is strictly "For Rent" / "To Let", set asking_price_myr to 0.0 and put the rental amount into monthly_rental_income_myr.
+    2. "price_per_acre_myr": Float. Price per acre in MYR (e.g. 365000.0).
+    3. "monthly_rental_income_myr": Float. Monthly rental fee if For Rent (e.g., 12000.0), or existing monthly rental collected.
+    4. "price_per_sqft_myr": Float. Price per sqft if mentioned or calculable.
+    5. NEVER confuse booking deposits (e.g. "Booking: RM 5,000"), maintenance fees, or recommended operational returns with the property asking price.
+    
     Extract and output strictly as a JSON object with these exact structured fields. Use null if a value is not found:
     - "property_type_sub": String (e.g., "Durian Land", "Rubber Land", "Oil Palm Land", "Vacant Land", "Commercial Land", "Shop", "Warehouse", "Factory", "Semi-D House", "Bungalow", "Terrace House").
     - "category": List of strings (e.g., ["Agricultural Land", "Durian Land"] or ["Commercial", "Shop"] or ["Industrial", "Warehouse"]).
-    - "asking_price_myr": Float. Listed selling price (or 0.0 if for rent).
-    - "monthly_rental_income_myr": Float. Current or estimated monthly rental income / rental fee.
-    - "price_per_acre_myr": Float. Price per acre if mentioned or calculable.
-    - "price_per_sqft_myr": Float. Price per sqft if mentioned or calculable.
+    - "asking_price_myr": Float. Total listed selling price in MYR (or 0.0 if for rent).
+    - "monthly_rental_income_myr": Float. Current or estimated monthly rental income / rental fee in MYR.
+    - "price_per_acre_myr": Float. Price per acre in MYR.
+    - "price_per_sqft_myr": Float. Price per sqft in MYR.
     - "implied_yield_pct": Float. Estimated gross ROI / yield percentage per annum.
     - "land_area_acres": Float. Total land size in acres.
     - "land_area_sqft": Float. Total land size in square feet.
@@ -458,9 +467,16 @@ def extract_wordpress_property(payload: dict) -> dict:
             # Auto-calculate derived areas
             if extracted_data["land_area_acres"] and not extracted_data["land_area_sqft"]:
                 extracted_data["land_area_sqft"] = round(extracted_data["land_area_acres"] * 43560.0, 2)
-            if extracted_data["land_area_sqft"] and not extracted_data["land_area_acres"]:
-                extracted_data["land_area_acres"] = round(extracted_data["land_area_sqft"] / 43560.0, 4)
-            if extracted_data["asking_price_myr"] and extracted_data["land_area_acres"] and extracted_data["land_area_acres"] > 0:
+            # Disambiguate per-acre price vs total asking price
+            # If asking_price_myr was assigned the per-acre price (e.g. 365,000 for 9.7 acres)
+            if extracted_data["price_per_acre_myr"] and extracted_data["land_area_acres"] and extracted_data["land_area_acres"] > 1.2:
+                ppa = extracted_data["price_per_acre_myr"]
+                acres = extracted_data["land_area_acres"]
+                ask = extracted_data["asking_price_myr"]
+                if ask <= (ppa * 1.15):
+                    # The total price was confused with per-acre price. Correct it!
+                    extracted_data["asking_price_myr"] = round(ppa * acres, 2)
+            elif extracted_data["asking_price_myr"] and extracted_data["land_area_acres"] and extracted_data["land_area_acres"] > 0:
                 if not extracted_data["price_per_acre_myr"]:
                     extracted_data["price_per_acre_myr"] = round(extracted_data["asking_price_myr"] / extracted_data["land_area_acres"], 2)
             if extracted_data["asking_price_myr"] and extracted_data["land_area_sqft"] and extracted_data["land_area_sqft"] > 0:
