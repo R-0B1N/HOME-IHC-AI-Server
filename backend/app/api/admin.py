@@ -91,3 +91,17 @@ def update_workflow_step(step_id: int, payload: WorkflowStepUpdate):
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()
+
+
+@router.post("/workflows/seed")
+def seed_all_workflows():
+    """Trigger complete workflow template seeding into database from code definitions."""
+    try:
+        from scripts.seed_workflows import seed_workflows
+        seed_workflows()
+        return {
+            "status": "success",
+            "message": "Successfully seeded all 52 workflow templates into database."
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to seed workflows: {e}")

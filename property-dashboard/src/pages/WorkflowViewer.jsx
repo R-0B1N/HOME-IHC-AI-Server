@@ -106,6 +106,27 @@ function WorkflowViewer() {
     }
   };
 
+  const [seeding, setSeeding] = useState(false);
+
+  const handleSeedWorkflows = async () => {
+    if (!window.confirm("Are you sure you want to re-seed all default workflows? This will refresh all workflow templates to their standard 5-persona system definitions.")) {
+      return;
+    }
+    setSeeding(true);
+    setError(null);
+    try {
+      const res = await axios.post(`${API_BASE_URL}/admin/workflows/seed`);
+      setSuccessMsg(res.data?.message || 'Successfully seeded all workflow templates.');
+      fetchWorkflows();
+      setTimeout(() => setSuccessMsg(''), 5000);
+    } catch (err) {
+      console.error('Failed to seed workflows:', err);
+      setError(err.response?.data?.detail || 'Failed to seed workflow templates.');
+    } finally {
+      setSeeding(false);
+    }
+  };
+
   // Group workflows by persona_type
   const grouped = workflows.reduce((acc, step) => {
     if (!acc[step.persona_type]) acc[step.persona_type] = [];
@@ -139,7 +160,7 @@ function WorkflowViewer() {
           <h2>Workflow & Messaging Templates</h2>
           <span className="wf-count">{workflows.length} steps across {personaTypes.length} personas</span>
         </div>
-        <div className="wf-header-right">
+        <div className="wf-header-right" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <select
             className="lux-select"
             value={personaFilter}
@@ -152,6 +173,15 @@ function WorkflowViewer() {
           </select>
           <button className="lux-btn-secondary" onClick={fetchWorkflows} title="Refresh Workflows">
             ↻ Refresh
+          </button>
+          <button 
+            className="lux-btn-primary" 
+            onClick={handleSeedWorkflows} 
+            disabled={seeding}
+            title="Re-seed Default Workflows from System Definitions"
+            style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', whiteSpace: 'nowrap' }}
+          >
+            {seeding ? '🌱 Seeding...' : '🌱 Re-seed Workflows'}
           </button>
         </div>
       </div>

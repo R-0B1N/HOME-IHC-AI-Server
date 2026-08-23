@@ -1,0 +1,68 @@
+name: Ingest & Enrich Properties
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target Environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+      action:
+        description: 'Ingestion Action'
+        required: true
+        default: 'scrape_and_enrich'
+        type: choice
+        options:
+          - scrape_and_enrich
+          - scrape_only
+          - enrich_vectors_only
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    steps:
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: Execute Ingestion and AI Embedding via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          command_timeout: 60m
+          timeout: 60m
+          script: |
+            echo "=== RUNNING DATA INGESTION ON ${{ github.event.inputs.environment }} ==="
+            if [ "${{ github.event.inputs.environment }}" = "production" ]; then
+              cd ~/whatsapp-ai-prod
+              COMPOSE_CMD="docker compose -f docker-compose.production.yml exec -T api_production"
+            else
+              cd ~/whatsapp-ai-staging
+              COMPOSE_CMD="docker compose -f docker-compose.staging.yml exec -T api_staging"
+            fi
+
+            ACTION="${{ github.event.inputs.action }}"
+            if [ "$ACTION" = "scrape_only" ]; then
+              echo "--> Running WordPress Web Scraper & Ingestion..."
+              $COMPOSE_CMD python scripts/scrape_and_ingest_all_properties.py
+            elif [ "$ACTION" = "enrich_vectors_only" ]; then
+              echo "--> Running 12-Category LLM Enrichment & 5-Aspect Vector Generation..."
+              $COMPOSE_CMD python scripts/reprocess_and_enrich_all_properties.py
+            else
+              echo "--> Step 1: Running WordPress Web Scraper & Ingestion..."
+              $COMPOSE_CMD python scripts/scrape_and_ingest_all_properties.py
+              echo "--> Step 2: Running 12-Category LLM Enrichment & 5-Aspect Vector Generation..."
+              $COMPOSE_CMD python scripts/reprocess_and_enrich_all_properties.py
+            fi
+
+            echo "=== PROPERTY INGESTION & ENRICHMENT COMPLETED ==="
