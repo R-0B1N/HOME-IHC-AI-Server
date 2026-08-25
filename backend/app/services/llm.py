@@ -282,11 +282,12 @@ def extract_wordpress_property(payload: dict) -> dict:
     CRITICAL FINANCIAL & PRICING DISAMBIGUATION RULES:
     1. "asking_price_myr": The TOTAL listed selling price for the WHOLE property parcel in Malaysian Ringgit.
        - If the listing says "RM 365,000 / acre" or "RM 365k per acre" for a 9.7-acre parcel, calculate: asking_price_myr = 365,000 * 9.7 = 3,540,500. DO NOT put 365,000 as asking_price_myr when the parcel is 9.7 acres!
+       - If the listing says "Selling Price: From RM 530,000" or "RM From 530,000", set asking_price_myr to 530000.0.
        - If the listing is strictly "For Rent" / "To Let", set asking_price_myr to 0.0 and put the rental amount into monthly_rental_income_myr.
     2. "price_per_acre_myr": Float. Price per acre in MYR (e.g. 365000.0).
     3. "monthly_rental_income_myr": Float. Monthly rental fee if For Rent (e.g., 12000.0), or existing monthly rental collected.
     4. "price_per_sqft_myr": Float. Price per sqft if mentioned or calculable.
-    5. NEVER confuse booking deposits (e.g. "Booking: RM 5,000"), maintenance fees, or recommended operational returns with the property asking price.
+    5. NEVER confuse "Estimated savings" (e.g. "Estimated savings of RM20,000 - RM30,000"), discounts, cashbacks, legal fees, or booking deposits (e.g. "Booking: RM 1,000") with the property asking price!
     
     Extract and output strictly as a JSON object with these exact structured fields. Use null if a value is not found:
     - "property_type_sub": String (e.g., "Durian Land", "Rubber Land", "Oil Palm Land", "Vacant Land", "Commercial Land", "Shop", "Warehouse", "Factory", "Semi-D House", "Bungalow", "Terrace House").
@@ -347,7 +348,7 @@ def extract_wordpress_property(payload: dict) -> dict:
     - "status": String ("For Sale", "For Rent", "Available", "Sold", "Pending").
     """
     
-    content = f"Title: {title}\n\nDescription: {description}"[:1800]
+    content = f"Title: {title}\n\nDescription: {description}"[:8000]
     
     extracted_data = {
         "title": title,
@@ -476,12 +477,20 @@ def extract_wordpress_property(payload: dict) -> dict:
                 if ask <= (ppa * 1.15):
                     # The total price was confused with per-acre price. Correct it!
                     extracted_data["asking_price_myr"] = round(ppa * acres, 2)
-            elif extracted_data["asking_price_myr"] and extracted_data["land_area_acres"] and extracted_data["land_area_acres"] > 0:
-                if not extracted_data["price_per_acre_myr"]:
-                    extracted_data["price_per_acre_myr"] = round(extracted_data["asking_price_myr"] / extracted_data["land_area_acres"], 2)
-            if extracted_data["asking_price_myr"] and extracted_data["land_area_sqft"] and extracted_data["land_area_sqft"] > 0:
-                if not extracted_data["price_per_sqft_myr"]:
-                    extracted_data["price_per_sqft_myr"] = round(extracted_data["asking_price_myr"] / extracted_data["land_area_sqft"], 2)
+            # Deterministic financial parsing fallback & cross-validation
+            try:
+                from scripts.scrape_and_ingest_all_properties import parse_listing_financials
+                det_fin = parse_listing_financials(title, description, status=extracted_data["listing_status"], acres=extracted_data["land_area_acres"] or 0.0)
+                if det_fin.get("asking_price_myr") and det_fin["asking_price_myr"] > 0:
+                    # If LLM returned 0 or a suspiciously low savings figure (e.g. RM20k for a house with 530k price)
+                    if extracted_data["asking_price_myr"] <= 0 or (det_fin["asking_price_myr"] > 100000 and extracted_data["asking_price_myr"] < 50000):
+                        extracted_data["asking_price_myr"] = det_fin["asking_price_myr"]
+                    if det_fin.get("price_per_acre_myr") and not extracted_data.get("price_per_acre_myr"):
+                        extracted_data["price_per_acre_myr"] = det_fin["price_per_acre_myr"]
+                    if det_fin.get("monthly_rental_income_myr") and not extracted_data.get("monthly_rental_income_myr"):
+                        extracted_data["monthly_rental_income_myr"] = det_fin["monthly_rental_income_myr"]
+            except Exception as fin_err:
+                logger.debug(f"Deterministic financial check note: {fin_err}")
 
             extracted_data["tenure_type"] = parsed.get("tenure_type")
             extracted_data["zoning_type"] = parsed.get("zoning_type")

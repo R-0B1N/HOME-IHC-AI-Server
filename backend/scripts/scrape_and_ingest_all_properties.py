@@ -36,9 +36,8 @@ def parse_acres(text: str) -> float:
 def parse_listing_financials(title: str, description: str, status: str = "For Sale", acres: float = 0.0) -> dict:
     """
     Robust financial extraction distinguishing Total Asking Price, Price Per Acre,
-    Price Per SqFt, and Monthly Rental.
+    Price Per SqFt, and Monthly Rental, while stripping noise (savings, rebates, booking fees).
     """
-    combined = f"{title}\n{description}"
     result = {
         "asking_price_myr": 0.0,
         "price_per_acre_myr": None,
@@ -46,8 +45,18 @@ def parse_listing_financials(title: str, description: str, status: str = "For Sa
         "monthly_rental_income_myr": None
     }
     
+    combined = f"{title}\n\n{description}"
+    
+    # 0. Strip noise phrases (savings, discounts, rebates, booking fees, legal fees)
+    noise_stripped = re.sub(
+        r'(?:estimated\s*savings?|savings?|discount|rebate|cashback|booking\s*fees?|legal\s*fees?|maintenance\s*fees?|valuation\s*fee)\s*(?:of|is|:)?\s*RM\s*[\d,\.]+(?:\s*[\–\-\sto]+\s*RM\s*[\d,\.]+)?',
+        ' ',
+        combined,
+        flags=re.IGNORECASE
+    )
+
     # 1. Detect Price Per Acre (e.g. 'RM 365,000 / acre', 'RM 365k per acre', 'RM 365,000/ekar')
-    m_ppa = re.search(r'RM\s*([\d\.,]+)\s*(k|thousand|mil|million|m)?\s*(?:/|per)\s*(?:acre|ac|ekar)', combined, re.IGNORECASE)
+    m_ppa = re.search(r'RM\s*(?:from\s*)?([\d\.,]+)\s*(k|thousand|mil|million|m)?\s*(?:/|per)\s*(?:acre|ac|ekar)', noise_stripped, re.IGNORECASE)
     if m_ppa:
         val_str = m_ppa.group(1).replace(',', '')
         mult = 1.0
@@ -62,7 +71,7 @@ def parse_listing_financials(title: str, description: str, status: str = "For Sa
             pass
 
     # 2. Detect Price Per SqFt (e.g. 'RM 45 / sqft', 'RM 45 psf', 'RM45/sq.ft')
-    m_psf = re.search(r'RM\s*([\d\.,]+)\s*(?:/|per|\b)\s*(?:sqft|sq\.ft|psf)', combined, re.IGNORECASE)
+    m_psf = re.search(r'RM\s*(?:from\s*)?([\d\.,]+)\s*(?:/|per|\b)\s*(?:sqft|sq\.ft|psf)', noise_stripped, re.IGNORECASE)
     if m_psf:
         val_str = m_psf.group(1).replace(',', '')
         try:
@@ -73,9 +82,9 @@ def parse_listing_financials(title: str, description: str, status: str = "For Sa
             pass
 
     # 3. Detect Monthly Rental (e.g. 'RM 12,000 / month', 'Rent: RM 12k', 'Rental RM12,000')
-    m_rent = re.search(r'(?:rent|rental|monthly)\s*(?:is|:|\-)?\s*RM\s*([\d\.,]+)\s*(k|thousand)?(?:\s*/\s*month|\s*per\s*month)?', combined, re.IGNORECASE)
+    m_rent = re.search(r'(?:rent|rental|monthly)\s*(?:is|:|\-)?\s*(?:from\s*)?RM\s*(?:from\s*)?([\d\.,]+)\s*(k|thousand)?(?:\s*/\s*month|\s*per\s*month)?', noise_stripped, re.IGNORECASE)
     if not m_rent and status == "For Rent":
-        m_rent = re.search(r'RM\s*([\d\.,]+)\s*(k|thousand)?\s*(?:/|per)\s*month', combined, re.IGNORECASE)
+        m_rent = re.search(r'RM\s*(?:from\s*)?([\d\.,]+)\s*(k|thousand)?\s*(?:/|per)\s*month', noise_stripped, re.IGNORECASE)
     if m_rent:
         val_str = m_rent.group(1).replace(',', '')
         mult = 1.0
@@ -88,8 +97,8 @@ def parse_listing_financials(title: str, description: str, status: str = "For Sa
         except ValueError:
             pass
 
-    # 4. Detect Total Price in Millions (e.g. 'RM 3.5M', 'RM 3.5 Million')
-    m_mil = re.search(r'(?:total\s*price|price|selling\s*price|at)?\s*RM\s*([\d\.,]+)\s*(?:million|mil|m\b)', combined, re.IGNORECASE)
+    # 4. Detect Total Price in Millions (e.g. 'RM 3.5M', 'RM 3.5 Million', 'Selling Price: RM 8.5 Million')
+    m_mil = re.search(r'(?:total\s*price|price|selling\s*price|asking\s*price|at)?\s*(?:is|:|\-)?\s*(?:from\s*)?RM\s*(?:from\s*)?([\d\.,]+)\s*(?:million|mil|m\b)', noise_stripped, re.IGNORECASE)
     if m_mil:
         val_str = m_mil.group(1).replace(',', '')
         try:
@@ -97,13 +106,13 @@ def parse_listing_financials(title: str, description: str, status: str = "For Sa
         except ValueError:
             pass
 
-    # 5. Detect Standard Total Price (e.g. 'Price: RM 800,000', 'Total: RM 3,500,000')
+    # 5. Detect Standard Total Price (e.g. 'Selling Price: From RM 530,000', 'RM From 530,000', 'Price: RM 800,000')
     if result["asking_price_myr"] == 0.0:
-        # Match RM explicitly labeled as Total or in title
-        m_tot = re.search(r'(?:total\s*price|selling\s*price|price|asking\s*price|sale\s*price)\s*(?:is|:|\-)?\s*RM\s*([\d,]+(?:\.\d+)?)', combined, re.IGNORECASE)
+        # Check explicit labels first: 'Selling Price: From RM 530,000' or 'Price: RM 800,000'
+        m_tot = re.search(r'(?:total\s*price|selling\s*price|asking\s*price|sale\s*price|price)\s*(?:is|:|\-)?\s*(?:from\s*)?RM\s*(?:from\s*)?([\d,]+(?:\.\d+)?)', noise_stripped, re.IGNORECASE)
         if not m_tot:
-            # Fallback to title RM
-            m_tot = re.search(r'RM\s*([\d,]+(?:\.\d+)?)', title, re.IGNORECASE)
+            # Fallback to 'RM From 530,000' or 'RM 530,000'
+            m_tot = re.search(r'RM\s*(?:from|approx|about)?\s*([\d,]+(?:\.\d+)?)', noise_stripped, re.IGNORECASE)
             
         if m_tot:
             val_str = m_tot.group(1).replace(',', '')
@@ -116,11 +125,9 @@ def parse_listing_financials(title: str, description: str, status: str = "For Sa
                 pass
 
     # 6. Mathematical Reconciliation
-    # If listing is For Rent, asking price is 0
     if status == "For Rent":
         result["asking_price_myr"] = 0.0
     else:
-        # If we have price_per_acre and acres, ensure asking_price is total
         if result["price_per_acre_myr"] and acres and acres > 1.2:
             ppa = result["price_per_acre_myr"]
             ask = result["asking_price_myr"]

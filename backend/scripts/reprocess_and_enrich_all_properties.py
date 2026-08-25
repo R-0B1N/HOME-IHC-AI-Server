@@ -36,9 +36,11 @@ def process_single_property(prop_id):
             prop.property_type_sub = extracted["property_type_sub"]
         if extracted.get("property_category"):
             prop.property_category = extracted["property_category"]
-            
-        if extracted.get("asking_price_myr") is not None and extracted["asking_price_myr"] > 0:
+        if extracted.get("listing_status") == "For Rent":
+            prop.asking_price_myr = 0.0
+        elif extracted.get("asking_price_myr") is not None and extracted["asking_price_myr"] > 0:
             prop.asking_price_myr = extracted["asking_price_myr"]
+            
         if extracted.get("monthly_rental_income_myr") is not None:
             prop.monthly_rental_income_myr = extracted["monthly_rental_income_myr"]
         if extracted.get("price_per_acre_myr") is not None:
