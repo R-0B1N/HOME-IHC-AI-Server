@@ -1,12 +1,14 @@
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, JSON, Float, ForeignKey, Boolean
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+import logging
 import os
 import datetime
 import uuid
 from urllib.parse import quote_plus
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, JSON, Float, ForeignKey, Boolean
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
 from sqlalchemy.dialects.postgresql import UUID, ARRAY
-# from pgvector.sqlalchemy import Vector
+
+logger = logging.getLogger(__name__)
 
 DB_HOST = os.getenv("DB_HOST", os.getenv("POSTGRES_HOST", "postgres"))
 DB_USER = os.getenv("POSTGRES_USER", os.getenv("DB_USER", "n8n"))
@@ -293,6 +295,13 @@ def run_schema_migrations(eng):
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS property_type_sub VARCHAR;",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS price_per_acre_myr FLOAT;",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS price_per_sqft_myr FLOAT;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS monthly_rental_income_myr FLOAT;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS implied_yield_pct FLOAT;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS land_area_sqft FLOAT;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS land_area_sqm FLOAT;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS built_up_area_sqft FLOAT;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS tenure_type VARCHAR;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS zoning_type VARCHAR;",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS title_status VARCHAR;",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS crop_types TEXT[] DEFAULT '{}';",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS tree_count_estimate INTEGER;",
@@ -306,6 +315,14 @@ def run_schema_migrations(eng):
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS is_flood_free BOOLEAN DEFAULT TRUE;",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS is_fenced BOOLEAN DEFAULT FALSE;",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS has_worker_quarters BOOLEAN DEFAULT FALSE;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS road_access_quality VARCHAR;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS agent_name VARCHAR;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS agent_phone VARCHAR;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS agent_whatsapp_url VARCHAR;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS street_address VARCHAR;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS area VARCHAR;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS city VARCHAR;",
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS state VARCHAR;",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS nearby_landmarks TEXT[] DEFAULT '{}';",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS embedding_location vector(384);",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS embedding_specs vector(384);",
