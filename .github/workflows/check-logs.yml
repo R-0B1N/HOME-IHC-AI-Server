@@ -20,18 +20,27 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SSH_PASSWORD }}
           script: |
-            echo "=== TRIGGERING TEST WEBHOOK TO STAGING API ==="
-            curl -s -X POST http://localhost:8001/api/v1/webhooks/chatwoot \
-              -H "Content-Type: application/json" \
-              -d '{"event":"message_created","message_type":"incoming","id":99999999,"content":"Hello, looking for durian land in Bentong","account":{"id":1},"inbox":{"id":1},"conversation":{"id":69,"inbox_id":1,"status":"open"},"sender":{"id":999,"name":"Diagnostics Test User","phone_number":"+60126761818"}}'
-            
-            echo ""
-            echo "=== WAITING 15s FOR DEBOUNCER & CELERY WORKER ==="
-            sleep 15
-            
-            echo "=== STAGING COMPOSE LOGS ==="
+            echo "=== 1. RUNNING WORKFLOW SEEDING (ERA REALTOR) ==="
             cd ~/whatsapp-ai-staging
-            docker compose -f docker-compose.staging.yml logs --tail 60 worker_staging api_staging
+            docker compose -f docker-compose.staging.yml exec -T api_staging python scripts/seed_workflows.py
+            
+            echo "=== 2. RUNNING PROPERTY SCRAPING (TAMAN AZALEA & ALL LISTINGS) ==="
+            docker compose -f docker-compose.staging.yml exec -T api_staging python scripts/scrape_and_ingest_all_properties.py
+            
+            echo "=== 3. CHECKING TAMAN AZALEA IN STAGING DATABASE ==="
+            docker compose -f docker-compose.staging.yml exec -T api_staging python -c "
+from app.db.models import SessionLocal, Property
+db = SessionLocal()
+p = db.query(Property).filter(Property.title.ilike('%Taman Azalea%')).first()
+if p:
+    print(f'FOUND: {p.title}')
+    print(f'  Asking Price MYR: {p.asking_price_myr}')
+    print(f'  Price Per Sqft: {p.price_per_sqft_myr}')
+    print(f'  Category: {p.property_category}')
+else:
+    print('Taman Azalea not found in DB')
+db.close()
+"
 
 
 
