@@ -31,8 +31,14 @@ jobs:
             echo "=== STAGING CONTAINERS ==="
             docker ps --filter "name=staging" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
             
-            echo "=== RUNNING 12-CATEGORY SCHEMA & 5-ASPECT VECTOR REPROCESSING ==="
+            echo "=== RUNNING WORKFLOW SEEDING ==="
             cd ~/whatsapp-ai-staging
+            docker compose -f docker-compose.staging.yml exec -T api_staging python scripts/seed_workflows.py
+            
+            echo "=== RUNNING WORDPRESS DATA INGESTION & SCRAPING ==="
+            docker compose -f docker-compose.staging.yml exec -T api_staging python scripts/scrape_and_ingest_all_properties.py
+            
+            echo "=== RUNNING 12-CATEGORY SCHEMA & 5-ASPECT VECTOR REPROCESSING ==="
             docker compose -f docker-compose.staging.yml exec -T api_staging python scripts/reprocess_and_enrich_all_properties.py
             
-            echo "=== REPROCESSING COMPLETED ==="
+            echo "=== STAGING INGESTION, SEEDING & VECTORIZATION COMPLETED ==="
