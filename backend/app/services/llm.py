@@ -480,15 +480,24 @@ def extract_wordpress_property(payload: dict) -> dict:
             # Deterministic financial parsing fallback & cross-validation
             try:
                 from scripts.scrape_and_ingest_all_properties import parse_listing_financials
-                det_fin = parse_listing_financials(title, description, status=extracted_data["listing_status"], acres=extracted_data["land_area_acres"] or 0.0)
+                det_fin = parse_listing_financials(
+                    title, description,
+                    status=extracted_data["listing_status"],
+                    acres=extracted_data["land_area_acres"] or 0.0,
+                    sqft=extracted_data["land_area_sqft"] or 0.0
+                )
                 if det_fin.get("asking_price_myr") and det_fin["asking_price_myr"] > 0:
                     # If LLM returned 0 or a suspiciously low savings figure (e.g. RM20k for a house with 530k price)
                     if extracted_data["asking_price_myr"] <= 0 or (det_fin["asking_price_myr"] > 100000 and extracted_data["asking_price_myr"] < 50000):
                         extracted_data["asking_price_myr"] = det_fin["asking_price_myr"]
                     if det_fin.get("price_per_acre_myr") and not extracted_data.get("price_per_acre_myr"):
                         extracted_data["price_per_acre_myr"] = det_fin["price_per_acre_myr"]
+                    if det_fin.get("price_per_sqft_myr") and not extracted_data.get("price_per_sqft_myr"):
+                        extracted_data["price_per_sqft_myr"] = det_fin["price_per_sqft_myr"]
                     if det_fin.get("monthly_rental_income_myr") and not extracted_data.get("monthly_rental_income_myr"):
                         extracted_data["monthly_rental_income_myr"] = det_fin["monthly_rental_income_myr"]
+                    if det_fin.get("implied_yield_pct") and not extracted_data.get("implied_yield_pct"):
+                        extracted_data["implied_yield_pct"] = det_fin["implied_yield_pct"]
             except Exception as fin_err:
                 logger.debug(f"Deterministic financial check note: {fin_err}")
 

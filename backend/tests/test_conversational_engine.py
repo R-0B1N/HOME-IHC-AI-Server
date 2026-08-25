@@ -130,6 +130,46 @@ def test_parse_listing_financials():
     f4 = parse_listing_financials(title4, desc4, status="For Sale", acres=0.0)
     assert f4["asking_price_myr"] == 530000.0, f"Expected 530000, got {f4}"
 
+    # 5. 4ac Development Land with Per-Sqft, Total Selling Price, and ROI
+    title5 = "4 ac Freehold Development Land Main Road Frontage Near Bentong Timur Exit For Sale"
+    desc5 = """
+    RM 4,315,352
+    Property Features
+    Property Category : Agricultural Land, Development Land
+    Property Type : For Sale
+    Acres : 4.216 ac
+    Title Type : Freehold, Non-Bumi Lot
+    Areas : Karak Lebuhraya Jalan Lama Bentong-Karak
+    Cities : Karak
+    States : Pahang
+    Property Description
+    Land Size: 1.706 Hectares / 4.216 Acres / 183,632 sq. ft.
+    Selling Price
+    RM 23.50 per sqft
+    Total Selling Price: RM 4,315,352
+    Estimated ROI: 6% – 7%
+    Contact
+    PM 011-651 44931 — Irene https://phgland.wasap.my
+    """
+    acres5 = parse_acres(f"{title5}\n{desc5}")
+    assert acres5 == 4.216
+    f5 = parse_listing_financials(title5, desc5, status="For Sale", acres=acres5, sqft=183632.0)
+    assert f5["asking_price_myr"] == 4315352.0, f"Expected 4315352, got {f5}"
+    assert f5["price_per_sqft_myr"] == 23.5
+    assert f5["implied_yield_pct"] == 6.5
+
+    # 6. Complete structured metadata extraction
+    from scripts.scrape_and_ingest_all_properties import extract_all_property_details
+    details5 = extract_all_property_details(title5, desc5)
+    assert details5["land_area_acres"] == 4.216
+    assert details5["land_area_sqft"] == 183632.0
+    assert details5["land_area_sqm"] == 17060.0
+    assert details5["asking_price_myr"] == 4315352.0
+    assert details5["price_per_sqft_myr"] == 23.5
+    assert details5["implied_yield_pct"] == 6.5
+    assert details5["agent_name"] == "Irene"
+    assert "01165144931" in details5["agent_phone"]
+
 
 def test_workflow_templates_integrity():
     from scripts.seed_workflows import seed_workflows
