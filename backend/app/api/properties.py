@@ -1,9 +1,40 @@
-from fastapi import APIRouter, Depends
+import datetime
+from fastapi import APIRouter, Depends, BackgroundTasks
 from sqlalchemy.orm import Session
 from app.db.models import SessionLocal, Property
 from pydantic import BaseModel, ConfigDict
 
 router = APIRouter()
+
+# Background Sync State Tracker
+_sync_state = {
+    "is_syncing": False,
+    "status": "idle",
+    "last_synced_at": None,
+    "new_added": 0,
+    "updated": 0,
+    "total_properties": 0,
+    "error": None
+}
+
+def _run_sync_in_background():
+    global _sync_state
+    _sync_state["is_syncing"] = True
+    _sync_state["status"] = "Syncing listings from WordPress..."
+    _sync_state["error"] = None
+    try:
+        from scripts.scrape_and_ingest_all_properties import fetch_and_ingest_all
+        res = fetch_and_ingest_all()
+        _sync_state["new_added"] = res.get("new_added", 0)
+        _sync_state["updated"] = res.get("updated", 0)
+        _sync_state["total_properties"] = res.get("total_properties", 0)
+        _sync_state["status"] = "completed"
+        _sync_state["last_synced_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+    except Exception as e:
+        _sync_state["status"] = "error"
+        _sync_state["error"] = str(e)
+    finally:
+        _sync_state["is_syncing"] = False
 
 # Dependency
 def get_db():
@@ -70,16 +101,36 @@ def seed_default_properties(db: Session = Depends(get_db)):
     return {"status": "success", "count": db.query(Property).count()}
 
 @router.post("/sync-wordpress")
-def sync_wordpress_all(db: Session = Depends(get_db)):
+def sync_wordpress_all(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """
-    Scrapes and syncs all live property listings from bentongland.com.my WordPress REST API.
+    Initiates asynchronous scraping and syncing of all live property listings in the background.
+    Returns immediately to prevent proxy/Cloudflare 120-second timeout.
     """
-    try:
-        from scripts.scrape_and_ingest_all_properties import fetch_and_ingest_all
-        result = fetch_and_ingest_all()
-        return result
-    except Exception as e:
-        return {"status": "error", "message": f"WordPress sync error: {str(e)}", "total_properties": db.query(Property).count()}
+    global _sync_state
+    if _sync_state["is_syncing"]:
+        return {
+            "status": "already_running",
+            "message": "A WordPress sync is already in progress in the background.",
+            "current_properties_count": db.query(Property).count()
+        }
+        
+    background_tasks.add_task(_run_sync_in_background)
+    return {
+        "status": "started",
+        "message": "WordPress sync initiated in background. Properties and vector embeddings will update live.",
+        "current_properties_count": db.query(Property).count()
+    }
+
+@router.get("/sync-status")
+def get_sync_status(db: Session = Depends(get_db)):
+    """
+    Returns the real-time background synchronization status.
+    """
+    global _sync_state
+    return {
+        **_sync_state,
+        "current_db_count": db.query(Property).count()
+    }
 
 
 

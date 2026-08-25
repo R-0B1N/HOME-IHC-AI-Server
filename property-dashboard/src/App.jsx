@@ -139,23 +139,49 @@ function App() {
 
 
   const [isSyncingWP, setIsSyncingWP] = useState(false);
+  const [syncStatusText, setSyncStatusText] = useState('');
 
   const syncWordpressListings = async () => {
     setIsSyncingWP(true);
+    setSyncStatusText('Starting sync...');
     try {
-      const response = await axios.post(`${API_BASE_URL}/properties/sync-wordpress`, {}, { timeout: 300000 });
-      await fetchProperties();
-      if (response.data?.status === 'error') {
-        alert(`WordPress Sync Notice: ${response.data.message || 'Partial sync completed.'}`);
+      const response = await axios.post(`${API_BASE_URL}/properties/sync-wordpress`, {}, { timeout: 30000 });
+      if (response.data?.status === 'already_running') {
+        alert('A WordPress sync is already in progress in the background.');
       } else {
-        alert(`🎉 WordPress Sync Completed: ${response.data.new_added || 0} new listings added, ${response.data.updated || 0} updated (Total Properties in Database: ${response.data.total_properties || 0})`);
+        setSyncStatusText('Syncing WordPress listings & vectors...');
       }
+
+      // Poll sync status every 3 seconds to update UI in real-time
+      const pollInterval = setInterval(async () => {
+        try {
+          const statusRes = await axios.get(`${API_BASE_URL}/properties/sync-status`);
+          const sData = statusRes.data;
+          if (sData.is_syncing) {
+            setSyncStatusText(sData.status || 'Syncing in background...');
+            await fetchProperties(); // Refresh properties in real-time
+          } else {
+            clearInterval(pollInterval);
+            setIsSyncingWP(false);
+            setSyncStatusText('');
+            await fetchProperties();
+            if (sData.status === 'error') {
+              alert(`WordPress Sync Error: ${sData.error || 'Unknown error'}`);
+            } else {
+              alert(`🎉 WordPress Sync Completed! ${sData.new_added || 0} new listings added, ${sData.updated || 0} updated (Total: ${sData.total_properties || sData.current_db_count || 0})`);
+            }
+          }
+        } catch (pollErr) {
+          console.error('Error polling sync status:', pollErr);
+        }
+      }, 3000);
+
     } catch (error) {
-      console.error('Failed to sync WordPress properties:', error);
+      console.error('Failed to initiate WordPress sync:', error);
       const errMsg = error.response?.data?.message || error.response?.data?.detail || error.message || 'Please check backend connection.';
-      alert(`Failed to sync properties from WordPress: ${errMsg}`);
-    } finally {
+      alert(`Failed to start WordPress sync: ${errMsg}`);
       setIsSyncingWP(false);
+      setSyncStatusText('');
     }
   };
 
@@ -710,7 +736,7 @@ function App() {
                 disabled={isSyncingWP}
                 title="Sync all properties from bentongland.com.my WordPress"
               >
-                {isSyncingWP ? 'Syncing WP...' : '🔄 Sync WordPress'}
+                {isSyncingWP ? (syncStatusText || 'Syncing WP...') : '🔄 Sync WordPress'}
               </button>
               <button className="lux-btn-primary" onClick={handleOpenAddModal}>
                 <Plus size={16} /> Add Listing
@@ -903,7 +929,7 @@ function App() {
                 onClick={syncWordpressListings} 
                 disabled={isSyncingWP}
               >
-                {isSyncingWP ? 'Syncing...' : '🔄 Sync All from WordPress'}
+                {isSyncingWP ? (syncStatusText || 'Syncing...') : '🔄 Sync All from WordPress'}
               </button>
             </div>
           </div>
