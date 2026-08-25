@@ -143,12 +143,17 @@ function App() {
   const syncWordpressListings = async () => {
     setIsSyncingWP(true);
     try {
-      const response = await axios.post(`${API_BASE_URL}/properties/sync-wordpress`);
+      const response = await axios.post(`${API_BASE_URL}/properties/sync-wordpress`, {}, { timeout: 300000 });
       await fetchProperties();
-      alert(`WordPress Sync Completed: ${response.data.new_added || 0} new listings added, ${response.data.updated || 0} updated (Total: ${response.data.total_properties || 0})`);
+      if (response.data?.status === 'error') {
+        alert(`WordPress Sync Notice: ${response.data.message || 'Partial sync completed.'}`);
+      } else {
+        alert(`🎉 WordPress Sync Completed: ${response.data.new_added || 0} new listings added, ${response.data.updated || 0} updated (Total Properties in Database: ${response.data.total_properties || 0})`);
+      }
     } catch (error) {
       console.error('Failed to sync WordPress properties:', error);
-      alert('Failed to sync properties from WordPress. Please check backend connection.');
+      const errMsg = error.response?.data?.message || error.response?.data?.detail || error.message || 'Please check backend connection.';
+      alert(`Failed to sync properties from WordPress: ${errMsg}`);
     } finally {
       setIsSyncingWP(false);
     }

@@ -66,9 +66,10 @@ def process_single_property(prop_id):
         if extracted.get("title_status"):
             prop.title_status = extracted["title_status"]
             
-        # Update Agricultural & Land Features
-        prop.crop_types = extracted.get("crop_types", [])
-        if extracted.get("tree_count_estimate") is not None:
+        # Update Agricultural & Land Features (preserve existing if new is empty)
+        if extracted.get("crop_types"):
+            prop.crop_types = extracted["crop_types"]
+        if extracted.get("tree_count_estimate") is not None and extracted["tree_count_estimate"] > 0:
             prop.tree_count_estimate = extracted["tree_count_estimate"]
         if extracted.get("tree_age_years"):
             prop.tree_age_years = extracted["tree_age_years"]
@@ -78,24 +79,32 @@ def process_single_property(prop_id):
         # Update Topography & Water
         if extracted.get("topography"):
             prop.topography = extracted["topography"]
-        prop.water_source_types = extracted.get("water_source_types", [])
-        prop.has_natural_stream = bool(extracted.get("has_natural_stream", False))
-        prop.has_pond = bool(extracted.get("has_pond", False))
-        prop.has_piping_system = bool(extracted.get("has_piping_system", False))
-        prop.is_flood_free = bool(extracted.get("is_flood_free", True))
+        if extracted.get("water_source_types"):
+            prop.water_source_types = extracted["water_source_types"]
+        if extracted.get("has_natural_stream"):
+            prop.has_natural_stream = True
+        if extracted.get("has_pond"):
+            prop.has_pond = True
+        if extracted.get("has_piping_system"):
+            prop.has_piping_system = True
+        if extracted.get("is_flood_free") is not None:
+            prop.is_flood_free = bool(extracted["is_flood_free"])
         
         # Update Infrastructure
         if extracted.get("power_supply_amp") is not None:
             prop.power_supply_amp = extracted["power_supply_amp"]
         if extracted.get("utilities_available"):
             prop.utilities_available = extracted["utilities_available"]
-        prop.has_office = bool(extracted.get("has_office", False))
+        if extracted.get("has_office"):
+            prop.has_office = True
         if extracted.get("office_features"):
             prop.office_features = extracted["office_features"]
         if extracted.get("road_access_quality"):
             prop.road_access_quality = extracted["road_access_quality"]
-        prop.is_fenced = bool(extracted.get("is_fenced", False))
-        prop.has_worker_quarters = bool(extracted.get("has_worker_quarters", False))
+        if extracted.get("is_fenced"):
+            prop.is_fenced = True
+        if extracted.get("has_worker_quarters"):
+            prop.has_worker_quarters = True
         
         # Update Location & Geospatial
         if extracted.get("street_address"):
@@ -106,17 +115,22 @@ def process_single_property(prop_id):
             prop.city = extracted["city"]
         if extracted.get("state"):
             prop.state = extracted["state"]
-        prop.nearby_landmarks = extracted.get("nearby_landmarks", [])
+        if extracted.get("nearby_landmarks"):
+            prop.nearby_landmarks = extracted["nearby_landmarks"]
         
         # Update Operational / Tenancy
-        prop.is_tenanted = bool(extracted.get("is_tenanted", False))
+        if extracted.get("is_tenanted") is not None:
+            prop.is_tenanted = bool(extracted["is_tenanted"])
         if extracted.get("current_tenant_use"):
             prop.current_tenant_use = extracted["current_tenant_use"]
             
         # Update Suitability & Highlights
-        prop.suitable_industries = extracted.get("suitable_industries", [])
-        prop.key_highlights = extracted.get("key_highlights", [])
-        prop.risk_flags = extracted.get("risk_flags", [])
+        if extracted.get("suitable_industries"):
+            prop.suitable_industries = extracted["suitable_industries"]
+        if extracted.get("key_highlights"):
+            prop.key_highlights = extracted["key_highlights"]
+        if extracted.get("risk_flags"):
+            prop.risk_flags = extracted["risk_flags"]
         
         # Generate 5 Dense Vector Embeddings (384-dim FastEmbed)
         vecs = generate_property_5_embeddings(prop)

@@ -74,9 +74,12 @@ def sync_wordpress_all(db: Session = Depends(get_db)):
     """
     Scrapes and syncs all live property listings from bentongland.com.my WordPress REST API.
     """
-    from scripts.scrape_and_ingest_all_properties import fetch_and_ingest_all
-    result = fetch_and_ingest_all()
-    return result
+    try:
+        from scripts.scrape_and_ingest_all_properties import fetch_and_ingest_all
+        result = fetch_and_ingest_all()
+        return result
+    except Exception as e:
+        return {"status": "error", "message": f"WordPress sync error: {str(e)}", "total_properties": db.query(Property).count()}
 
 
 
