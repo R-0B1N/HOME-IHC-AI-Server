@@ -194,7 +194,7 @@ def seed_workflows():
             "step_number": 10,
             "step_name": "Seller Greeting",
             "ai_action_instruction": "Greet the Seller/Owner and introduce the property assessment process.",
-            "message_template": "Good day! 😊\nThank you for contacting Home IHC.\nI'm Irene Leong, a Senior Property Agent. I'll be happy to assist you with selling your land or property.\nTo better understand your property and recommend the most suitable marketing strategy, may I ask you a few questions?",
+            "message_template": "Good day! 😊\nThank you for contacting Home IHC.\nI'm Irene Leong, a Senior Property Agent from ERA Realtor. I'll be happy to assist you with selling your land or property.\nTo better understand your property and recommend the most suitable marketing strategy, may I ask you a few questions?",
             "expected_data_keys": [],
             "next_step": 11
         },
@@ -297,7 +297,7 @@ def seed_workflows():
             "step_number": 10,
             "step_name": "Tenant Greeting",
             "ai_action_instruction": "Greet the prospective tenant and send Irene Leong digital namecard.",
-            "message_template": "Good day! 😊\nI'm Irene Leong, a Senior Property Agent from Home IHC.\n\nHere is my digital name card:\n🔗 https://my.mecard.my/1733211127\n\nTo help us recommend the best rental options, please let us know your preferred location and property type! 😊",
+            "message_template": "Good day! 😊\nI'm Irene Leong, a Senior Property Agent from ERA Realtor.\n\nHere is my digital name card:\n🔗 https://my.mecard.my/1733211127\n\nHow can Home IHC assist you with rental properties in Pahang today? To help us recommend the best options, please let us know your preferred location and property type! 😊",
             "expected_data_keys": [],
             "next_step": 31
         },
@@ -400,7 +400,7 @@ def seed_workflows():
             "step_number": 10,
             "step_name": "Landlord Greeting",
             "ai_action_instruction": "Greet the Landlord and explain the leasing marketing process.",
-            "message_template": "Good day! 😊\nThank you for contacting Home IHC.\nI'm Irene Leong, a Senior Property Agent. I'll be happy to assist you with renting out your land or property.\nTo better understand your property, may I ask you a few questions?",
+            "message_template": "Good day! 😊\nThank you for contacting Home IHC.\nI'm Irene Leong, a Senior Property Agent from ERA Realtor. I'll be happy to assist you with renting out your land or property.\nTo better understand your property, may I ask you a few questions?",
             "expected_data_keys": [],
             "next_step": 11
         },
@@ -458,7 +458,7 @@ def seed_workflows():
             "step_number": 10,
             "step_name": "Agent Greeting & Listing Link",
             "ai_action_instruction": "Greet the agent/broker, share listings directory, and initiate co-broking process.",
-            "message_template": "Hi Agent/Broker! 👋\nThank you for contacting Home IHC.\n\nTo assist you more efficiently, could you please share your buyer's requirements?\nProperty Type:\nPreferred Location:\nBudget:\nPurpose: (Own Use / Investment)\n\nYou may also browse our latest listings here:\n🔗 https://bentongland.com.my/listings/\n\nI look forward to your reply. 😊",
+            "message_template": "Hi Agent/Broker! 👋\nThank you for contacting Home IHC.\nI'm Irene Leong, a Senior Property Agent from ERA Realtor.\n\nTo assist you more efficiently, could you please share your buyer's requirements?\nProperty Type:\nPreferred Location:\nBudget:\nPurpose: (Own Use / Investment)\n\nYou may also browse our latest listings here:\n🔗 https://bentongland.com.my/listings/\n\nI look forward to your reply. 😊",
             "expected_data_keys": [],
             "next_step": 11
         },

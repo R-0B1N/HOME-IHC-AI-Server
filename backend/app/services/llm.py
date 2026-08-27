@@ -19,8 +19,9 @@ llm_client = OpenAI(
 
 def transcribe_audio(audio_url: str) -> str:
     """
-    Downloads audio and sends to Whisper (or Gemma 4 audio model) for transcription.
-    This runs inside a Celery task, so it safely blocks until the transcription is done.
+    Downloads audio and sends to Whisper (or audio transcription engine).
+    Uses a targeted multilingual domain prompt covering Malaysian real estate terms
+    in Mandarin, Cantonese, Hokkien, Bahasa Melayu, and English.
     """
     logger.info(f"Transcribing audio from {audio_url}")
     
@@ -29,24 +30,44 @@ def transcribe_audio(audio_url: str) -> str:
         audio_resp = requests.get(audio_url, timeout=30)
         audio_resp.raise_for_status()
         
-        # 2. POST to whisper API
+        # 2. POST to whisper API with domain vocabulary biasing
+        multilingual_prompt = (
+            "Irene Leong, ERA Realtor, Home IHC, BentongLand, Pahang, Kuantan, Bentong, Raub, Karak, Temerloh, Mentakab. "
+            "店面, 铺位, 铺头, 双层排屋, 农业地, 榴莲园, 佣金, 租金, 买卖, 一间, 一个月, 订金, 押金, 发展地, 商业地, 睇楼, 顶手, 屋主, 业主. "
+            "Tanah, kedai, sewa, jual, sewa sebulan, komisen, deposit 2+1, geran freehold leasehold, Musang King. "
+            "Tiàm-thâu, Chhu, Chhut-cho͘, Bóe, Bē, Thô͘-tī. Shoplot, rental, one month advance, ROI."
+        )
+        
         files = {
             'file': ('audio.ogg', audio_resp.content, 'audio/ogg')
         }
         data = {
-            'model': 'whisper-1'
+            'model': 'whisper-1',
+            'prompt': multilingual_prompt,
+            'temperature': 0.0
         }
         
-        logger.info(f"Sending audio to Whisper API: {WHISPER_API_URL}")
+        logger.info(f"Sending audio to Whisper API with domain prompt biasing: {WHISPER_API_URL}")
         whisper_resp = requests.post(WHISPER_API_URL, files=files, data=data, timeout=120)
         
         if whisper_resp.status_code != 200:
             logger.error(f"Whisper API failed with status {whisper_resp.status_code}: {whisper_resp.text}")
             whisper_resp.raise_for_status()
             
-        # 3. Return text
+        # 3. Clean and filter transcript
         result = whisper_resp.json()
-        transcript = result.get("text", "")
+        transcript = (result.get("text") or "").strip()
+        
+        # Filter out common Whisper silence/hallucination tokens on short/silent audio
+        hallucinations = [
+            "[blank_audio]", "[music]", "[applause]", "[laughter]", "(silence)",
+            "thank you.", "thanks for watching!", "thanks for watching.", "please subscribe",
+            "amara.org", "subtitle by", "subtitles by", "字幕由", "谢谢观看", "感谢观看"
+        ]
+        if transcript.lower() in hallucinations:
+            logger.info(f"Filtered Whisper hallucination artifact: '{transcript}'")
+            return ""
+            
         logger.info(f"Transcription successful: {transcript}")
         return transcript
         

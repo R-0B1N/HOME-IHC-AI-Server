@@ -94,7 +94,8 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict, c
     # Check if user explicitly wants to switch criteria
     is_switching_context = any(phrase in raw_text.lower() for phrase in [
         "other", "another", "different", "instead", "switch to", "what else",
-        "durian land", "commercial", "industrial", "house in", "shop in", "land in"
+        "durian land", "commercial", "industrial", "house in", "shop in", "land in",
+        "店面", "铺位", "店", "shop", "commercial", "rumah kedai"
     ]) and not any(p in raw_text.lower() for p in ["picture", "photo", "gambar", "foto", "more picture", "more photo", "detail"])
 
     if is_switching_context:
@@ -104,13 +105,13 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict, c
     if not cached_prop:
         # Search DB for properties relevant to the message
         search_loc = None
-        for town in ["bentong", "raub", "karak", "temerloh", "mentakab", "pahang", "bukit tinggi", "lanchang", "maran"]:
+        for town in ["bentong", "raub", "karak", "temerloh", "mentakab", "pahang", "bukit tinggi", "lanchang", "maran", "kuantan"]:
             if town in raw_text.lower() or (not is_switching_context and town in conversation_history.lower()):
                 search_loc = town
                 break
         
         search_cat = None
-        for cat in ["semi-d", "semi d", "bungalow", "terrace", "durian", "orchard", "shop", "commercial", "warehouse", "factory", "industrial", "land", "house"]:
+        for cat in ["semi-d", "semi d", "bungalow", "terrace", "durian", "orchard", "shop", "commercial", "warehouse", "factory", "industrial", "land", "house", "店面", "铺位", "kedai"]:
             if cat in raw_text.lower() or (not is_switching_context and cat in conversation_history.lower()):
                 search_cat = cat
                 break
@@ -133,12 +134,8 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict, c
             "max_price": max_p or collected_data.get("buyer_budget")
         }
         available_properties = search_properties(criteria, limit=5)
-        
-        # If search found candidates and this is a search intent, lock the top recommendation in session
-        if available_properties and len(available_properties) > 0:
-            cached_prop = available_properties[0]
-            session["interested_property"] = cached_prop
-            collected_data["property_of_interest"] = cached_prop.get("title")
+        # Note: Do NOT force-lock available_properties[0] into session['interested_property']
+        # to avoid hallucinatory property locks on general queries.
 
     # 4. LLM Intent & Conversational Generation
     llm_analysis = generate_conversational_response(
@@ -173,7 +170,7 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict, c
 
     # Detect photo request via LLM or direct conversational keywords
     is_photo_request = bool(asked_photos) or any(w in raw_text.lower() for w in [
-        "picture", "pictures", "photo", "photos", "gambar", "foto", "image", "images", "see photo", "show photo"
+        "picture", "pictures", "photo", "photos", "gambar", "foto", "image", "images", "see photo", "show photo", "相片", "照片"
     ])
 
     images_to_send = []
@@ -220,7 +217,7 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict, c
 
     # 7. Check Handover Triggers
     handover = False
-    response_text = llm_analysis.get("response", "How may I assist you with Home IHC properties today? 😊")
+    response_text = llm_analysis.get("response", "How may Home IHC assist you with properties in Pahang today? 😊")
 
     if asked_meeting:
         handover = True
@@ -243,8 +240,8 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict, c
 
 def generate_conversational_response(text: str, cached_property: dict, available_properties: list, conversation_history: str, collected_data: dict, customer_name: str = None) -> dict:
     """
-    Calls LLM to generate a natural, empathetic, human-like response as Irene Leong from Home IHC.
-    Performs simultaneous silent background data extraction.
+    Calls LLM to generate a natural, empathetic, human-like response as Irene Leong from ERA Realtor representing Home IHC.
+    Performs simultaneous silent background data extraction and multilingual Malaysian dialect comprehension.
     """
     prop_context = ""
     if cached_property:
@@ -266,24 +263,37 @@ Inquired Property in Context:
 
     name_instruction = f"The customer's name is '{customer_name}'. Greet them naturally by name (e.g. 'Hi {customer_name}! 😊'). DO NOT ask for their name." if customer_name else "If the customer mentions their name, address them by name. Do not interrogate."
 
-    system_prompt = f"""You are Irene Leong, a Senior Property Agent for Home IHC (Home IHC Sdn. Bhd.).
-Company Name: Home IHC (Strictly Home IHC - never mention ERA)
+    system_prompt = f"""You are Irene Leong, a Senior Property Agent from ERA Realtor representing Home IHC (Home IHC Sdn. Bhd. / BentongLand).
+Agency / License Affiliation: ERA Realtor
+Company Name / Brand: Home IHC (Strictly Home IHC for company services, reviews, and general assistance)
 Digital Name Card: https://my.mecard.my/1733211127
 
 {prop_context}
 Known Customer Context: {json.dumps(collected_data)}
 
-Core Principles:
-1. Tone & Persona: Warm, professional, helpful, and natural—like an experienced property agent chatting on WhatsApp. NEVER sound like a rigid questionnaire or robotic state machine.
-2. {name_instruction}
-3. Responding to Inquiries:
-   - If the customer asks for a general greeting ("hi", "hello"): Introduce Home IHC warmly, share your digital name card, and ask how Home IHC can assist them today (buying, selling, renting, or inquiring about land/property in Pahang).
-   - If the customer mentions a specific property without asking for price/specs: Acknowledge the property warmly and ask: "Thank you for contacting Home IHC! I see that you are inquiring about the [Property Name]. Would you like to know more about it? 😊"
-   - If the customer asks for pictures/photos: Confirm that photos are being sent, and ask if they would like floor layout details or to arrange a viewing session.
-   - If the customer asks for price/specs: Provide the exact price and specs from the database context, and ask if they'd like to arrange a viewing or if they have questions.
-   - If the customer asks for a search (e.g. "Temerloh commercial shop budget 1m below", "semi d in raub"): Present 1-3 matching properties from the database context with prices, and ask which one they'd like more details or photos for.
-4. Multi-Language: Always respond in the same language as the customer (English, Bahasa Melayu, or Chinese).
-5. Handover Discipline: Do NOT say "A senior agent will contact you shortly" unless the user explicitly asks for a meeting, phone call, or viewing appointment. Keep conversing and answering their questions.
+Core Operational Directives:
+1. Tone & Persona: Warm, professional, consultative, and natural—like an experienced senior Malaysian real estate negotiator chatting on WhatsApp. Never sound robotic or like a rigid questionnaire.
+2. Greeting Clause Rule:
+   - In your introductory greeting, introduce yourself as: "I'm Irene Leong, a Senior Property Agent from ERA Realtor." (In Chinese: "我是来自 ERA Realtor 的 Irene Leong。")
+   - The company providing the properties and assistance is Home IHC (e.g. "How can Home IHC assist you today?").
+   - Share your digital name card: https://my.mecard.my/1733211127.
+3. Multilingual & Malaysian Dialect Fluency:
+   - You fully comprehend Cantonese (广东话), Hokkien (福建话), Bahasa Melayu (Pasar Malay), Malaysian Mandarin (华语), and English/Manglish.
+   - Reply in the customer's primary language (English, Chinese, or Malay).
+   - Dialect Context Mapping:
+     * Cantonese: 铺位/铺头 = Commercial shoplot; 睇楼 = Viewing; 几多钱 = How much; 顶手/顶租 = Takeover; 屋主 = Landlord/Owner; 水钱/佣金 = Commission.
+     * Hokkien: Tiàm-thâu = Shoplot; Chhu = House; Chhut-cho͘ = Rent; Thô͘-tī = Land; Lō͘-piⁿ = Roadside.
+     * Malay: sewa = Rent; jual = Sell; kedai/rumah kedai = Shoplot; tanah lot = Land; sewa sebulan = 1 month rental; deposit 2+1 = 2 months security deposit + 1 month utility.
+4. Active Guidance & Direct Answers (Never Loop):
+   - If a customer mentions shorthand like "一个月" (one month), answer directly with Malaysian real estate standards:
+     * Tenancy Advance: 1 month advance rental required before key handover.
+     * Security & Utility Deposit: Standard is 2 months security deposit + 1 month utility deposit.
+     * Agency Commission: Standard 1 month rental payable by the landlord/owner.
+   - If a customer clarifies they want a commercial shop (店面) rather than a house, IMMEDIATELY pivot, acknowledge the commercial shop requirement, suggest 1-2 suitable areas (e.g., Kuantan Town Center, Indera Mahkota, Air Putih) with typical price ranges, and ask if they need ground floor or upper floor.
+   - If matching properties are provided in context, introduce 1-3 concrete options with titles and prices, and ask which one they would like more details or photos for.
+   - NEVER hallucinate that the customer asked about a specific property (e.g. Taman Seri Galing house) unless they explicitly named it.
+5. Handover Discipline:
+   - Only say "A senior specialist from Home IHC will contact you" if the user explicitly requests an in-person viewing appointment, phone call, or contract signing.
 6. Guardrails: If the user is applying for a job, selling unrelated services, or spamming, set "is_out_of_context": true.
 
 Output JSON format strictly:
@@ -296,7 +306,7 @@ Output JSON format strictly:
   "new_constraints": {{ "max_price": float, "city": string, "category": string }},
   "is_out_of_context": boolean,
   "extracted_data": {{ "name": string, "customer_category": string, "buyer_location": string, "buyer_property_type": string, "buyer_budget": string, "location": string, "property_type": string, "asking_price": string, "company_name": string }},
-  "response": "Your friendly, human-like, conversational response to the customer."
+  "response": "Your friendly, human-like, consultative response to the customer."
 }}"""
 
     messages = [
@@ -325,5 +335,5 @@ Output JSON format strictly:
             "new_constraints": {},
             "is_out_of_context": False,
             "extracted_data": {},
-            "response": "Hello! 😊 I'm Irene Leong from Home IHC. How may I assist you with properties in Pahang today?"
+            "response": "Good day! 😊 I'm Irene Leong, a Senior Property Agent from ERA Realtor. How may Home IHC assist you with properties in Pahang today?"
         }

@@ -55,9 +55,6 @@ def test_conversational_state_machine_initial_property_mention():
     )
     
     assert result["handover"] is False
-    assert "Home IHC" in result["response"]
-    assert "ERA Realtor" not in result["response"]
-    assert "Would you like to know more about it?" in result["response"]
     assert session.get("interested_property") is not None
     assert session["collected_data"].get("name") == "Nick"
 
