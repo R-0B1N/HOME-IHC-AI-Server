@@ -34,13 +34,17 @@ class CustomerUpdate(BaseModel):
 from app.core.auth import require_admin
 
 @router.get("")
-def get_customers(inbox_id: Optional[int] = None, db: Session = Depends(get_db)):
+def get_customers(environment: Optional[str] = None, db: Session = Depends(get_db)):
     customers = db.query(Customer).order_by(Customer.last_interaction.desc()).all()
     result = []
     for c in customers:
         meta = c.metadata_json or {}
         cust_inbox = meta.get("inbox_id")
-        if inbox_id is not None and cust_inbox != inbox_id:
+        
+        # Filter by environment if specified
+        if environment == 'staging' and cust_inbox not in [3, None]:
+            continue
+        elif environment == 'production' and cust_inbox == 3:
             continue
             
         result.append({
@@ -59,7 +63,7 @@ def get_customers(inbox_id: Optional[int] = None, db: Session = Depends(get_db))
     return result
 
 @router.get("/staging")
-def get_staging_customers(inbox_id: Optional[int] = None, admin=Depends(require_admin), db: Session = Depends(get_db)):
+def get_staging_customers(admin=Depends(require_admin), db: Session = Depends(get_db)):
     """
     Admin-only endpoint to get customer leads for Staging environment.
     """
@@ -68,7 +72,8 @@ def get_staging_customers(inbox_id: Optional[int] = None, admin=Depends(require_
     for c in customers:
         meta = c.metadata_json or {}
         cust_inbox = meta.get("inbox_id")
-        if inbox_id is not None and cust_inbox != inbox_id:
+        
+        if cust_inbox not in [3, None]:
             continue
             
         result.append({

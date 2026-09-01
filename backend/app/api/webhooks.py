@@ -194,6 +194,16 @@ async def chatwoot_webhook(request: Request):
         logger.info(f"Ignoring webhook, not an incoming customer message (was {message_type})")
         return {"status": "ignored", "reason": "not an incoming customer message"}
         
+    # Master AI Toggle — if disabled, do NOT queue messages or trigger typing
+    try:
+        master_ai_raw = redis_client.get("master_ai_enabled")
+        master_ai_on = master_ai_raw.decode("utf-8") == "true" if master_ai_raw else True
+        if not master_ai_on:
+            logger.info(f"Master AI is OFF. Ignoring incoming message (event: {event_name}).")
+            return {"status": "skipped", "reason": "master_ai_disabled"}
+    except Exception as e:
+        logger.warning(f"Error checking master AI status: {e}. Defaulting to ON.")
+
     inbox_id = payload.get("inbox", {}).get("id") or payload.get("conversation", {}).get("inbox_id")
     # Removed strict inbox ID filtering so test/production inboxes both work
     

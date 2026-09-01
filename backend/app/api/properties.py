@@ -4,6 +4,24 @@ from sqlalchemy.orm import Session
 from app.db.models import SessionLocal, Property
 from pydantic import BaseModel, ConfigDict
 
+def serialize_property(p: Property):
+    res = {}
+    for col in p.__table__.columns:
+        if col.name.startswith("embedding_"):
+            continue
+        val = getattr(p, col.name)
+        if isinstance(val, datetime.datetime):
+            res[col.name] = val.isoformat()
+        else:
+            res[col.name] = val
+            
+    res["has_embedding_overview"] = p.embedding_overview is not None
+    res["has_embedding_location"] = p.embedding_location is not None
+    res["has_embedding_specs"] = p.embedding_specs is not None
+    res["has_embedding_features"] = p.embedding_features is not None
+    res["has_embedding_suitability"] = p.embedding_suitability is not None
+    return res
+
 router = APIRouter()
 
 # Background Sync State Tracker
@@ -79,8 +97,13 @@ class PropertyCreate(BaseModel):
 
 @router.get("")
 def read_properties(skip: int = 0, limit: int = 500, db: Session = Depends(get_db)):
-    properties = db.query(Property).offset(skip).limit(limit).all()
-    return properties
+    try:
+        properties = db.query(Property).offset(skip).limit(limit).all()
+        return [serialize_property(p) for p in properties]
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Error fetching properties: {e}")
+        return []
 
 @router.post("/cleanup-dummy")
 def cleanup_dummy_properties(db: Session = Depends(get_db)):

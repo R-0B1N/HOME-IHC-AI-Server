@@ -56,8 +56,17 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
         master_ai_raw = redis_client.get("master_ai_enabled")
         master_ai_enabled = master_ai_raw.decode("utf-8") == "true" if master_ai_raw else True
         if not master_ai_enabled:
-            logger.info(f"Master AI Toggle is OFF. Deferring conversation {conversation_id}.")
-            return {"status": "deferred", "reason": "master ai is off"}
+            logger.info(f"Master AI Toggle is OFF. Skipping conversation {conversation_id} and clearing queue.")
+            # Turn off typing indicator if it was triggered
+            try:
+                from app.services.chatwoot import toggle_typing_status
+                toggle_typing_status(conversation_id, "off")
+            except Exception:
+                pass
+            # Flush the message queue so it doesn't pile up
+            queue_key = f"convo_queue_{conversation_id}"
+            redis_client.delete(queue_key)
+            return {"status": "skipped", "reason": "master_ai_disabled"}
 
         # If we reach here, it's been at least 10 seconds since the last message and AI is ON.
         

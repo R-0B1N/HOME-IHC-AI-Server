@@ -79,6 +79,27 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict, c
         if not collected_data.get("customer_category"):
             collected_data["customer_category"] = "buyer"
 
+    # Detect specific property/lot mentions that are NOT in our database
+    _property_entity_detected = False
+    _property_entity_text = ""
+    if not matched_prop:
+        # Check for lot numbers, taman names, addresses, or specific property identifiers
+        entity_patterns = [
+            r'lot\s+\d+',
+            r'mukim\s+\w+',
+            r'daerah\s+\w+',
+            r'taman\s+\w+',
+            r'kampung\s+\w+',
+            r'jalan\s+\w+',
+            r'no\.?\s*\d+',
+        ]
+        for pattern in entity_patterns:
+            match = re.search(pattern, raw_text, re.IGNORECASE)
+            if match:
+                _property_entity_detected = True
+                _property_entity_text = raw_text.strip()
+                break
+
     cached_prop = session.get("interested_property")
 
     # If no cached property, try to resolve from conversation history
@@ -133,7 +154,11 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict, c
             "property_type": search_cat or collected_data.get("buyer_property_type"),
             "max_price": max_p or collected_data.get("buyer_budget")
         }
-        available_properties = search_properties(criteria, limit=5)
+        # GUARD: Only search if at least one explicit criterion exists.
+        # Prevents hallucination when user sends greetings/referrals with no property intent.
+        has_any_criteria = any(v for v in criteria.values() if v and str(v).lower() not in ["none", "null", ""])
+        if has_any_criteria:
+            available_properties = search_properties(criteria, limit=5)
         # Note: Do NOT force-lock available_properties[0] into session['interested_property']
         # to avoid hallucinatory property locks on general queries.
 
@@ -144,7 +169,8 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict, c
         available_properties=available_properties if not cached_prop else [],
         conversation_history=conversation_history,
         collected_data=collected_data,
-        customer_name=current_user_name
+        customer_name=current_user_name,
+        unlisted_property_text=_property_entity_text if _property_entity_detected else None
     )
 
     # Merge extracted data
@@ -169,9 +195,11 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict, c
     new_constraints = llm_analysis.get("new_constraints", {})
 
     # Detect photo request via LLM or direct conversational keywords
-    is_photo_request = bool(asked_photos) or any(w in raw_text.lower() for w in [
+    # Guard: Only trigger photo dispatch during ongoing dialogue, not on first message
+    has_prior_conversation = bool(conversation_history and len(conversation_history.strip()) > 10)
+    is_photo_request = (bool(asked_photos) or any(w in raw_text.lower() for w in [
         "picture", "pictures", "photo", "photos", "gambar", "foto", "image", "images", "see photo", "show photo", "相片", "照片"
-    ])
+    ])) and has_prior_conversation
 
     images_to_send = []
 
@@ -238,7 +266,7 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict, c
     }
 
 
-def generate_conversational_response(text: str, cached_property: dict, available_properties: list, conversation_history: str, collected_data: dict, customer_name: str = None) -> dict:
+def generate_conversational_response(text: str, cached_property: dict, available_properties: list, conversation_history: str, collected_data: dict, customer_name: str = None, unlisted_property_text: str = None) -> dict:
     """
     Calls LLM to generate a natural, empathetic, human-like response as Irene Leong from ERA Realtor representing Home IHC.
     Performs simultaneous silent background data extraction and multilingual Malaysian dialect comprehension.
@@ -260,6 +288,12 @@ Inquired Property in Context:
             price_str = f"RM {p['price']:,.0f}" if p.get('price') else "Price on inquiry"
             props_list.append(f"- {p['title']} ({price_str}) - {p.get('city') or 'Pahang'}")
         prop_context = "Matching Properties in Database:\n" + "\n".join(props_list)
+    elif unlisted_property_text:
+        prop_context = f"""
+[PROPERTY_STATUS: UNLISTED_OR_EXTERNAL_PROPERTY]
+The customer mentioned a specific property/location ("{unlisted_property_text}") that is NOT in Home IHC's active database listings.
+Do NOT claim to have details, size, status, or photos of this property.
+"""
 
     name_instruction = f"The customer's name is '{customer_name}'. Greet them naturally by name (e.g. 'Hi {customer_name}! 😊'). DO NOT ask for their name." if customer_name else "If the customer mentions their name, address them by name. Do not interrogate."
 
@@ -294,7 +328,14 @@ Core Operational Directives:
    - NEVER hallucinate that the customer asked about a specific property (e.g. Taman Seri Galing house) unless they explicitly named it.
 5. Handover Discipline:
    - Only say "A senior specialist from Home IHC will contact you" if the user explicitly requests an in-person viewing appointment, phone call, or contract signing.
-6. Guardrails: If the user is applying for a job, selling unrelated services, or spamming, set "is_out_of_context": true.
+6. Anti-Repetition Rule:
+   - If the conversation history already contains your introduction ("I'm Irene Leong" or "我是.*Irene Leong" or your digital name card link), do NOT repeat the introduction or name card. Proceed directly to addressing the customer's question.
+7. Unlisted / External Property Handling:
+   - If an explicit property address, lot number, or location was provided but NO matching property is found in the database context above, you must NEVER claim to have details, size, status, or photos of that property.
+   - Instead, ask the customer: Are they the property owner looking to list/sell with Home IHC, or are they a buyer/investor? Then route accordingly:
+     * If owner/seller: Offer to assist with valuation and marketing, ask for land size and asking price.
+     * If buyer/inquirer: Clarify that Home IHC primarily covers Pahang (Bentong, Raub, Karak, Temerloh, Kuantan), and offer our active listings in those areas.
+8. Guardrails: If the user is applying for a job, selling unrelated services, or spamming, set "is_out_of_context": true.
 
 Output JSON format strictly:
 {{

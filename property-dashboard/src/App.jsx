@@ -225,10 +225,9 @@ function App() {
 
   const fetchLeads = async () => {
     try {
-      const endpoint = environment === 'staging'
-        ? `${API_BASE_URL}/customers/staging`
-        : `${API_BASE_URL}/customers`;
-      const response = await axios.get(endpoint);
+      const response = await axios.get(`${API_BASE_URL}/customers`, {
+        params: { environment }
+      });
       setLeads(response.data);
     } catch (error) {
       console.error('Failed to fetch leads:', error);
