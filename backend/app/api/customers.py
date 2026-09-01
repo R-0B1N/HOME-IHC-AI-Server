@@ -42,7 +42,7 @@ def get_customers(environment: Optional[str] = None, db: Session = Depends(get_d
         cust_inbox = meta.get("inbox_id")
         
         # Filter by environment if specified
-        if environment == 'staging' and cust_inbox not in [3, None]:
+        if environment == 'staging' and cust_inbox != 3:
             continue
         elif environment == 'production' and cust_inbox == 3:
             continue
@@ -73,7 +73,7 @@ def get_staging_customers(admin=Depends(require_admin), db: Session = Depends(ge
         meta = c.metadata_json or {}
         cust_inbox = meta.get("inbox_id")
         
-        if cust_inbox not in [3, None]:
+        if cust_inbox != 3:
             continue
             
         result.append({

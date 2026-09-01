@@ -78,7 +78,12 @@ function App() {
   });
 
   const [masterAiEnabled, setMasterAiEnabled] = useState(true);
-  const [environment, setEnvironment] = useState('production'); // 'production' | 'staging'
+  const [environment, setEnvironment] = useState(() => {
+    if (typeof window !== 'undefined' && window.location.hostname.includes('staging')) {
+      return 'staging';
+    }
+    return 'production';
+  });
   const [isSyncingLeads, setIsSyncingLeads] = useState(false);
   const [isSeedingProps, setIsSeedingProps] = useState(false);
 

@@ -128,10 +128,9 @@ class TestIssue3LeadsSeparation(unittest.TestCase):
         ]
 
     def test_staging_excludes_production(self):
-        staging = [l for l in self.leads if l["inbox_id"] in [3, None]]
-        self.assertEqual(len(staging), 2)
+        staging = [l for l in self.leads if l["inbox_id"] == 3]
+        self.assertEqual(len(staging), 1)
         self.assertEqual(staging[0]["name"], "Staging Lead A")
-        self.assertEqual(staging[1]["name"], "Unknown Inbox Lead C")
 
     def test_production_excludes_staging(self):
         prod = [l for l in self.leads if l["inbox_id"] != 3]
