@@ -164,9 +164,15 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
         first_msg = messages[0] if messages else {}
         convo_data = first_msg.get("conversation", {})
         session_id = convo_data.get("uuid") or convo_data.get("session_id") or "Unknown"
+        inbox_id_val = (
+            first_msg.get("inbox", {}).get("id") 
+            or convo_data.get("inbox_id") 
+            or first_msg.get("inbox_id")
+            or (3 if os.getenv("DB_HOST") == "whatsapp_ai_db_staging" else 1)
+        )
         metadata = {
             "session_id": session_id,
-            "inbox_id": first_msg.get("inbox", {}).get("id"),
+            "inbox_id": int(inbox_id_val) if inbox_id_val is not None else (3 if os.getenv("DB_HOST") == "whatsapp_ai_db_staging" else 1),
             "contact_id": contact_info.get("id"),
         }
         

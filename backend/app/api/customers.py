@@ -32,20 +32,33 @@ class CustomerUpdate(BaseModel):
     bypass_ai: Optional[bool] = None
 
 from app.core.auth import require_admin
+import os
+
+IS_STAGING = (
+    os.getenv("DB_HOST") == "whatsapp_ai_db_staging" 
+    or "staging" in os.getenv("REDIS_HOST", "")
+    or os.getenv("APP_ENV") == "staging"
+)
 
 @router.get("")
 def get_customers(environment: Optional[str] = None, db: Session = Depends(get_db)):
     customers = db.query(Customer).order_by(Customer.last_interaction.desc()).all()
     result = []
+    effective_env = environment or ("staging" if IS_STAGING else "production")
+    
     for c in customers:
         meta = c.metadata_json or {}
         cust_inbox = meta.get("inbox_id")
+        source = meta.get("source")
         
-        # Filter by environment if specified
-        if environment == 'staging' and cust_inbox != 3:
-            continue
-        elif environment == 'production' and cust_inbox == 3:
-            continue
+        # Staging isolation:
+        # In staging, only show contacts from test WhatsApp inbox 3 and exclude bulk-imported Chatwoot syncs
+        if effective_env == 'staging':
+            if source == "chatwoot_sync" or str(cust_inbox) != "3":
+                continue
+        elif effective_env == 'production':
+            if str(cust_inbox) == "3":
+                continue
             
         result.append({
             "id": c.id,

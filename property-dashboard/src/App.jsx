@@ -204,10 +204,7 @@ function App() {
 
   const fetchMasterAiStatus = async () => {
     try {
-      const endpoint = environment === 'staging' 
-        ? `${API_BASE_URL}/settings/staging/ai-status`
-        : `${API_BASE_URL}/settings/ai-status`;
-      const response = await axios.get(endpoint);
+      const response = await axios.get(`${API_BASE_URL}/settings/ai-status`);
       setMasterAiEnabled(response.data.enabled);
     } catch (error) {
       console.error('Failed to fetch master AI status:', error);
@@ -217,10 +214,7 @@ function App() {
   const toggleMasterAi = async () => {
     try {
       const newStatus = !masterAiEnabled;
-      const endpoint = environment === 'staging'
-        ? `${API_BASE_URL}/settings/staging/ai-status`
-        : `${API_BASE_URL}/settings/ai-status`;
-      const response = await axios.post(endpoint, { enabled: newStatus });
+      const response = await axios.post(`${API_BASE_URL}/settings/ai-status`, { enabled: newStatus });
       setMasterAiEnabled(response.data.enabled);
     } catch (error) {
       console.error('Failed to toggle master AI status:', error);
@@ -586,45 +580,40 @@ function App() {
         </div>
 
         <div className="lux-header-actions-group">
-          {/* Admin-Only Environment Switcher */}
-          {isAdmin && (
-            <div style={{ display: 'flex', alignItems: 'center', background: 'rgba(255,255,255,0.06)', borderRadius: '8px', padding: '3px', border: '1px solid rgba(255,255,255,0.1)' }}>
-              <button 
-                style={{
-                  padding: '5px 12px',
-                  fontSize: '0.75rem',
-                  fontWeight: 700,
-                  borderRadius: '6px',
-                  border: 'none',
-                  cursor: 'pointer',
-                  background: environment === 'production' ? '#10b981' : 'transparent',
-                  color: environment === 'production' ? '#ffffff' : '#94a3b8',
-                  transition: 'all 0.2s ease',
-                  letterSpacing: '0.03em'
-                }}
-                onClick={() => setEnvironment('production')}
-                title="Switch to Live Production Environment"
-              >
-                🟢 Production
-              </button>
-              <button 
-                style={{
-                  padding: '5px 12px',
-                  fontSize: '0.75rem',
-                  fontWeight: 700,
-                  borderRadius: '6px',
-                  border: 'none',
-                  cursor: 'pointer',
-                  background: environment === 'staging' ? '#f59e0b' : 'transparent',
-                  color: environment === 'staging' ? '#000000' : '#94a3b8',
-                  transition: 'all 0.2s ease',
-                  letterSpacing: '0.03em'
-                }}
-                onClick={() => setEnvironment('staging')}
-                title="Switch to Staging / Development Environment"
-              >
-                🟡 Staging
-              </button>
+          {/* Environment Status Badge */}
+          {environment === 'staging' ? (
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              background: 'rgba(245, 158, 11, 0.15)',
+              border: '1px solid rgba(245, 158, 11, 0.35)',
+              borderRadius: '8px',
+              padding: '5px 12px',
+              color: '#fbbf24',
+              fontSize: '0.78rem',
+              fontWeight: 700,
+              letterSpacing: '0.03em'
+            }}>
+              <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#f59e0b', boxShadow: '0 0 8px #f59e0b' }}></span>
+              🧪 STAGING DB
+            </div>
+          ) : (
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              background: 'rgba(16, 185, 129, 0.15)',
+              border: '1px solid rgba(16, 185, 129, 0.35)',
+              borderRadius: '8px',
+              padding: '5px 12px',
+              color: '#34d399',
+              fontSize: '0.78rem',
+              fontWeight: 700,
+              letterSpacing: '0.03em'
+            }}>
+              <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#10b981', boxShadow: '0 0 8px #10b981' }}></span>
+              🟢 PRODUCTION DB
             </div>
           )}
 
