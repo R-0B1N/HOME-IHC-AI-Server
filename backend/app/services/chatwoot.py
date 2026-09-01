@@ -32,6 +32,29 @@ def send_message(conversation_id: int, content: str):
         logger.error(f"Failed to send message to Chatwoot: {e}")
         raise e
 
+def send_private_note(conversation_id: int, content: str):
+    """
+    Sends an internal private note to the Chatwoot conversation (visible to agents, not customer).
+    """
+    url = f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages"
+    headers = {
+        "api_access_token": CHATWOOT_API_TOKEN,
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "content": content,
+        "message_type": "outgoing",
+        "private": True
+    }
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=10)
+        response.raise_for_status()
+        logger.info(f"Successfully posted private note to Chatwoot conversation {conversation_id}")
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to post private note to Chatwoot: {e}")
+        return None
+
 def send_message_with_attachment(conversation_id: int, content: str, file_name: str, file_content: bytes, content_type: str):
     """
     Sends a message back to the Chatwoot conversation with an attachment.

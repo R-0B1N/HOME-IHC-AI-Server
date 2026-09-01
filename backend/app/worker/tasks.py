@@ -301,12 +301,17 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
             user_wants_meeting = any(phrase in final_prompt_text.lower() for phrase in [
                 "arrange a meeting", "schedule a meeting", "meeting with your team",
                 "meet up", "call me", "speak to human", "talk to agent", "contact me directly",
-                "advise your availability", "discuss in meeting", "have a meeting"
+                "advise your availability", "discuss in meeting", "have a meeting",
+                "transfer to human", "speak to a person", "talk to a person", "real agent",
+                "real person", "human agent", "human staff", "person in charge", "pic",
+                "真人", "转人工", "人工客服", "联系真人", "找真人", "安排看房", "预约看房", "睇楼",
+                "电话联系", "安排见面", "nak jumpa", "call saya", "hubungi saya", "agent sebenar", 
+                "cakap dengan orang", "temujanji", "tengok rumah", "tengok tanah"
             ])
             
             # Handover should ONLY trigger when:
             # 1. State machine finished workflow (handover_from_state == True)
-            # 2. Or user explicitly asks for a meeting / call
+            # 2. Or user explicitly asks for a meeting / call / human agent
             # 3. Or bank valuer submission complete
             handover_initiated = False
             if role not in ["admin", "employee"]:
@@ -315,8 +320,8 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                 elif user_wants_meeting:
                     handover_initiated = True
                     # Append polite wrap-up if not already present
-                    if "senior agent" not in response_text.lower() and "specialist" not in response_text.lower():
-                        response_text += f"\n\nThank you, {contact_name}! 😊 We have noted your request to meet with our team. A senior property specialist from Home IHC will contact you shortly to arrange the meeting."
+                    if "senior" not in response_text.lower() and "specialist" not in response_text.lower() and "representative" not in response_text.lower():
+                        response_text += f"\n\nThank you, {contact_name}! 😊 We have noted your request. A senior property specialist from Home IHC will contact you shortly to assist directly."
                 elif intent == "bank valuer" and 'valuer_data' in locals() and valuer_data:
                     handover_initiated = True
             
@@ -363,98 +368,111 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                         db.close()
 
         if role not in ["admin", "employee"] and handover_initiated:
-            # Assign Agent 1 (ID 4) to the conversation
+            # 1. Assign Agent 1 (ID 4) to the conversation in Chatwoot
             try:
                 assign_agent(conversation_id, agent_id=4)
             except Exception as e:
                 logger.error(f"Failed to assign agent 1 to conversation {conversation_id}: {e}")
+
+            # 2. Extract enriched lead details for alert template and internal note
+            loc_val = (
+                collected.get("location") or 
+                collected.get("seller_location") or 
+                collected.get("buyer_location") or 
+                collected.get("current_location") or 
+                collected.get("coverage_area")
+            )
+            location = str(loc_val) if loc_val else "Pahang (To be advised)"
             
-            # Send summary and contact card to main lines
+            ptype_val = (
+                collected.get("property_type") or 
+                collected.get("seller_property_type") or 
+                collected.get("buyer_property_type") or 
+                collected.get("use_type")
+            )
+            property_type = str(ptype_val) if ptype_val else "Commercial / Residential / Land"
+            
+            budget_val = (
+                collected.get("budget") or 
+                collected.get("buyer_budget") or 
+                collected.get("asking_price") or 
+                collected.get("expected_rental")
+            )
+            budget = str(budget_val) if budget_val else "To be discussed in meeting"
+            
+            if intent == "bank valuer" and 'valuer_data' in locals() and valuer_data:
+                location = str(valuer_data)
+                property_type = "Bank Valuation"
+                budget = "N/A"
+                
+            conversation_summary = llm_response.get("summary", "No summary available.")
+            if isinstance(conversation_summary, str):
+                conversation_summary = conversation_summary.replace('\n', ' ').replace('\t', ' ')
+                if len(conversation_summary) > 500:
+                    conversation_summary = conversation_summary[:497] + "..."
+
+            inbox_id = metadata.get("inbox_id") or 4
+            from app.services.chatwoot import CHATWOOT_ACCOUNT_ID, send_private_note, send_whatsapp_contact, send_whatsapp_template
+            cw_link = f"https://inbox.bentongland.com.my/app/accounts/{CHATWOOT_ACCOUNT_ID}/inbox/{inbox_id}/conversations/{conversation_id}"
+
+            # 3. Post Internal Private Note in Chatwoot conversation for human agents
+            try:
+                private_note_text = (
+                    f"🔥 **HOT LEAD / HUMAN HANDOVER TRIGGERED**\n\n"
+                    f"👤 **Customer**: {contact_name} ({phone_number})\n"
+                    f"🎯 **Intent**: {intent.upper()}\n"
+                    f"📍 **Location**: {location}\n"
+                    f"🏡 **Property Type**: {property_type}\n"
+                    f"💰 **Budget / Price**: {budget}\n\n"
+                    f"📝 **AI Summary**: {conversation_summary}\n\n"
+                    f"⚡ **Status**: AI response paused (`bypass_ai=True`). Handed over to human agent."
+                )
+                send_private_note(conversation_id, private_note_text)
+            except Exception as ne:
+                logger.error(f"Failed to post internal private note on handover: {ne}")
+
+            # 4. Forward WhatsApp Alert Template & Contact Card to Main Lines
             try:
                 main_phones = ["+601165144931", "+14709202239"]
+                template_params = [
+                    contact_name,
+                    phone_number,
+                    intent.upper(),
+                    str(location),
+                    str(property_type),
+                    str(budget),
+                    conversation_summary,
+                    cw_link
+                ]
+                TEMPLATE_PHONE_NUMBER_ID = os.getenv(
+                    "WHATSAPP_TEMPLATE_PHONE_NUMBER_ID",
+                    "1039310802596891"
+                )
                 for main_phone in main_phones:
-                    contact_id = get_or_create_contact(main_phone, f"Main Line {main_phone}")
-                    if contact_id:
-                        inbox_id = metadata.get("inbox_id") or 4
-                        new_conv_id = create_conversation(contact_id, inbox_id)
-                        if new_conv_id:
-                            from app.services.chatwoot import CHATWOOT_BASE_URL, CHATWOOT_ACCOUNT_ID
-                            clean_phone = phone_number.replace("+", "")
-                            cw_link = f"https://inbox.bentongland.com.my/app/accounts/{CHATWOOT_ACCOUNT_ID}/inbox/{inbox_id}/conversations/{conversation_id}"
-                            
-                            # Extract enriched lead details for alert template
-                            loc_val = (
-                                collected.get("location") or 
-                                collected.get("seller_location") or 
-                                collected.get("buyer_location") or 
-                                collected.get("current_location") or 
-                                collected.get("coverage_area")
-                            )
-                            location = str(loc_val) if loc_val else "Pahang (To be advised)"
-                            
-                            ptype_val = (
-                                collected.get("property_type") or 
-                                collected.get("seller_property_type") or 
-                                collected.get("buyer_property_type") or 
-                                collected.get("use_type")
-                            )
-                            property_type = str(ptype_val) if ptype_val else "Commercial / Residential / Land"
-                            
-                            budget_val = (
-                                collected.get("budget") or 
-                                collected.get("buyer_budget") or 
-                                collected.get("asking_price") or 
-                                collected.get("expected_rental")
-                            )
-                            budget = str(budget_val) if budget_val else "To be discussed in meeting"
-                            
-                            if intent == "bank valuer" and 'valuer_data' in locals() and valuer_data:
-                                location = str(valuer_data)
-                                property_type = "Bank Valuation"
-                                budget = "N/A"
-                                
-                            conversation_summary = llm_response.get("summary", "No summary available.")
-                            if isinstance(conversation_summary, str):
-                                conversation_summary = conversation_summary.replace('\n', ' ').replace('\t', ' ')
-                                if len(conversation_summary) > 500:
-                                    conversation_summary = conversation_summary[:497] + "..."
-                            
-                            # Send the template summary
-                            from app.services.chatwoot import send_whatsapp_contact, send_whatsapp_template
-                            
-                            template_params = [
-                                contact_name,
-                                phone_number,
-                                intent.upper(),
-                                str(location),
-                                str(property_type),
-                                str(budget),
-                                conversation_summary,
-                                cw_link
-                            ]
-                            
-                            TEMPLATE_PHONE_NUMBER_ID = os.getenv(
-                                "WHATSAPP_TEMPLATE_PHONE_NUMBER_ID",
-                                "1039310802596891"
-                            )
-                            
-                            send_whatsapp_template(
-                                inbox_id=inbox_id,
-                                to_phone=main_phone,
-                                template_name="new_lead_alert_utility",
-                                parameters=template_params,
-                                language_code="en",
-                                override_phone_number_id=TEMPLATE_PHONE_NUMBER_ID
-                            )
-                            
-                            # Send native WhatsApp contact card directly to main lines
-                            send_whatsapp_contact(
-                                inbox_id=inbox_id,
-                                to_phone=main_phone,
-                                contact_name=contact_name,
-                                contact_phone=phone_number,
-                                override_phone_number_id=TEMPLATE_PHONE_NUMBER_ID
-                            )
+                    try:
+                        contact_id = get_or_create_contact(main_phone, f"Main Line {main_phone}")
+                        if contact_id:
+                            create_conversation(contact_id, inbox_id)
+                    except Exception:
+                        pass
+                    
+                    # Direct WhatsApp Cloud API calls (independent of conversation existence)
+                    send_whatsapp_template(
+                        inbox_id=inbox_id,
+                        to_phone=main_phone,
+                        template_name="new_lead_alert_utility",
+                        parameters=template_params,
+                        language_code="en",
+                        override_phone_number_id=TEMPLATE_PHONE_NUMBER_ID
+                    )
+                    
+                    send_whatsapp_contact(
+                        inbox_id=inbox_id,
+                        to_phone=main_phone,
+                        contact_name=contact_name,
+                        contact_phone=phone_number,
+                        override_phone_number_id=TEMPLATE_PHONE_NUMBER_ID
+                    )
             except Exception as e:
                 logger.error(f"Failed to forward lead to main lines: {e}")
         

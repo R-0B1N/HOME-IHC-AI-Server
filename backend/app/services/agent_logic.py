@@ -247,11 +247,23 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict, c
     handover = False
     response_text = llm_analysis.get("response", "How may Home IHC assist you with properties in Pahang today? 😊")
 
-    if asked_meeting:
+    user_wants_human_or_meeting = bool(asked_meeting) or any(phrase in raw_text.lower() for phrase in [
+        "arrange a meeting", "schedule a meeting", "meeting with your team",
+        "meet up", "call me", "speak to human", "talk to agent", "contact me directly",
+        "advise your availability", "discuss in meeting", "have a meeting",
+        "transfer to human", "speak to a person", "talk to a person", "real agent",
+        "real person", "human agent", "human staff", "person in charge", "pic",
+        "真人", "转人工", "人工客服", "联系真人", "找真人", "安排看房", "预约看房", "睇楼",
+        "电话联系", "安排见面", "nak jumpa", "call saya", "hubungi saya", "agent sebenar", 
+        "cakap dengan orang", "temujanji", "tengok rumah", "tengok tanah"
+    ])
+
+    if user_wants_human_or_meeting:
         handover = True
         name_str = f" {current_user_name}" if current_user_name else ""
         prop_str = f" for {cached_prop.get('title')}" if cached_prop else ""
-        response_text = f"Thank you{name_str}! 😊 We have recorded your viewing request{prop_str}. A senior property specialist from Home IHC will contact you shortly to confirm the appointment."
+        if "senior" not in response_text.lower() and "specialist" not in response_text.lower() and "representative" not in response_text.lower():
+            response_text = f"Thank you{name_str}! 😊 We have recorded your request{prop_str}. A senior property specialist from Home IHC will contact you shortly to follow up directly."
         session["state"] = "COMPLETED"
 
     # Save session
