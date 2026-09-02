@@ -130,19 +130,39 @@ def sync_wordpress_all(background_tasks: BackgroundTasks, db: Session = Depends(
     Returns immediately to prevent proxy/Cloudflare 120-second timeout.
     """
     global _sync_state
-    if _sync_state["is_syncing"]:
+    try:
+        if _sync_state["is_syncing"]:
+            count = 0
+            try:
+                count = db.query(Property).count()
+            except Exception:
+                pass
+            return {
+                "status": "already_running",
+                "message": "A WordPress sync is already in progress in the background.",
+                "current_properties_count": count
+            }
+            
+        background_tasks.add_task(_run_sync_in_background)
+        count = 0
+        try:
+            count = db.query(Property).count()
+        except Exception:
+            pass
         return {
-            "status": "already_running",
-            "message": "A WordPress sync is already in progress in the background.",
-            "current_properties_count": db.query(Property).count()
+            "status": "started",
+            "message": "WordPress sync initiated in background. Properties and vector embeddings will update live.",
+            "current_properties_count": count
         }
-        
-    background_tasks.add_task(_run_sync_in_background)
-    return {
-        "status": "started",
-        "message": "WordPress sync initiated in background. Properties and vector embeddings will update live.",
-        "current_properties_count": db.query(Property).count()
-    }
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Error initiating WordPress sync: {e}")
+        background_tasks.add_task(_run_sync_in_background)
+        return {
+            "status": "started",
+            "message": "WordPress sync initiated in background.",
+            "current_properties_count": 0
+        }
 
 @router.get("/sync-status")
 def get_sync_status(db: Session = Depends(get_db)):
@@ -150,9 +170,15 @@ def get_sync_status(db: Session = Depends(get_db)):
     Returns the real-time background synchronization status.
     """
     global _sync_state
+    count = 0
+    try:
+        count = db.query(Property).count()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Could not count properties in sync-status: {e}")
     return {
         **_sync_state,
-        "current_db_count": db.query(Property).count()
+        "current_db_count": count
     }
 
 
@@ -162,27 +188,45 @@ def get_embeddings_summary(db: Session = Depends(get_db)):
     """
     Returns summary statistics for the 5-aspect vector embeddings across all listings.
     """
-    total = db.query(Property).count()
-    with_overview = db.query(Property).filter(Property.embedding_overview.isnot(None)).count()
-    with_location = db.query(Property).filter(Property.embedding_location.isnot(None)).count()
-    with_specs = db.query(Property).filter(Property.embedding_specs.isnot(None)).count()
-    with_features = db.query(Property).filter(Property.embedding_features.isnot(None)).count()
-    with_suitability = db.query(Property).filter(Property.embedding_suitability.isnot(None)).count()
-    
-    return {
-        "total_properties": total,
-        "aspect_embeddings_stats": {
-            "overview_count": with_overview,
-            "location_count": with_location,
-            "specs_count": with_specs,
-            "features_count": with_features,
-            "suitability_count": with_suitability,
-            "total_vectors_generated": (with_overview + with_location + with_specs + with_features + with_suitability),
-            "fully_vectorized_pct": round((with_overview / total * 100), 1) if total > 0 else 0
-        },
-        "embedding_dimensions": 384,
-        "embedding_model": "BAAI/bge-small-en-v1.5 (FastEmbed ONNX)"
-    }
+    try:
+        total = db.query(Property).count()
+        with_overview = db.query(Property).filter(Property.embedding_overview.isnot(None)).count()
+        with_location = db.query(Property).filter(Property.embedding_location.isnot(None)).count()
+        with_specs = db.query(Property).filter(Property.embedding_specs.isnot(None)).count()
+        with_features = db.query(Property).filter(Property.embedding_features.isnot(None)).count()
+        with_suitability = db.query(Property).filter(Property.embedding_suitability.isnot(None)).count()
+        
+        return {
+            "total_properties": total,
+            "aspect_embeddings_stats": {
+                "overview_count": with_overview,
+                "location_count": with_location,
+                "specs_count": with_specs,
+                "features_count": with_features,
+                "suitability_count": with_suitability,
+                "total_vectors_generated": (with_overview + with_location + with_specs + with_features + with_suitability),
+                "fully_vectorized_pct": round((with_overview / total * 100), 1) if total > 0 else 0
+            },
+            "embedding_dimensions": 384,
+            "embedding_model": "BAAI/bge-small-en-v1.5 (FastEmbed ONNX)"
+        }
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Error fetching embeddings summary: {e}")
+        return {
+            "total_properties": 0,
+            "aspect_embeddings_stats": {
+                "overview_count": 0,
+                "location_count": 0,
+                "specs_count": 0,
+                "features_count": 0,
+                "suitability_count": 0,
+                "total_vectors_generated": 0,
+                "fully_vectorized_pct": 0
+            },
+            "embedding_dimensions": 384,
+            "embedding_model": "BAAI/bge-small-en-v1.5 (FastEmbed ONNX)"
+        }
 
 @router.get("/embeddings/aspects/{property_id}")
 def get_property_aspects(property_id: str, db: Session = Depends(get_db)):

@@ -235,5 +235,13 @@ class TestPersonaRules(unittest.TestCase):
         self.assertIn("Home IHC", company_ref)
 
 
+class TestIssue1WordPressSyncResilience(unittest.TestCase):
+    def test_sync_state_defaults(self):
+        from app.api.properties import _sync_state
+        self.assertIn("is_syncing", _sync_state)
+        self.assertIn("status", _sync_state)
+        self.assertIn("total_properties", _sync_state)
+
+
 if __name__ == "__main__":
     unittest.main()

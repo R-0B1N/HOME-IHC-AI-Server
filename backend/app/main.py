@@ -1,5 +1,7 @@
 import os
 import uuid
+import datetime
+import logging
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.webhooks import router as webhooks_router
@@ -10,20 +12,23 @@ from app.api.settings import router as settings_router
 from app.api.admin import router as admin_router
 from app.api.auth import router as auth_router
 from app.api.users import router as users_router
-from app.db.models import Base, engine, SessionLocal, User, WorkflowTemplate
+from app.db.models import Base, engine, SessionLocal, User, WorkflowTemplate, Customer, Property, run_schema_migrations
 from app.core.security import get_password_hash
 
-# Initialize database and run auto-migration if needed
+logger = logging.getLogger(__name__)
+
+# Initialize database schema and run pgvector migrations
+try:
+    Base.metadata.create_all(bind=engine)
+    run_schema_migrations(engine)
+except Exception as e:
+    logger.warning(f"Database schema initialization warning: {e}")
+
 try:
     import scripts.migrate_properties_to_uuid as migrator
     migrator.migrate()
 except Exception as e:
-    print(f"Auto-migration skipped or failed: {e}")
-
-try:
-    Base.metadata.create_all(bind=engine)
-except Exception as e:
-    print(f"Database schema initialization warning: {e}")
+    logger.warning(f"Auto-migration skipped or note: {e}")
 
 app = FastAPI(
     title="Real Estate WhatsApp AI CRM Orchestrator",
