@@ -221,10 +221,16 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                     chatwoot_messages = get_conversation_messages(conversation_id)
                     chatwoot_messages.sort(key=lambda x: x.get("created_at", 0))
                     history_lines = []
-                    # Get last 10 messages, older first (chronological order)
+                    # Get last 10 messages, older first (chronological order), excluding private notes
                     for msg in chatwoot_messages[-10:]:
-                        sender = "Assistant" if msg.get("message_type") == "outgoing" else "User"
-                        history_lines.append(f"{sender}: {msg.get('content', '')}")
+                        if msg.get("private"):
+                            continue
+                        m_type = msg.get("message_type")
+                        is_assistant = m_type in [1, "1", "outgoing", 3, "3", "template"]
+                        sender = "Assistant" if is_assistant else "User"
+                        content = msg.get("content") or ""
+                        if content.strip():
+                            history_lines.append(f"{sender}: {content.strip()}")
                     conversation_history = "\n".join(history_lines)
                 except Exception as e:
                     logger.error(f"Failed to fetch history: {e}")

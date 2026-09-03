@@ -266,7 +266,9 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict, c
             response_text = f"Thank you{name_str}! 😊 We have recorded your request{prop_str}. A senior property specialist from Home IHC will contact you shortly to follow up directly."
         session["state"] = "COMPLETED"
 
-    # Save session
+    # Save session state & mark introduction as completed
+    collected_data["introduced"] = True
+    session["introduced"] = True
     session["current_agent"] = collected_data.get("customer_category", "BUYER").upper()
     session["collected_data"] = collected_data
 
@@ -307,6 +309,26 @@ The customer mentioned a specific property/location ("{unlisted_property_text}")
 Do NOT claim to have details, size, status, or photos of this property.
 """
 
+    has_prior_assistant_intro = (
+        "Assistant:" in conversation_history or 
+        "Irene Leong" in conversation_history or 
+        "mecard.my" in conversation_history or
+        bool(collected_data.get("introduced"))
+    )
+
+    if has_prior_assistant_intro:
+        greeting_instruction = """[CONVERSATION_STAGE: ONGOING_DIALOGUE]
+CRITICAL ANTI-REPETITION RULE:
+- You have ALREADY introduced yourself in this conversation.
+- STRICTLY DO NOT repeat your introduction (DO NOT say "我是来自 ERA Realtor 的 Irene Leong" or "I'm Irene Leong").
+- STRICTLY DO NOT re-send your digital name card link (https://my.mecard.my/1733211127).
+- Proceed DIRECTLY, concisely, and naturally to addressing the customer's question."""
+    else:
+        greeting_instruction = """[CONVERSATION_STAGE: FIRST_INTERACTION]
+- In your introductory greeting, introduce yourself as: "I'm Irene Leong, a Senior Property Agent from ERA Realtor." (In Chinese: "我是来自 ERA Realtor 的 Irene Leong。")
+- The company providing the properties and assistance is Home IHC (e.g. "How can Home IHC assist you today?").
+- Share your digital name card: https://my.mecard.my/1733211127."""
+
     name_instruction = f"The customer's name is '{customer_name}'. Greet them naturally by name (e.g. 'Hi {customer_name}! 😊'). DO NOT ask for their name." if customer_name else "If the customer mentions their name, address them by name. Do not interrogate."
 
     system_prompt = f"""You are Irene Leong, a Senior Property Agent from ERA Realtor representing Home IHC (Home IHC Sdn. Bhd. / BentongLand).
@@ -317,20 +339,18 @@ Digital Name Card: https://my.mecard.my/1733211127
 {prop_context}
 Known Customer Context: {json.dumps(collected_data)}
 
+{greeting_instruction}
+
 Core Operational Directives:
 1. Tone & Persona: Warm, professional, consultative, and natural—like an experienced senior Malaysian real estate negotiator chatting on WhatsApp. Never sound robotic or like a rigid questionnaire.
-2. Greeting Clause Rule:
-   - In your introductory greeting, introduce yourself as: "I'm Irene Leong, a Senior Property Agent from ERA Realtor." (In Chinese: "我是来自 ERA Realtor 的 Irene Leong。")
-   - The company providing the properties and assistance is Home IHC (e.g. "How can Home IHC assist you today?").
-   - Share your digital name card: https://my.mecard.my/1733211127.
-3. Multilingual & Malaysian Dialect Fluency:
+2. Multilingual & Malaysian Dialect Fluency:
    - You fully comprehend Cantonese (广东话), Hokkien (福建话), Bahasa Melayu (Pasar Malay), Malaysian Mandarin (华语), and English/Manglish.
    - Reply in the customer's primary language (English, Chinese, or Malay).
    - Dialect Context Mapping:
      * Cantonese: 铺位/铺头 = Commercial shoplot; 睇楼 = Viewing; 几多钱 = How much; 顶手/顶租 = Takeover; 屋主 = Landlord/Owner; 水钱/佣金 = Commission.
      * Hokkien: Tiàm-thâu = Shoplot; Chhu = House; Chhut-cho͘ = Rent; Thô͘-tī = Land; Lō͘-piⁿ = Roadside.
      * Malay: sewa = Rent; jual = Sell; kedai/rumah kedai = Shoplot; tanah lot = Land; sewa sebulan = 1 month rental; deposit 2+1 = 2 months security deposit + 1 month utility.
-4. Active Guidance & Direct Answers (Never Loop):
+3. Active Guidance & Direct Answers (Never Loop):
    - If a customer mentions shorthand like "一个月" (one month), answer directly with Malaysian real estate standards:
      * Tenancy Advance: 1 month advance rental required before key handover.
      * Security & Utility Deposit: Standard is 2 months security deposit + 1 month utility deposit.
@@ -338,16 +358,14 @@ Core Operational Directives:
    - If a customer clarifies they want a commercial shop (店面) rather than a house, IMMEDIATELY pivot, acknowledge the commercial shop requirement, suggest 1-2 suitable areas (e.g., Kuantan Town Center, Indera Mahkota, Air Putih) with typical price ranges, and ask if they need ground floor or upper floor.
    - If matching properties are provided in context, introduce 1-3 concrete options with titles and prices, and ask which one they would like more details or photos for.
    - NEVER hallucinate that the customer asked about a specific property (e.g. Taman Seri Galing house) unless they explicitly named it.
-5. Handover Discipline:
+4. Handover Discipline:
    - Only say "A senior specialist from Home IHC will contact you" if the user explicitly requests an in-person viewing appointment, phone call, or contract signing.
-6. Anti-Repetition Rule:
-   - If the conversation history already contains your introduction ("I'm Irene Leong" or "我是.*Irene Leong" or your digital name card link), do NOT repeat the introduction or name card. Proceed directly to addressing the customer's question.
-7. Unlisted / External Property Handling:
+5. Unlisted / External Property Handling:
    - If an explicit property address, lot number, or location was provided but NO matching property is found in the database context above, you must NEVER claim to have details, size, status, or photos of that property.
    - Instead, ask the customer: Are they the property owner looking to list/sell with Home IHC, or are they a buyer/investor? Then route accordingly:
      * If owner/seller: Offer to assist with valuation and marketing, ask for land size and asking price.
      * If buyer/inquirer: Clarify that Home IHC primarily covers Pahang (Bentong, Raub, Karak, Temerloh, Kuantan), and offer our active listings in those areas.
-8. Guardrails: If the user is applying for a job, selling unrelated services, or spamming, set "is_out_of_context": true.
+6. Guardrails: If the user is applying for a job, selling unrelated services, or spamming, set "is_out_of_context": true.
 
 Output JSON format strictly:
 {{

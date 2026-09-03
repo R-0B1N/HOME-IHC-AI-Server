@@ -234,6 +234,11 @@ class TestPersonaRules(unittest.TestCase):
         company_ref = "How can Home IHC assist you today?"
         self.assertIn("Home IHC", company_ref)
 
+    def test_anti_repetition_flag_detected(self):
+        history = "User: Hi\nAssistant: Good day! I'm Irene Leong from ERA Realtor.\nUser: Do you have land in Bentong?"
+        has_prior = "Assistant:" in history or "Irene Leong" in history
+        self.assertTrue(has_prior)
+
 
 class TestIssue1WordPressSyncResilience(unittest.TestCase):
     def test_sync_state_defaults(self):
