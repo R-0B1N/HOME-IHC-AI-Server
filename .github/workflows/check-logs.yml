@@ -22,19 +22,26 @@ jobs:
           password: ${{ secrets.SSH_PASSWORD }}
           script: |
             echo "======================================================="
-            echo "1. DOCKER CONTAINERS STATUS"
+            echo "1. CHATWOOT WEBHOOK JOB CODE"
             echo "======================================================="
-            docker ps -a --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+            docker exec crm-chatwoot-web cat app/jobs/webhook_job.rb || echo "cat webhook_job.rb failed"
 
             echo "======================================================="
-            echo "2. CHATWOOT INBOXES & WEBHOOK CONFIGURATION"
+            echo "2. CHATWOOT WEBHOOK SIGNATURE SIMULATION"
             echo "======================================================="
             docker exec crm-chatwoot-web bundle exec rails runner "
-              puts '--- INBOXES ---'
-              Inbox.all.each { |i| puts \"ID: #{i.id} | Name: #{i.name} | Channel: #{i.channel_type}\" }
-              puts '--- WEBHOOKS ---'
-              Webhook.all.each { |w| puts \"ID: #{w.id} | Account: #{w.account_id} | URL: #{w.url} | Subscriptions: #{w.subscriptions}\" }
-            " || echo "Chatwoot rails runner failed"
+              w = Webhook.find(5)
+              puts \"Webhook 5 URL: #{w.url}\"
+              puts \"Webhook 5 Secret: #{w.secret}\"
+              payload = { event: 'test', data: 'hello' }
+              sig = OpenSSL::HMAC.hexdigest('sha256', w.secret.to_s, payload.to_json) rescue 'error'
+              puts \"Test HMAC: #{sig}\"
+            " || echo "rails runner test failed"
+
+            echo "======================================================="
+            echo "3. STAGING API RECENT ERROR LOGS DETAIL"
+            echo "======================================================="
+            docker logs --tail 100 whatsapp_ai_api_staging | grep -E "Invalid Chatwoot|POST /webhook" || true
 
             echo "======================================================="
             echo "3. CHATWOOT RECENT MESSAGES & CONVERSATIONS"
