@@ -22,21 +22,16 @@ jobs:
           password: ${{ secrets.SSH_PASSWORD }}
           script: |
             echo "======================================================="
-            echo "1. CHATWOOT WEBHOOK JOB CODE"
-            echo "======================================================="
-            docker exec crm-chatwoot-web cat app/jobs/webhook_job.rb || echo "cat webhook_job.rb failed"
-
-            echo "======================================================="
-            echo "2. CHATWOOT WEBHOOK SIGNATURE SIMULATION"
+            echo "1. CHATWOOT TRIGGER SERVICE SOURCE"
             echo "======================================================="
             docker exec crm-chatwoot-web bundle exec rails runner "
-              w = Webhook.find(5)
-              puts \"Webhook 5 URL: #{w.url}\"
-              puts \"Webhook 5 Secret: #{w.secret}\"
-              payload = { event: 'test', data: 'hello' }
-              sig = OpenSSL::HMAC.hexdigest('sha256', w.secret.to_s, payload.to_json) rescue 'error'
-              puts \"Test HMAC: #{sig}\"
-            " || echo "rails runner test failed"
+              puts Webhooks::Trigger.instance_method(:execute).source_location.inspect rescue puts 'No method :execute'
+              file, line = Webhooks::Trigger.method(:execute).source_location rescue [nil, nil]
+              puts \"Defined at: #{file}:#{line}\"
+              if file && File.exist?(file)
+                puts File.read(file)
+              end
+            " || echo "rails runner trigger inspection failed"
 
             echo "======================================================="
             echo "3. STAGING API RECENT ERROR LOGS DETAIL"
