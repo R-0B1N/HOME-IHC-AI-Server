@@ -21,27 +21,67 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SSH_PASSWORD }}
           script: |
-            echo "=== 1. RUNNING WORKFLOW SEEDING (ERA REALTOR) ==="
-            cd ~/whatsapp-ai-staging
-            docker compose -f docker-compose.staging.yml exec -T api_staging python scripts/seed_workflows.py
-            
-            echo "=== 2. RUNNING PROPERTY SCRAPING (TAMAN AZALEA & ALL LISTINGS) ==="
-            docker compose -f docker-compose.staging.yml exec -T api_staging python scripts/scrape_and_ingest_all_properties.py
-            
-            echo "=== 3. CHECKING TAMAN AZALEA IN STAGING DATABASE ==="
-            docker compose -f docker-compose.staging.yml exec -T api_staging python -c "
-from app.db.models import SessionLocal, Property
-db = SessionLocal()
-p = db.query(Property).filter(Property.title.ilike('%Taman Azalea%')).first()
-if p:
-    print(f'FOUND: {p.title}')
-    print(f'  Asking Price MYR: {p.asking_price_myr}')
-    print(f'  Price Per Sqft: {p.price_per_sqft_myr}')
-    print(f'  Category: {p.property_category}')
-else:
-    print('Taman Azalea not found in DB')
-db.close()
-"
+            echo "======================================================="
+            echo "1. DOCKER CONTAINERS STATUS"
+            echo "======================================================="
+            docker ps -a --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+
+            echo "======================================================="
+            echo "2. CHATWOOT INBOXES & WEBHOOK CONFIGURATION"
+            echo "======================================================="
+            docker exec crm-chatwoot-web bundle exec rails runner "
+              puts '--- INBOXES ---'
+              Inbox.all.each { |i| puts \"ID: #{i.id} | Name: #{i.name} | Channel: #{i.channel_type}\" }
+              puts '--- WEBHOOKS ---'
+              Webhook.all.each { |w| puts \"ID: #{w.id} | Account: #{w.account_id} | URL: #{w.url} | Subscriptions: #{w.subscriptions}\" }
+            " || echo "Chatwoot rails runner failed"
+
+            echo "======================================================="
+            echo "3. CHATWOOT RECENT MESSAGES & CONVERSATIONS"
+            echo "======================================================="
+            docker exec crm-chatwoot-web bundle exec rails runner "
+              puts '--- RECENT CONVERSATIONS (LAST 5) ---'
+              Conversation.order(id: :desc).limit(5).each { |c| puts \"ConvoID: #{c.id} | InboxID: #{c.inbox_id} | Status: #{c.status} | Updated: #{c.updated_at}\" }
+              puts '--- RECENT MESSAGES (LAST 15) ---'
+              Message.order(id: :desc).limit(15).each { |m| puts \"MsgID: #{m.id} | InboxID: #{m.inbox_id} | ConvoID: #{m.conversation_id} | Type: #{m.message_type} | Sender: #{m.sender_type} | Content: #{m.content.to_s.gsub(\\\"\n\\\", ' ')[0..80]} | Created: #{m.created_at}\" }
+            " || echo "Chatwoot message query failed"
+
+            echo "======================================================="
+            echo "4. STAGING API LOGS (LAST 250 LINES)"
+            echo "======================================================="
+            docker logs --tail 250 whatsapp_ai_api_staging || echo "No staging api logs"
+
+            echo "======================================================="
+            echo "5. STAGING WORKER LOGS (LAST 250 LINES)"
+            echo "======================================================="
+            docker logs --tail 250 whatsapp_ai_worker_staging || echo "No staging worker logs"
+
+            echo "======================================================="
+            echo "6. STAGING REDIS INSPECTION"
+            echo "======================================================="
+            docker exec whatsapp_ai_redis_staging redis-cli keys "*" || echo "Redis keys check failed"
+            docker exec whatsapp_ai_redis_staging redis-cli get master_ai_enabled || echo "No master_ai_enabled key"
+
+            echo "======================================================="
+            echo "7. CHATWOOT WEB SERVER LOGS (LAST 150 LINES)"
+            echo "======================================================="
+            docker logs --tail 150 crm-chatwoot-web || echo "No chatwoot web logs"
+
+            echo "======================================================="
+            echo "8. CHATWOOT WORKER (SIDEKIQ) LOGS (LAST 150 LINES)"
+            echo "======================================================="
+            docker logs --tail 150 crm-chatwoot-worker || echo "No chatwoot worker logs"
+
+            echo "======================================================="
+            echo "9. PRODUCTION CONTAINERS (API & WORKER) LOGS (IF PRESENT)"
+            echo "======================================================="
+            docker logs --tail 100 whatsapp_ai_api_production 2>/dev/null || echo "No prod api"
+            docker logs --tail 100 whatsapp_ai_worker_production 2>/dev/null || echo "No prod worker"
+
+            echo "======================================================="
+            echo "10. VLLM SERVER LOGS (LAST 100 LINES)"
+            echo "======================================================="
+            docker logs --tail 100 crm-vllm 2>/dev/null || echo "No vllm logs"
 
 
 
