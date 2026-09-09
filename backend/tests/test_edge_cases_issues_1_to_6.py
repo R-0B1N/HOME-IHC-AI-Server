@@ -12,12 +12,14 @@ from unittest.mock import MagicMock
 
 # Mock third-party packages if not installed in current environment
 for mod_name in [
-    'fastapi', 'sqlalchemy', 'sqlalchemy.orm', 'sqlalchemy.ext', 'sqlalchemy.ext.declarative',
+    'fastapi', 'sqlalchemy', 'sqlalchemy.exc', 'sqlalchemy.orm', 'sqlalchemy.ext', 'sqlalchemy.ext.declarative',
     'pydantic', 'redis', 'openai', 'celery', 'pgvector', 'pgvector.sqlalchemy', 'app.db.models'
 ]:
-    if mod_name not in sys.modules:
-        m = MagicMock()
-        sys.modules[mod_name] = m
+    try:
+        __import__(mod_name)
+    except (ImportError, ModuleNotFoundError):
+        if mod_name not in sys.modules:
+            sys.modules[mod_name] = MagicMock()
 
 # ──────────────────────────────────────────────
 # ISSUE 1: Property Serialization
@@ -121,21 +123,21 @@ class TestIssue2MasterAIToggle(unittest.TestCase):
 class TestIssue3LeadsSeparation(unittest.TestCase):
     def setUp(self):
         self.leads = [
-            {"inbox_id": 3, "name": "Staging Lead A"},
+            {"inbox_id": 4, "name": "Staging Lead A"},
             {"inbox_id": 1, "name": "Production Lead B"},
-            {"inbox_id": None, "name": "Unknown Inbox Lead C"},
-            {"inbox_id": 4, "name": "Production Lead D"}
+            {"inbox_id": 3, "name": "Voon Customer Service Production Lead C"},
+            {"inbox_id": 2, "name": "Production Lead D"}
         ]
 
     def test_staging_excludes_production(self):
-        staging = [l for l in self.leads if l["inbox_id"] == 3]
+        staging = [l for l in self.leads if l["inbox_id"] == 4]
         self.assertEqual(len(staging), 1)
         self.assertEqual(staging[0]["name"], "Staging Lead A")
 
     def test_production_excludes_staging(self):
-        prod = [l for l in self.leads if l["inbox_id"] != 3]
+        prod = [l for l in self.leads if l["inbox_id"] != 4]
         self.assertEqual(len(prod), 3)
-        self.assertTrue(all(l["inbox_id"] != 3 for l in prod))
+        self.assertTrue(all(l["inbox_id"] != 4 for l in prod))
 
 
 # ──────────────────────────────────────────────

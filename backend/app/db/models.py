@@ -18,7 +18,14 @@ DB_NAME = os.getenv("POSTGRES_DB", os.getenv("DB_NAME", "whatsapp_ai"))
 encoded_pass = quote_plus(DB_PASS) if DB_PASS else ""
 DATABASE_URL = f"postgresql://{DB_USER}:{encoded_pass}@{DB_HOST}:5432/{DB_NAME}"
 
-engine = create_engine(DATABASE_URL)
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+    pool_recycle=1800,
+    pool_size=15,
+    max_overflow=25,
+    pool_timeout=30
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()

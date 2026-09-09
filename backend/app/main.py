@@ -24,12 +24,6 @@ try:
 except Exception as e:
     logger.warning(f"Database schema initialization warning: {e}")
 
-try:
-    import scripts.migrate_properties_to_uuid as migrator
-    migrator.migrate()
-except Exception as e:
-    logger.warning(f"Auto-migration skipped or note: {e}")
-
 app = FastAPI(
     title="Real Estate WhatsApp AI CRM Orchestrator",
     description="Backend orchestration handling Real Estate AI, CRM, Workflows, and RBAC Database Access.",
@@ -62,7 +56,10 @@ def on_startup():
         if admin_count == 0:
             default_admin_username = os.getenv("ADMIN_DEFAULT_USER", "admin")
             default_admin_email = os.getenv("ADMIN_DEFAULT_EMAIL", "admin@bentongland.com.my")
-            default_admin_pass = os.getenv("ADMIN_DEFAULT_PASSWORD", "Admin12345!")
+            default_admin_pass = os.getenv("ADMIN_DEFAULT_PASSWORD")
+            if not default_admin_pass:
+                logger.error("ADMIN_DEFAULT_PASSWORD environment variable is required!")
+                raise ValueError("ADMIN_DEFAULT_PASSWORD must be configured in environment variables")
             
             existing = db.query(User).filter((User.username == default_admin_username) | (User.email == default_admin_email)).first()
             if not existing:

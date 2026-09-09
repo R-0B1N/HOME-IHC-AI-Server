@@ -1,4 +1,4 @@
-version: '3.8'
+name: whatsapp-ai-prod
 
 networks:
   crm_network:
@@ -30,6 +30,7 @@ services:
     env_file:
       - .env
     environment:
+      - PYTHONPATH=/app
       - REDIS_HOST=whatsapp_ai_redis_production
       - REDIS_PORT=6379
       - DB_HOST=crm-postgres
@@ -61,6 +62,7 @@ services:
 
       - .env
     environment:
+      - PYTHONPATH=/app
       - REDIS_HOST=whatsapp_ai_redis_production
       - REDIS_PORT=6379
       - DB_HOST=crm-postgres

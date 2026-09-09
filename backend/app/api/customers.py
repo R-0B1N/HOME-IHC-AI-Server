@@ -20,14 +20,12 @@ class CustomerCreate(BaseModel):
     contact_name: str
     email: Optional[str] = None
     country: Optional[str] = None
-    country: Optional[str] = None
     bypass_ai: Optional[bool] = False
 
 class CustomerUpdate(BaseModel):
     model_config = ConfigDict(extra='ignore')
     contact_name: Optional[str] = None
     email: Optional[str] = None
-    country: Optional[str] = None
     country: Optional[str] = None
     bypass_ai: Optional[bool] = None
 
@@ -52,12 +50,13 @@ def get_customers(environment: Optional[str] = None, db: Session = Depends(get_d
         source = meta.get("source")
         
         # Staging isolation:
-        # In staging, only show contacts from test WhatsApp inbox 3 and exclude bulk-imported Chatwoot syncs
+        # In staging, only show contacts from test WhatsApp inbox 4 and exclude bulk-imported Chatwoot syncs
+        staging_inbox_id = str(os.getenv("STAGING_INBOX_ID", "4"))
         if effective_env == 'staging':
-            if source == "chatwoot_sync" or str(cust_inbox) != "3":
+            if source == "chatwoot_sync" or str(cust_inbox) != staging_inbox_id:
                 continue
         elif effective_env == 'production':
-            if str(cust_inbox) == "3":
+            if str(cust_inbox) == staging_inbox_id:
                 continue
             
         result.append({
@@ -84,9 +83,8 @@ def get_staging_customers(admin=Depends(require_admin), db: Session = Depends(ge
     result = []
     for c in customers:
         meta = c.metadata_json or {}
-        cust_inbox = meta.get("inbox_id")
-        
-        if cust_inbox != 3:
+        staging_inbox_id = str(os.getenv("STAGING_INBOX_ID", "4"))
+        if str(cust_inbox) != staging_inbox_id:
             continue
             
         result.append({
@@ -104,13 +102,16 @@ def get_staging_customers(admin=Depends(require_admin), db: Session = Depends(ge
         })
     return result
 
+from sqlalchemy import text
+
 @router.delete("/staging/reset")
 def reset_staging_customers(admin=Depends(require_admin), db: Session = Depends(get_db)):
     """
     Admin-only endpoint to wipe bulk-imported leads from the staging database,
     keeping staging completely clean for test-number interactions only.
+    Strictly scoped to staging test inbox leads (inbox_id == '4').
     """
-    deleted_count = db.query(Customer).delete()
+    deleted_count = db.query(Customer).filter(text("(metadata_json->>'inbox_id') = '4'")).delete(synchronize_session=False)
     db.commit()
     return {"status": "success", "message": f"Successfully reset {deleted_count} staging leads."}
 

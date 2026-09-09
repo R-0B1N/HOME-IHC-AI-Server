@@ -1,4 +1,4 @@
-version: '3.8'
+name: whatsapp-ai-staging
 
 networks:
   crm_network:
@@ -28,6 +28,10 @@ services:
     ports:
       - "8001:8000"
     environment:
+      - PYTHONPATH=/app
+      - ENVIRONMENT=staging
+      - STAGING_INBOX_ID=4
+      - CHATWOOT_WEBHOOK_SECRET=QYmd2DD5dHvocu9ykwqfTv5f
       - REDIS_HOST=whatsapp_ai_redis_staging
       - REDIS_PORT=6379
       - DB_HOST=whatsapp_ai_db_staging
@@ -55,7 +59,10 @@ services:
     restart: unless-stopped
     command: celery -A app.worker.celery_app worker --pool=threads --concurrency=10 --loglevel=info
     environment:
-
+      - PYTHONPATH=/app
+      - ENVIRONMENT=staging
+      - STAGING_INBOX_ID=4
+      - CHATWOOT_WEBHOOK_SECRET=QYmd2DD5dHvocu9ykwqfTv5f
       - REDIS_HOST=whatsapp_ai_redis_staging
       - REDIS_PORT=6379
       - DB_HOST=whatsapp_ai_db_staging

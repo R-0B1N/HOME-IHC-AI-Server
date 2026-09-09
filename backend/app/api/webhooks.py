@@ -125,8 +125,7 @@ async def chatwoot_webhook(request: Request):
             
         if not hmac.compare_digest(expected_hex, received_hash) and not hmac.compare_digest(expected_b64, received_hash):
             logger.error(f"Invalid Chatwoot webhook signature. Received: {signature}, Expected Hex: {expected_hex}, Expected B64: {expected_b64}")
-            logger.info("Bypassing signature validation for staging testing.")
-            # return {"status": "ignored", "reason": "Invalid signature"}
+            return {"status": "ignored", "reason": "Invalid signature"}
 
     try:
         payload = json.loads(raw_body)
@@ -202,10 +201,19 @@ async def chatwoot_webhook(request: Request):
             logger.info(f"Master AI is OFF. Ignoring incoming message (event: {event_name}).")
             return {"status": "skipped", "reason": "master_ai_disabled"}
     except Exception as e:
-        logger.warning(f"Error checking master AI status: {e}. Defaulting to ON.")
+        logger.error(f"Error checking master AI status: {e}. Failing closed to protect production.")
+        return {"status": "skipped", "reason": "master_ai_error_fail_closed"}
 
     inbox_id = payload.get("inbox", {}).get("id") or payload.get("conversation", {}).get("inbox_id")
-    # Removed strict inbox ID filtering so test/production inboxes both work
+    
+    # Environment Isolation: Prevent Staging AI from cross-firing on live Production inboxes
+    runtime_env = os.getenv("ENVIRONMENT", "production").lower()
+    staging_inbox_id = str(os.getenv("STAGING_INBOX_ID", "4"))
+    if runtime_env == "staging":
+        # Staging must strictly ignore messages from production inboxes (including Inbox 3, which is Voon's live number)
+        if str(inbox_id) != staging_inbox_id:
+            logger.info(f"Staging environment ignoring production inbox message (inbox_id: {inbox_id}).")
+            return {"status": "skipped", "reason": "staging_ignores_production_inbox"}
     
     conversation = payload.get("conversation", {})
     conversation_id = conversation.get("id")

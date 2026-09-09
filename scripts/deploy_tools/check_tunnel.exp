@@ -1,6 +1,0 @@
-#!/usr/bin/expect -f
-set timeout 10
-spawn ssh -o StrictHostKeyChecking=no admin123@homeihc-ai-server "cat /opt/crm/tunnel/config.yml"
-expect "*?assword:*"
-send "P@ssw0rd\r"
-expect eof

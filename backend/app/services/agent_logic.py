@@ -247,16 +247,19 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict, c
     handover = False
     response_text = llm_analysis.get("response", "How may Home IHC assist you with properties in Pahang today? 😊")
 
-    user_wants_human_or_meeting = bool(asked_meeting) or any(phrase in raw_text.lower() for phrase in [
+    handover_phrases = [
         "arrange a meeting", "schedule a meeting", "meeting with your team",
         "meet up", "call me", "speak to human", "talk to agent", "contact me directly",
         "advise your availability", "discuss in meeting", "have a meeting",
         "transfer to human", "speak to a person", "talk to a person", "real agent",
-        "real person", "human agent", "human staff", "person in charge", "pic",
+        "real person", "human agent", "human staff", "person in charge",
         "真人", "转人工", "人工客服", "联系真人", "找真人", "安排看房", "预约看房", "睇楼",
         "电话联系", "安排见面", "nak jumpa", "call saya", "hubungi saya", "agent sebenar", 
         "cakap dengan orang", "temujanji", "tengok rumah", "tengok tanah"
-    ])
+    ]
+    user_wants_human_or_meeting = bool(asked_meeting) or any(
+        phrase in raw_text.lower() for phrase in handover_phrases
+    ) or bool(re.search(r'\bpic\b', raw_text.lower()))
 
     if user_wants_human_or_meeting:
         handover = True
