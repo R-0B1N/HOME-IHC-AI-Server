@@ -5,8 +5,24 @@ import os
 import redis
 import requests
 import base64
+import uuid
 from app.worker.celery_app import celery_app
-from app.services.chatwoot import send_message, apply_label, set_priority, toggle_typing_status, get_conversation_messages, get_or_create_contact, create_conversation, assign_agent, send_chatwoot_image_attachment
+from app.services.chatwoot import (
+    send_message,
+    apply_label,
+    set_priority,
+    toggle_typing_status,
+    get_conversation_messages,
+    get_or_create_contact,
+    create_conversation,
+    assign_agent,
+    send_chatwoot_image_attachment,
+    get_agent_id_by_email,
+    CHATWOOT_ACCOUNT_ID,
+    send_private_note,
+    send_whatsapp_contact,
+    send_whatsapp_template,
+)
 from app.services.llm import generate_response, transcribe_audio, extract_property_search_criteria, extract_valuer_data, extract_wordpress_property
 from app.services.document_parser import extract_text_from_document
 from app.services.db_services import get_or_create_customer, get_sender_role, search_properties
@@ -59,7 +75,6 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
             logger.info(f"Master AI Toggle is OFF. Skipping conversation {conversation_id} and clearing queue.")
             # Turn off typing indicator if it was triggered
             try:
-                from app.services.chatwoot import toggle_typing_status
                 toggle_typing_status(conversation_id, "off")
             except Exception:
                 pass
@@ -418,7 +433,6 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                     conversation_summary = conversation_summary[:497] + "..."
 
             inbox_id = metadata.get("inbox_id") or 4
-            from app.services.chatwoot import CHATWOOT_ACCOUNT_ID, send_private_note, send_whatsapp_contact, send_whatsapp_template
             cw_link = f"https://inbox.bentongland.com.my/app/accounts/{CHATWOOT_ACCOUNT_ID}/inbox/{inbox_id}/conversations/{conversation_id}"
 
             # 3. Post Internal Private Note in Chatwoot conversation for human agents
@@ -543,7 +557,6 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                 # Assign agent if specified
                 if assignee_email:
                     try:
-                        from app.services.chatwoot import get_agent_id_by_email, assign_agent
                         agent_id = get_agent_id_by_email(assignee_email)
                         if agent_id:
                             assign_agent(conversation_id, agent_id)
@@ -603,9 +616,6 @@ def process_wordpress_property(self, payload: dict):
             image_urls = [image_urls]
         db = SessionLocal()
         try:
-            from app.db.models import Property
-            import uuid
-            
             existing = db.query(Property).filter(Property.title == title).first()
             if existing:
                 # Update existing property
