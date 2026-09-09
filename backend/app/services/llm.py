@@ -7,7 +7,10 @@ import re
 
 logger = logging.getLogger(__name__)
 
-VLLM_BASE_URL = os.getenv("VLLM_BASE_URL", "http://crm-vllm:8000/v1")
+_vllm_env = os.getenv("VLLM_BASE_URL") or os.getenv("OLLAMA_BASE_URL") or "http://crm-vllm:8000/v1"
+if not _vllm_env.endswith("/v1"):
+    _vllm_env = f"{_vllm_env.rstrip('/')}/v1"
+VLLM_BASE_URL = _vllm_env
 WHISPER_API_URL = os.getenv("WHISPER_API_URL", "http://crm-whisper:8000/v1/audio/transcriptions")
 LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "google/gemma-4-12B-it")
 

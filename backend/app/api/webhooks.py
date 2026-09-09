@@ -105,26 +105,50 @@ async def chatwoot_webhook(request: Request):
             return {"status": "ignored", "reason": "Missing signature"}
             
         import base64
+        timestamp = request.headers.get("X-Chatwoot-Timestamp")
         
+        # Chatwoot v4.x signs "#{timestamp}.#{body}"
+        if timestamp:
+            signed_payload = f"{timestamp}.".encode("utf-8") + raw_body
+        else:
+            signed_payload = raw_body
+
         expected_hex = hmac.new(
             CHATWOOT_WEBHOOK_SECRET.encode('utf-8'),
-            raw_body,
+            signed_payload,
             hashlib.sha256
         ).hexdigest()
         
         expected_b64 = base64.b64encode(hmac.new(
             CHATWOOT_WEBHOOK_SECRET.encode('utf-8'),
-            raw_body,
+            signed_payload,
             hashlib.sha256
         ).digest()).decode()
+        
+        # Backward compatibility fallback for legacy direct raw body signing
+        legacy_expected_hex = hmac.new(
+            CHATWOOT_WEBHOOK_SECRET.encode('utf-8'),
+            raw_body,
+            hashlib.sha256
+        ).hexdigest()
         
         # Chatwoot sends signature as "sha256=..."
         received_hash = signature
         if signature.startswith("sha256="):
             received_hash = signature[7:]
             
-        if not hmac.compare_digest(expected_hex, received_hash) and not hmac.compare_digest(expected_b64, received_hash):
-            logger.error(f"Invalid Chatwoot webhook signature. Received: {signature}, Expected Hex: {expected_hex}, Expected B64: {expected_b64}")
+        valid = (
+            hmac.compare_digest(expected_hex, received_hash) or 
+            hmac.compare_digest(expected_b64, received_hash) or
+            hmac.compare_digest(legacy_expected_hex, received_hash)
+        )
+        
+        if not valid:
+            logger.error(
+                f"Invalid Chatwoot webhook signature. Received: {signature}, "
+                f"Expected Hex (with ts={timestamp}): {expected_hex}, "
+                f"Expected Hex (raw body): {legacy_expected_hex}"
+            )
             return {"status": "ignored", "reason": "Invalid signature"}
 
     try:

@@ -22,30 +22,18 @@ jobs:
           password: ${{ secrets.SSH_PASSWORD }}
           script: |
             echo "======================================================="
-            echo "1. CHATWOOT TRIGGER SERVICE SOURCE"
+            echo "1. DOCKER CONTAINERS STATUS"
             echo "======================================================="
-            docker exec crm-chatwoot-web bundle exec rails runner "
-              puts Webhooks::Trigger.instance_method(:execute).source_location.inspect rescue puts 'No method :execute'
-              file, line = Webhooks::Trigger.method(:execute).source_location rescue [nil, nil]
-              puts \"Defined at: #{file}:#{line}\"
-              if file && File.exist?(file)
-                puts File.read(file)
-              end
-            " || echo "rails runner trigger inspection failed"
+            docker ps -a --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 
             echo "======================================================="
-            echo "3. STAGING API RECENT ERROR LOGS DETAIL"
-            echo "======================================================="
-            docker logs --tail 100 whatsapp_ai_api_staging | grep -E "Invalid Chatwoot|POST /webhook" || true
-
-            echo "======================================================="
-            echo "3. CHATWOOT RECENT MESSAGES & CONVERSATIONS"
+            echo "2. CHATWOOT RECENT MESSAGES & CONVERSATIONS"
             echo "======================================================="
             docker exec crm-chatwoot-web bundle exec rails runner "
               puts '--- RECENT CONVERSATIONS (LAST 5) ---'
               Conversation.order(id: :desc).limit(5).each { |c| puts \"ConvoID: #{c.id} | InboxID: #{c.inbox_id} | Status: #{c.status} | Updated: #{c.updated_at}\" }
               puts '--- RECENT MESSAGES (LAST 15) ---'
-              Message.order(id: :desc).limit(15).each { |m| puts \"MsgID: #{m.id} | InboxID: #{m.inbox_id} | ConvoID: #{m.conversation_id} | Type: #{m.message_type} | Sender: #{m.sender_type} | Content: #{m.content.to_s.gsub(\\\"\n\\\", ' ')[0..80]} | Created: #{m.created_at}\" }
+              Message.order(id: :desc).limit(15).each { |m| puts \"MsgID: #{m.id} | InboxID: #{m.inbox_id} | ConvoID: #{m.conversation_id} | Type: #{m.message_type} | Sender: #{m.sender_type} | Content: #{m.content.to_s.tr(\"\n\", ' ')[0..80]} | Created: #{m.created_at}\" }
             " || echo "Chatwoot message query failed"
 
             echo "======================================================="
