@@ -27,49 +27,67 @@ jobs:
             docker ps -a --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 
             echo "======================================================="
-            echo "2. CHATWOOT RECENT MESSAGES & CONVERSATIONS"
+            echo "2. CONVERSATION 69 & CHATWOOT RECENT MESSAGES"
             echo "======================================================="
             docker exec crm-chatwoot-web bundle exec rails runner "
-              puts '--- RECENT CONVERSATIONS (LAST 5) ---'
-              Conversation.order(id: :desc).limit(5).each { |c| puts \"ConvoID: #{c.id} | InboxID: #{c.inbox_id} | Status: #{c.status} | Updated: #{c.updated_at}\" }
-              puts '--- RECENT MESSAGES (LAST 15) ---'
-              Message.order(id: :desc).limit(15).each { |m| puts \"MsgID: #{m.id} | InboxID: #{m.inbox_id} | ConvoID: #{m.conversation_id} | Type: #{m.message_type} | Sender: #{m.sender_type} | Content: #{m.content.to_s.tr(\"\n\", ' ')[0..80]} | Created: #{m.created_at}\" }
-            " || echo "Chatwoot message query failed"
+              puts '--- CONVERSATION 69 DETAILS ---'
+              c = Conversation.find_by(id: 69)
+              if c
+                puts \"Convo 69: Inbox #{c.inbox_id} | Status #{c.status} | Assignee #{c.assignee_id} | Contact #{c.contact_id} | Labels: #{c.label_list} | Custom: #{c.custom_attributes}\"
+                puts 'Messages in Convo 69:'
+                c.messages.order(id: :asc).each do |m|
+                  puts \"  [#{m.created_at}] Msg #{m.id} | Type #{m.message_type} | Sender #{m.sender_type}(#{m.sender_id}) | Content: #{m.content.to_s.tr(\"\n\", ' ')}\"
+                end
+              else
+                puts 'Conversation 69 not found!'
+              end
+
+              puts '--- RECENT CONVERSATIONS (LAST 10) ---'
+              Conversation.order(id: :desc).limit(10).each { |conv| puts \"ConvoID: #{conv.id} | InboxID: #{conv.inbox_id} | Status: #{conv.status} | Updated: #{conv.updated_at}\" }
+              
+              puts '--- RECENT MESSAGES (LAST 20) ---'
+              Message.order(id: :desc).limit(20).each { |m| puts \"MsgID: #{m.id} | InboxID: #{m.inbox_id} | ConvoID: #{m.conversation_id} | Type: #{m.message_type} | Sender: #{m.sender_type} | Content: #{m.content.to_s.tr(\"\n\", ' ')[0..100]} | Created: #{m.created_at}\" }
+
+              puts '--- WEBHOOKS CONFIGURATION ---'
+              Webhook.all.each { |w| puts \"Webhook #{w.id} | Account #{w.account_id} | Inbox #{w.inbox_id} | URL: #{w.url}\" }
+
+              puts '--- SIDEKIQ RETRY / DEAD JOBS ---'
+              require 'sidekiq/api'
+              puts \"Retry size: #{Sidekiq::RetrySet.new.size}, Dead size: #{Sidekiq::DeadSet.new.size}\"
+              Sidekiq::RetrySet.new.each { |j| puts \"RETRY: #{j.klass} | Args: #{j.args} | Err: #{j.error_message}\" }
+              Sidekiq::DeadSet.new.each { |j| puts \"DEAD: #{j.klass} | Args: #{j.args} | Err: #{j.error_message}\" }
+            " || echo "Chatwoot deep query failed"
 
             echo "======================================================="
-            echo "4. STAGING API LOGS (LAST 250 LINES)"
-            echo "======================================================="
-            docker logs --tail 250 whatsapp_ai_api_staging || echo "No staging api logs"
-
-            echo "======================================================="
-            echo "5. STAGING WORKER LOGS (LAST 250 LINES)"
-            echo "======================================================="
-            docker logs --tail 250 whatsapp_ai_worker_staging || echo "No staging worker logs"
-
-            echo "======================================================="
-            echo "6. STAGING REDIS INSPECTION"
+            echo "3. STAGING REDIS INSPECTION"
             echo "======================================================="
             docker exec whatsapp_ai_redis_staging redis-cli keys "*" || echo "Redis keys check failed"
             docker exec whatsapp_ai_redis_staging redis-cli get master_ai_enabled || echo "No master_ai_enabled key"
+            docker exec whatsapp_ai_redis_staging redis-cli lrange convo_queue_69 0 -1 2>/dev/null || echo "No convo_queue_69"
+            docker exec whatsapp_ai_redis_staging redis-cli get convo_active_69 2>/dev/null || echo "No convo_active_69"
 
             echo "======================================================="
-            echo "7. CHATWOOT WEB SERVER LOGS (LAST 150 LINES)"
+            echo "4. STAGING API LOGS (LAST 500 LINES)"
             echo "======================================================="
-            docker logs --tail 150 crm-chatwoot-web || echo "No chatwoot web logs"
+            docker logs --tail 500 whatsapp_ai_api_staging || echo "No staging api logs"
 
             echo "======================================================="
-            echo "8. CHATWOOT WORKER (SIDEKIQ) LOGS (LAST 150 LINES)"
+            echo "5. STAGING WORKER LOGS (LAST 500 LINES)"
             echo "======================================================="
-            docker logs --tail 150 crm-chatwoot-worker || echo "No chatwoot worker logs"
+            docker logs --tail 500 whatsapp_ai_worker_staging || echo "No staging worker logs"
 
             echo "======================================================="
-            echo "9. PRODUCTION CONTAINERS (API & WORKER) LOGS (IF PRESENT)"
+            echo "6. CHATWOOT WEB SERVER LOGS (FILTERED OR LAST 200 LINES)"
             echo "======================================================="
-            docker logs --tail 100 whatsapp_ai_api_production 2>/dev/null || echo "No prod api"
-            docker logs --tail 100 whatsapp_ai_worker_production 2>/dev/null || echo "No prod worker"
+            docker logs --tail 300 crm-chatwoot-web || echo "No chatwoot web logs"
 
             echo "======================================================="
-            echo "10. VLLM SERVER LOGS (LAST 100 LINES)"
+            echo "7. CHATWOOT WORKER (SIDEKIQ) LOGS (LAST 200 LINES)"
+            echo "======================================================="
+            docker logs --tail 300 crm-chatwoot-worker || echo "No chatwoot worker logs"
+
+            echo "======================================================="
+            echo "8. VLLM SERVER LOGS (LAST 100 LINES)"
             echo "======================================================="
             docker logs --tail 100 crm-vllm 2>/dev/null || echo "No vllm logs"
 
