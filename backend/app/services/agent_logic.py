@@ -395,7 +395,9 @@ Output JSON format strictly:
             model=LLM_MODEL_NAME,
             messages=messages,
             response_format={"type": "json_object"},
-            temperature=0.0
+            temperature=0.0,
+            max_tokens=1000,
+            timeout=30.0
         )
         content = response.choices[0].message.content
         parsed = _parse_json_from_llm(content)

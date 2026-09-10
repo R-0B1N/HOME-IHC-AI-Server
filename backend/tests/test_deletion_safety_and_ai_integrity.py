@@ -355,6 +355,43 @@ class TestDeletionSafetyAndAIIntegrity(unittest.TestCase):
             self.assertNotIn("I'm Irene Leong, a Senior Property Agent from ERA Realtor", res_fail.get("response"))
             self.assertIn("follow up", res_fail.get("response"))
 
+    def test_all_vllm_calls_have_explicit_max_tokens(self):
+        """
+        Ensures that every call to llm_client.chat.completions.create in
+        agent_logic.py, llm.py, and tasks.py explicitly specifies max_tokens.
+        This prevents vLLM from defaulting to a 16-token limit that truncates JSON responses.
+        """
+        import ast
+
+        target_files = [
+            os.path.join(BACKEND_DIR, "app", "services", "agent_logic.py"),
+            os.path.join(BACKEND_DIR, "app", "services", "llm.py"),
+            os.path.join(BACKEND_DIR, "app", "worker", "tasks.py"),
+        ]
+
+        for filepath in target_files:
+            with open(filepath, "r", encoding="utf-8") as f:
+                source = f.read()
+
+            tree = ast.parse(source, filename=filepath)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call):
+                    # Check if calling .create() on chat.completions
+                    is_completions_create = False
+                    if isinstance(node.func, ast.Attribute) and node.func.attr == "create":
+                        val = node.func.value
+                        if isinstance(val, ast.Attribute) and val.attr in ("completions", "chat"):
+                            is_completions_create = True
+
+                    if is_completions_create:
+                        kwargs = {kw.arg for kw in node.keywords}
+                        self.assertIn(
+                            "max_tokens",
+                            kwargs,
+                            f"File {os.path.basename(filepath)} at line {node.lineno} calls chat.completions.create without explicit max_tokens!"
+                        )
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -177,7 +177,9 @@ def generate_response(prompt: str, contact_info: dict, db_context: dict = None, 
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content}
             ],
-            response_format={"type": "json_object"}
+            response_format={"type": "json_object"},
+            max_tokens=1000,
+            timeout=30.0
         )
         raw_text = response.choices[0].message.content
         
@@ -231,7 +233,9 @@ def extract_property_search_criteria(prompt: str, conversation_history: str = ""
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
             ],
-            response_format={"type": "json_object"}
+            response_format={"type": "json_object"},
+            max_tokens=300,
+            timeout=15.0
         )
         raw_text = response.choices[0].message.content
         parsed = _parse_json_from_llm(raw_text)
@@ -274,7 +278,9 @@ def extract_valuer_data(prompt: str, conversation_history: str = "") -> dict:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
             ],
-            response_format={"type": "json_object"}
+            response_format={"type": "json_object"},
+            max_tokens=300,
+            timeout=15.0
         )
         raw_text = response.choices[0].message.content
         parsed = _parse_json_from_llm(raw_text)
@@ -469,7 +475,9 @@ def classify_intent(text: str, conversation_history: str = "") -> str:
             messages=[
                 {"role": "system", "content": system_prompt}
             ],
-            response_format={"type": "json_object"}
+            response_format={"type": "json_object"},
+            max_tokens=100,
+            timeout=10.0
         )
         raw_text = response.choices[0].message.content
         parsed = _parse_json_from_llm(raw_text)
