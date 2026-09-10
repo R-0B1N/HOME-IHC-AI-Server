@@ -4,7 +4,7 @@ import re
 import os
 import redis
 from app.db.models import SessionLocal, Property, Customer
-from app.services.llm import llm_client, LLM_MODEL_NAME
+from app.services.llm import llm_client, LLM_MODEL_NAME, _parse_json_from_llm
 from app.services.db_services import find_matching_property, find_similar_properties, search_properties
 
 logger = logging.getLogger(__name__)
@@ -397,9 +397,25 @@ Output JSON format strictly:
             response_format={"type": "json_object"},
             temperature=0.0
         )
-        return json.loads(response.choices[0].message.content)
+        content = response.choices[0].message.content
+        parsed = _parse_json_from_llm(content)
+        if not parsed:
+            try:
+                parsed = json.loads(content, strict=False)
+            except Exception:
+                match = re.search(r'"response"\s*:\s*"([^"]*)', content, re.DOTALL)
+                if match:
+                    parsed = {"response": match.group(1).strip()}
+        
+        if parsed and isinstance(parsed, dict) and parsed.get("response"):
+            return parsed
+        raise ValueError(f"Failed to parse valid JSON response from LLM content: {content[:100] if content else 'empty'}")
     except Exception as e:
         logger.error(f"Error calling LLM for conversational response: {e}")
+        if conversation_history:
+            fallback_msg = "Thank you for the details! I have noted your requirements and our team will follow up with you shortly with suitable property options."
+        else:
+            fallback_msg = "Good day! 😊 I'm Irene Leong, a Senior Property Agent from ERA Realtor. How may Home IHC assist you with properties in Pahang today?"
         return {
             "intent": "general",
             "asked_photos": False,
@@ -409,5 +425,5 @@ Output JSON format strictly:
             "new_constraints": {},
             "is_out_of_context": False,
             "extracted_data": {},
-            "response": "Good day! 😊 I'm Irene Leong, a Senior Property Agent from ERA Realtor. How may Home IHC assist you with properties in Pahang today?"
+            "response": fallback_msg
         }

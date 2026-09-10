@@ -83,27 +83,45 @@ def _parse_json_from_llm(raw_text: str) -> dict:
     if not raw_text or not raw_text.strip():
         return None
     raw_text = raw_text.replace('“', '"').replace('”', '"').replace("‘", "'").replace("’", "'").strip()
+    
+    # Strip markdown code blocks if present
+    if "```" in raw_text:
+        match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', raw_text, re.DOTALL)
+        if match:
+            raw_text = match.group(1)
+        else:
+            raw_text = re.sub(r'```(?:json)?', '', raw_text)
+            raw_text = raw_text.replace('```', '').strip()
+
     json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
     clean_json = json_match.group(0) if json_match else raw_text
     
     try:
-        return json.loads(clean_json)
-    except json.JSONDecodeError:
+        return json.loads(clean_json, strict=False)
+    except Exception:
         # Fallback: attempt to repair truncated JSON (e.g. unclosed brackets)
         try:
             repaired = clean_json.rstrip()
             if not repaired.endswith("}"):
                 repaired = repaired + "}"
-            return json.loads(repaired)
+            return json.loads(repaired, strict=False)
         except Exception:
             try:
                 # Try trimming up to last comma and adding closing bracket
                 last_comma = clean_json.rfind(",")
                 if last_comma != -1:
                     repaired_comma = clean_json[:last_comma] + "}"
-                    return json.loads(repaired_comma)
+                    return json.loads(repaired_comma, strict=False)
             except Exception:
                 pass
+        
+        # Regex extraction fallback for response and intent
+        resp_match = re.search(r'"response"\s*:\s*"([^"]*)', raw_text, re.DOTALL)
+        if resp_match:
+            intent_match = re.search(r'"intent"\s*:\s*"([^"]*)', raw_text)
+            intent = intent_match.group(1) if intent_match else "general"
+            return {"intent": intent, "response": resp_match.group(1).strip()}
+
         logger.error(f"Failed to parse LLM JSON: {raw_text[:200]}...")
         return None
 

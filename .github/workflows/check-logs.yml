@@ -27,40 +27,17 @@ jobs:
             docker ps -a --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 
             echo "======================================================="
-            echo "2. CHATWOOT LOGS FOR 18:07:18 & MSG 1240"
-            echo "======================================================="
-            docker exec crm-chatwoot-web grep -n "1240" /app/log/production.log 2>/dev/null | tail -n 20 || echo "No 1240 in web log"
-            docker exec crm-chatwoot-worker grep -n "1240" /app/log/production.log 2>/dev/null | tail -n 20 || echo "No 1240 in worker log"
-            docker exec crm-chatwoot-worker grep -n "staging-ai" /app/log/production.log 2>/dev/null | tail -n 20 || echo "No staging-ai in worker log"
-
-            echo "======================================================="
-            echo "3. TEST WEBHOOK CONNECTIVITY FROM CHATWOOT TO STAGING AI"
+            echo "2. CONVERSATION 69 RECENT MESSAGES"
             echo "======================================================="
             docker exec crm-chatwoot-web bundle exec rails runner "
-              w = Webhook.find_by(id: 5)
-              puts \"Webhook 5: #{w&.url} (Account #{w&.account_id}, Inbox #{w&.inbox_id})\"
-              
-              # Test connectivity to staging AI URL
-              require 'net/http'
-              require 'uri'
-              uri = URI(w.url)
-              puts \"Testing connection to #{uri}...\"
-              res = Net::HTTP.get_response(URI('http://whatsapp_ai_api_staging:8000/docs')) rescue \$!
-              puts \"Direct container connection to whatsapp_ai_api_staging:8000: #{res.is_a?(Net::HTTPResponse) ? res.code : res}\"
-              
-              # Re-trigger webhook for Msg 1240 to see what happens
-              m = Message.find_by(id: 1240)
-              if m && w
-                puts \"Simulating webhook execution for Message 1240...\"
-                payload = m.webhook_data.merge(event: 'message_created')
-                begin
-                  Webhooks::Trigger.execute(w.url, payload, :account_hook, secret: w.secret)
-                  puts 'Webhooks::Trigger.execute SUCCEEDED!'
-                rescue => e
-                  puts \"Webhooks::Trigger.execute FAILED: #{e.class}: #{e.message}\"
+              c = Conversation.find_by(id: 69)
+              if c
+                puts \"Convo 69: Inbox #{c.inbox_id} | Status #{c.status} | Priority #{c.priority} | Labels: #{c.label_list}\"
+                c.messages.order(id: :desc).limit(6).reverse.each do |m|
+                  puts \"[#{m.created_at}] Msg #{m.id} | #{m.message_type} | #{m.sender_type}: #{m.content.to_s.tr(\"\n\", ' ')}\"
                 end
               end
-            " || echo "Webhook test failed"
+            " || echo "Failed to fetch convo 69"
 
             echo "======================================================="
             echo "3. STAGING REDIS INSPECTION"

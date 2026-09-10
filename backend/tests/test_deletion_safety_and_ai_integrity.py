@@ -302,5 +302,59 @@ class TestDeletionSafetyAndAIIntegrity(unittest.TestCase):
                                          f"Frontend file {file} unexpectedly references deletion candidate '{asset}'!")
 
 
+    def test_llm_json_parsing_resilience_and_greeting_loop_prevention(self):
+        """
+        Verifies that _parse_json_from_llm parses JSON with unescaped newlines and markdown fences,
+        and that generate_conversational_response avoids looping back to the Irene Leong greeting.
+        """
+        from app.services.llm import _parse_json_from_llm
+        import app.services.agent_logic as al
+
+        # 1. Test unescaped newlines inside JSON string (RFC 8259 violation produced by LLMs)
+        raw_llm_with_unescaped_newlines = (
+            '{\n'
+            '  "intent": "tenant",\n'
+            '  "lead_temperature": "Hot",\n'
+            '  "response": "Hello Dr. Azman,\n\nI have received your rental request for Temerloh near HOSHAS.\nWe will check available terrace houses for you."\n'
+            '}'
+        )
+        parsed = _parse_json_from_llm(raw_llm_with_unescaped_newlines)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.get("intent"), "tenant")
+        self.assertIn("HOSHAS", parsed.get("response", ""))
+
+        # 2. Test markdown-fenced JSON
+        raw_markdown = f"```json\n{raw_llm_with_unescaped_newlines}\n```"
+        parsed_md = _parse_json_from_llm(raw_markdown)
+        self.assertIsNotNone(parsed_md)
+        self.assertEqual(parsed_md.get("intent"), "tenant")
+
+        # 3. Test generate_conversational_response fallback behavior
+        from unittest.mock import MagicMock, patch
+        mock_choice = MagicMock()
+        mock_choice.message.content = raw_llm_with_unescaped_newlines
+        mock_res = MagicMock()
+        mock_res.choices = [mock_choice]
+
+        with patch.object(al.llm_client.chat.completions, "create", return_value=mock_res):
+            res = al.generate_conversational_response(
+                text="I want a terrace house in Temerloh",
+                contact_info={},
+                conversation_history="User: Hi\nAI: Good day! How can I help?"
+            )
+            self.assertEqual(res.get("intent"), "tenant")
+            self.assertIn("HOSHAS", res.get("response"))
+
+        # 4. Test that severe failure with conversation history does NOT return the first-contact greeting
+        with patch.object(al.llm_client.chat.completions, "create", side_effect=RuntimeError("vLLM timeout")):
+            res_fail = al.generate_conversational_response(
+                text="I want a terrace house in Temerloh",
+                contact_info={},
+                conversation_history="User: Hi\nAI: Good day! How can I help?"
+            )
+            self.assertNotIn("I'm Irene Leong, a Senior Property Agent from ERA Realtor", res_fail.get("response"))
+            self.assertIn("follow up", res_fail.get("response"))
+
+
 if __name__ == "__main__":
     unittest.main()
