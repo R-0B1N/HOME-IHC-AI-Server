@@ -1,0 +1,52 @@
+AI Product Design: WhatsApp & n8n Integration
+1. Project Overview
+	•	Project Name: Real Estate WhatsApp AI CRM Automation (n8n + pCloud)
+	•	Date: [Insert Date]
+	•	Objective: Build an AI-assisted WhatsApp lead-management system where n8n orchestrates inbound message capture, lead classification, automated follow-ups, viewing workflows (PDF generation + send), document archiving in pCloud
+	•	AI can connect to filter and identify buyer , seller, buyer + owner, broker, agents, bank valuer id
+	•	AI can direct access to appointed access file – into P cloud, reply buyer msg and send photos & video to right buyer after filter AI can direct send the check list to owner 
+Send the festival greeting message / birthday buyer, buyer + seller , seller 
+
+Create the customer prop acknow form , follow up schedule as I mentioned CY 
+
+2. Problem Statement & Vision
+	•	Current Pain Point: 
+	•	Leads arrive in WhatsApp and must be manually triaged (buyer vs owner vs agent vs valuer), causing slow response times and inconsistent tagging.
+	•	Follow-ups are missed or delayed because reminders aren’t system-driven (hot/warm/cooling nurturing isn’t enforced).
+	•	Viewing documents (proposal letters) and valuation notes are scattered in chat histories instead of being centrally stored and reportable.
+	•	Product Vision: An AI-driven WhatsApp assistant that:
+	•	Instantly replies to inbound whatsapp messages,
+	•	Classifies the lead into one of four roles (Agent/Broker, Potential Buyer, Owner, Bank Valuer),
+	•	Writes/updates the lead record in a central database (Airtable or Google Sheets),
+	•	Creates and maintains a structured lead folder in pcloud,
+	•	Runs automated buyer follow-up tracks (hot/warm/cooling),
+	•	Supports viewing workflows (pre-view PDF proposal + post-view segmentation + nearest listings),
+	•	Generates weekly PDF summaries and logs valuer “Bank Value vs Selling Price on website” same areas within 10km 
+3. Target Use Cases (MVP)
+	•	Use Case 1: Inbound lead capture + AI classification
+When a message arrives, the system classifies the lead as: Agent/Broker | Potential Buyer | Owner | Bank Valuer, stores contact + metadata in Airtable/Google Sheets, and creates a LeadID folder in pCloud for documents and history.
+	•	Use Case 2: Automated buyer nurturing tracks (Hot / Warm / Cooling)
+	•	For Potential Buyers, assign a track and automatically schedule reminders:
+Hot: every 1–7 days
+Warm: every 7–14 days
+Cooling: every 14 days
+	•	n8n runs a daily scheduled workflow to find leads whose NextFollowUpAt <= now() and sends the WhatsApp follow-up.
+	•	Use Case 3: Viewing workflow (pre-view PDF + post-view segmentation)
+	•	Pre-viewing: auto-generate a Customer Proposal Letter (PDF), archive it in pCloud, and send it to the customer on WhatsApp.
+	•	Post-viewing tracking:
+Segment A (High Interest): follow-up at 24–72 hours
+Segment B (Thinking): follow-up at 4–7 days and attach “Nearest Listings” pulled from the database
+4. Technical Architecture & Data Flow
+	•	Trigger: WhatsApp Business API (Cloud API) receives a user message.
+	•	Processing (n8n): Webhook catches the message -> n8n orchestrates the workflow -> Sends message to AI model.
+	•	AI Engine: [Specify LLM, e.g., OpenAI / Gemini / Anthropic] processes intent and generates a response.
+	•	Action: n8n sends the generated response back to the user via WhatsApp API.
+5. Technical Requirements & Prerequisites
+	•	Meta Developer Account & WhatsApp Business API access.
+	•	n8n instance (Cloud or Self-hosted) with active webhook URLs.
+	•	API keys for the chosen LLM.
+	•	Database/CRM access keys (if saving conversation data).
+6. Security & Privacy Constraints
+	•	Data redaction for Personally Identifiable Information (PII) before hitting the AI model.
+	•	Compliance with WhatsApp's opt-in and 24-hour messaging window rules.
+

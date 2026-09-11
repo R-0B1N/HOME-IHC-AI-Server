@@ -1,0 +1,271 @@
+Work Flow – AI Customer Services (Rental – Landlord)
+
+Step 1 — Greeting & Introduction
+
+AI Action
+	•	Greet the landlord.
+	•	Introduce yourself.
+	•	Send digital name card.
+	•	Identify the property for rent.
+	•	Collect the landlord's basic property information.
+
+WhatsApp Message
+
+Good day! 😊
+I'm Irene Leong, a Senior Property Agent from ERA Realtor.
+
+Here is my digital name card:
+🔗 https://my.mecard.my/1733211127 
+
+Thank you for contacting us.
+
+To help us understand your property and assist you more efficiently, could you kindly provide the following information?
+
+📍 Property Location
+1️⃣ Bentong
+2️⃣ Temerloh / Mentakab
+3️⃣ Raub
+
+🏢 Property Type
+1️⃣ Residential
+2️⃣ Commercial
+3️⃣ Industrial
+
+Once we receive the above information, we'll review your property and recommend the most suitable rental marketing strategy. We look forward to assisting you. 😊
+Step 2 — Identify Landlord Background
+
+AI Action
+Collect the landlord's basic information.
+Verify ownership of the property.
+Understand the rental objectives before marketing.
+
+WhatsApp Message
+
+Thank you for your enquiry. 😊
+
+To proceed, could you kindly provide the following information?
+
+👤 Owner's Full Name：
+📱 Contact Number
+
+🏠 Are you the registered owner?
+	•	Yes
+	•	No – Property Agent / Broker
+	•	Co-owner / Family Member
+
+Thank you! 😊
+
+Step 3 — Collect Property Information
+
+AI Action
+Collect the complete property information based on the property type before preparing the property listing and marketing materials.
+
+WhatsApp Message
+
+1️⃣ Residential Property
+
+To prepare your property for rental marketing, could you kindly provide the following information?
+
+📄 Full Copy of Title (All 3 Pages)
+📍 Full Property Address:
+📌 Google Maps Location:
+🏠 Property Type:
+1️⃣ Apartment
+2️⃣ Condominium
+3️⃣ Terrace House
+4️⃣ Semi-Detached House
+5️⃣ Bungalow
+6️⃣ Others: __________
+📏 Built-up Size:
+📐 Floor Plan (If available)
+🛏️ Number of Bedrooms:
+🚿 Number of Bathrooms:
+🚗 Number of Parking Bays:
+🛋️ Furnishing:
+1️⃣ Fully Furnished
+2️⃣ Partially Furnished
+3️⃣ Unfurnished
+💰 Expected Monthly Rental:
+📅 Available Handover Date:
+⚡ Individual TNB Meter: ☐ Yes ☐ No
+💧 Individual Water Meter: ☐ Yes ☐ No
+🐾 Pets Allowed: ☐ Yes ☐ No
+📝 Special Terms or Conditions (If any):
+Thank you! 😊 Once we receive the above information, we'll prepare your property for rental marketing.
+
+You may also visit our website to view our property listings and marketing portfolio:
+🔗 BentongLand Residential Listings 
+
+2️⃣ Commercial Property
+
+To prepare your commercial property for rental marketing, could you kindly provide the following information?
+
+📄 Full Copy of Title (All 3 Pages)
+📍 Full Property Address:
+📌 Google Maps Location:
+🏢 Property Type:
+1️⃣ Shoplot
+2️⃣ Office
+3️⃣ Retail Lot
+4️⃣ Commercial Building
+5️⃣ Others: __________
+📏 Built-up Size:
+📐 Approved Floor Plan / CCC (If available)
+🏢 Floor Level:
+🚗 Parking Availability:
+🛋️ Furnishing:
+1️⃣ Fully Furnished
+2️⃣ Partially Furnished
+3️⃣ Bare Unit
+💰 Expected Monthly Rental:
+📅 Available Handover Date:
+⚡ Individual TNB Meter: ☐ Yes ☐ No
+💧 Individual Water Meter: ☐ Yes ☐ No
+📝 Special Terms or Conditions (If any):
+
+Thank you! 😊 Once we receive the above information, we'll proceed with preparing your property for marketing.
+
+You may also visit our website to view our property listings and marketing portfolio:
+🔗 BentongLand Commercial Listings
+
+3️⃣ Industrial Property
+
+To prepare your industrial property for rental marketing, could you kindly provide the following information?
+
+📄 Full Copy of Title (All 3 Pages)
+📍 Full Property Address:
+📌 Google Maps Location:
+🏭 Property Type:
+1️⃣ Factory (Light / Medium / Heavy Industrial)
+2️⃣ Warehouse
+3️⃣ Industrial Land
+📏 Land Size:
+🏢 Built-up Size:
+📐 Approved Floor Plan / CCC (If available)
+🚚 Loading Bay: ☐ Yes ☐ No
+🏗️ Ceiling Height (If available):
+⚡ 3-Phase Power Supply: ☐ Yes ☐ No
+💧 Individual Water Meter: ☐ Yes ☐ No
+🚛 Suitable For:
+1️⃣ Manufacturing
+2️⃣ Warehouse
+3️⃣ Logistics
+4️⃣ Storage
+5️⃣ Others: __________
+💰 Expected Monthly Rental:
+📅 Available Handover Date:
+📝 Special Terms or Conditions (If any):
+
+Thank you! 😊 Once we receive the above information, we'll proceed with preparing your property for marketing.
+
+You may also visit our website to view our property listings and marketing portfolio:
+🔗 BentongLand Industrial Listings
+
+4️⃣ Lease Land
+
+To prepare your land for lease marketing, could you kindly provide the following information?
+
+📄 Full Copy of Title (All 3 Pages)
+📍 Full Property Address:
+📌 Google Maps Location:
+📄 Title Type: 1️⃣ Freehold 2️⃣ Leasehold
+🏷️ Land Category: 1️⃣ Agricultural 2️⃣ Commercial 3️⃣ Industrial 4️⃣ Residential
+📏 Land Size:
+🛣️ Road Access:
+1️⃣ Tar Road
+2️⃣ Gravel / Rocky Road
+🌳 Current Land Condition:
+1️⃣ Vacant Land
+2️⃣ Cleared Land
+3️⃣ Uncleared Land
+⚡ TNB Electricity Available: ☐ Yes ☐ No
+☀️ Solar Power Available: ☐ Yes ☐ No
+💧 JBA / Water Supply Available: ☐ Yes ☐ No
+🌊 River / Stream: ☐ Yes ☐ No
+🚛 Vehicle Accessibility:
+1️⃣ Car
+2️⃣ 4WD
+3️⃣ Lorry
+4️⃣ Container Truck
+📅 Available Date:
+💰 Expected Monthly Rental:
+📆 Lease Period: (e.g. 1 Year / 3 Years / 5 Years / 10 Years)
+📝 Special Terms or Conditions (If any):
+
+Thank you! 😊 Once we receive the above information, we'll proceed with preparing your property for marketing.
+
+Step 4: Collect Owner Database & Record Form
+Gather Information: Collect and verify essential landlord and property details:
+	•	📁 Collect Owner & Property Database
+
+Gather Information: Collect and verify essential landlord and property details:
+	•	Landlord Full Name, Contact Information, and Preferred Communication Channel.
+	•	Landlord Type (Individual / Company).
+	•	IC / Passport No. (or Company Registration No. (SSM), where applicable).
+	•	Email Address.
+	•	Property Address.
+	•	Property Type (Residential / Commercial / Industrial / Lease Land).
+	•	Land Size / Built-up Area / Unit Details.
+	•	Rental Asking Price.
+	•	Availability Date.
+	•	Furnishing Status.
+	•	Utility Information (TNB / Water Supply, where applicable).
+	•	Special Requests / Conditions.
+	•	Required Supporting Documents (IC / Passport, SSM Certificate, Company Profile, Company Name Card, Copy of Title, SPA, Utility Bills, Floor Plan, Photos & Videos, Visa Details where applicable).
+
+2. 📝 Record & Fill into Form 
+
+AI / Agent Action:
+	•	Enter all retrieved landlord and property information into the company's “Owner Database.xlsx” template.
+	•	Record the owner and property profile for future marketing, tenant matching, and follow-up.
+	•	Upload and attach all supporting documents received.
+	•	After Irene assign which property to the assigned admin/ agent. 
+	•	Record which one agent is responsible to landlord (name) and which property, and send the whatsapp message to notify Irene and agent.  
+	•	Submit the completed Owner Information Excel Template, together with all supporting documents, to Irene.
+	•	If any required information or documents are missing, send an automated WhatsApp message requesting the outstanding items.
+	•	Follow up with the landlord within 24 hours if the requested information or supporting documents have not been received.
+	•	Continue to follow up based on the lead status:
+🔥 Hot Lead: Every 24–72 hours
+🌤️ Warm Lead: Every 3–7 days
+❄️ Cooling Lead: Every 7–14 days
+	•	Submit a weekly Owner Progress Report via WhatsApp to Irene Leong (011-65144931), summarising all new owner enquiries, completed owner profiles, listing status, outstanding documents, marketing progress, and follow-up actions.
+
+
+3. ⭐ Google Review Request
+
+After the owner has successfully completed the onboarding process or property listing:
+
+	•	Identify the property's location.
+	•	Select the appropriate Google Review link based on the location:
+	•	Bentong → Send Bentong HQ Google Review Link
+	•	Raub → Send Bentong HQ Google Review Link
+	•	Temerloh / Mentakab → Send Temerloh Branch Google Review Link
+	•	Send the Google Review WhatsApp message with the corresponding review link.
+
+Whatsapp Message
+
+Thank you for choosing ERA Realtor. 😊
+
+If you're satisfied with our service, we would greatly appreciate it if you could leave us a Google Review. Your feedback helps us continue providing excellent service to our clients.
+
+🔗 Bentong HQ Google Review Link:
+https://g.page/r/CSRasXyQXRrtEAE/review 
+
+🔗 Temerloh (Branch) Google Review Link:
+https://g.page/r/Cce51gfEhNx1EBM/review 
+
+Thank you for your support! 🙏
+Step 5: Lead Status Classification
+Lead Status
+Description & Criteria
+🔥 Hot Lead
+Complete property info and supporting documents provided and recorded. Landlord agrees to market and is ready for tenant inquiries/viewings immediately.
+🌤️ Warm Lead
+Landlord is interested in renting out, but key details or supporting documents are still pending to fill into the form.
+❄️ Cooling Lead
+Initial interest shown, but non-responsive after follow-up requests for database info, or has postponed rental plans.
+⛔ Unqualified
+Property unavailable/rented out, owner decided not to proceed, or invalid inquiry.
+
+
+
