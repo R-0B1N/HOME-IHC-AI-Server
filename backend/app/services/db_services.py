@@ -167,7 +167,28 @@ def search_properties(criteria: dict, limit: int = 10) -> list:
             except (ValueError, TypeError):
                 pass
                 
-        results = query.order_by(Property.last_updated_at.desc()).limit(limit).all()
+        # In-DB pgvector cosine distance ranking if query_text is present
+        query_text = criteria.get("query_text") or criteria.get("raw_text")
+        vector_ordered = False
+        if query_text:
+            try:
+                from app.services.embeddings import generate_embedding
+                q_vec = generate_embedding(str(query_text))
+                if q_vec is not None:
+                    try:
+                        # Utilize PostgreSQL pgvector <=> cosine distance operator
+                        query = query.filter(Property.embedding_overview.isnot(None))
+                        query = query.order_by(Property.embedding_overview.op('<=>')(q_vec))
+                        vector_ordered = True
+                    except Exception as vec_err:
+                        logger.warning(f"In-DB vector search sort fallback: {vec_err}")
+            except Exception as emb_err:
+                logger.warning(f"Vector embedding generation fallback: {emb_err}")
+
+        if not vector_ordered:
+            query = query.order_by(Property.last_updated_at.desc())
+
+        results = query.limit(limit).all()
         return [
             {
                 "id": str(p.id),

@@ -864,3 +864,51 @@ def process_whatsapp_message(self, payload: dict):
     except Exception as exc:
         logger.error(f"Error processing WhatsApp message: {exc}")
         raise self.retry(exc=exc, countdown=2 ** self.request.retries)
+
+
+@celery_app.task(bind=True, max_retries=2)
+def run_lead_nurturing_daemon(self):
+    """
+    Accelerated lead nurturing daemon.
+    Delegates to LeadNurturingManager OOP service layer.
+    Periodically scans leads by temperature (Hot: 24h-72h, Warm: 3-7d, Cold: 7-14d).
+    Strictly observes the Meta WhatsApp 24-hour customer care messaging window:
+    - If customer interacted <= 24 hours ago: can send direct follow-up message via Chatwoot.
+    - If customer interacted > 24 hours ago: free-form WhatsApp messages are prohibited;
+      posts a private note in Chatwoot for human agent intervention or template dispatch.
+    """
+    from app.services.lead_nurturing import LeadNurturingManager
+    logger.info("Starting lead nurturing daemon run via LeadNurturingManager...")
+    try:
+        manager = LeadNurturingManager(
+            db_session=SessionLocal(),
+            message_sender=send_message,
+            note_sender=send_private_note
+        )
+        result = manager.run_cycle()
+        logger.info(f"Completed lead nurturing daemon run: {result}")
+        return result
+    except Exception as exc:
+        logger.error(f"Error in lead nurturing daemon: {exc}")
+        raise self.retry(exc=exc, countdown=60)
+
+
+@celery_app.task(bind=True, max_retries=2)
+def generate_and_send_weekly_reports(self, output_dir: str = None):
+    """
+    Weekly Celery Beat task to compile and archive Buyer Database.xlsx and Owner Database.xlsx.
+    """
+    logger.info("Executing weekly database reporting task...")
+    try:
+        from app.services.reporting import generate_weekly_database_reports, DEFAULT_REPORTS_DIR
+        target_dir = output_dir or DEFAULT_REPORTS_DIR
+        reports = generate_weekly_database_reports(output_dir=target_dir)
+        logger.info(f"Successfully generated weekly reports: {reports}")
+        return {
+            "status": "success",
+            "reports": reports
+        }
+    except Exception as exc:
+        logger.error(f"Failed to generate weekly reports: {exc}")
+        raise self.retry(exc=exc, countdown=120)
+

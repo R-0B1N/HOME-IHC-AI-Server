@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \
     ffmpeg \
+    libreoffice-writer-nogui \
     && rm -rf /var/lib/apt/lists/*
 
 # Install python dependencies

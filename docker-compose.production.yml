@@ -59,7 +59,32 @@ services:
     restart: unless-stopped
     command: celery -A app.worker.celery_app worker --pool=threads --concurrency=10 --loglevel=info
     env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app
+      - REDIS_HOST=whatsapp_ai_redis_production
+      - REDIS_PORT=6379
+      - DB_HOST=crm-postgres
+      - DB_USER=${POSTGRES_USER}
+      - DB_PASSWORD=${POSTGRES_PASSWORD}
+      - DB_NAME=${POSTGRES_DB}
+      - CHATWOOT_BASE_URL=http://crm-chatwoot-web:3000
+      - CHATWOOT_API_TOKEN=E8wuqP3YDvyPXYwoQcTXLnTT
+      - OLLAMA_BASE_URL=http://crm-vllm:8000
+    depends_on:
+      - redis_production
+    networks:
+      - prod_net
+      - crm_network
 
+  beat_production:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: whatsapp_ai_beat_production
+    restart: unless-stopped
+    command: celery -A app.worker.celery_app beat --loglevel=info
+    env_file:
       - .env
     environment:
       - PYTHONPATH=/app

@@ -310,6 +310,23 @@ def send_whatsapp_template(inbox_id: int, to_phone: str, template_name: str, par
             logger.error(f"Response: {e.response.text}")
         return None
 
+def get_conversation_details(conversation_id: int) -> dict:
+    """
+    Fetches detailed metadata for a conversation from Chatwoot API.
+    """
+    url = f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}"
+    headers = {
+        "api_access_token": CHATWOOT_API_TOKEN,
+        "Content-Type": "application/json"
+    }
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to get conversation {conversation_id} details: {e}")
+        return {}
+
 def get_conversation_messages(conversation_id: int) -> list:
     """
     Fetches the last messages from the Chatwoot conversation.

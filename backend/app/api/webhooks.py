@@ -211,6 +211,170 @@ async def chatwoot_webhook(request: Request):
         logger.info(f"Ignoring webhook, not a message_created event (was {event_name})")
         return {"status": "ignored", "reason": "not a message_created event"}
         
+    # Intercept Private Note Agent Commands (e.g., /acknowledgement or /transcript)
+    is_private = payload.get("private") is True
+    content = (payload.get("content") or "").strip()
+    conversation = payload.get("conversation", {})
+    conversation_id = conversation.get("id")
+
+    if is_private and conversation_id and (content.startswith("/acknowledgement") or content.startswith("/transcript") or content.startswith("/reset")):
+        logger.info(f"Agent command detected in private note for conv {conversation_id}: {content}")
+        try:
+            if content.startswith("/acknowledgement"):
+                from app.services.acknowledgement import generate_viewing_acknowledgement, get_sample_acknowledgement_data
+                from app.services.chatwoot import send_private_note, send_message_with_attachment
+                from app.db.models import SessionLocal, Customer
+                
+                args = content.split()
+                should_send_customer = "send" in args
+                
+                contact_info = conversation.get("meta", {}).get("sender", {}) or payload.get("sender", {})
+                phone = contact_info.get("phone_number") or ""
+                cust_name = contact_info.get("name") or "Customer"
+                
+                ack_data = get_sample_acknowledgement_data()
+                if cust_name:
+                    ack_data["customer_name"] = cust_name
+                    ack_data["customer_signer"] = cust_name
+                if phone:
+                    ack_data["phone"] = phone
+                
+                if phone:
+                    clean_phone = phone.replace("+", "").replace(" ", "").replace("-", "")
+                    try:
+                        db = SessionLocal()
+                        try:
+                            cust = db.query(Customer).filter((Customer.id == clean_phone) | (Customer.id.like(f"%{clean_phone}%"))).first()
+                            if cust and cust.metadata_json:
+                                meta = cust.metadata_json
+                                if meta.get("location"): ack_data["target_location"] = meta["location"]
+                                if meta.get("budget"): ack_data["remarks"] = f"Budget: {meta['budget']}"
+                                if meta.get("property_type"): ack_data["property_types"] = [meta["property_type"]]
+                        finally:
+                            db.close()
+                    except Exception as dbe:
+                        logger.warning(f"Could not load customer from DB for acknowledgement: {dbe}")
+                
+                res = generate_viewing_acknowledgement(ack_data)
+                docx_path = res["docx_path"]
+                pdf_path = res.get("pdf_path")
+                form_no = res["form_no"]
+                
+                if should_send_customer:
+                    dispatch_path = pdf_path if pdf_path and os.path.exists(pdf_path) else docx_path
+                    mime = "application/pdf" if dispatch_path.endswith(".pdf") else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    filename = os.path.basename(dispatch_path)
+                    with open(dispatch_path, "rb") as f:
+                        file_bytes = f.read()
+                    
+                    send_message_with_attachment(
+                        conversation_id=conversation_id,
+                        content=f"Dear {cust_name}, here is your Customer Property Viewing Acknowledgement (Form No: {form_no}). Please review prior to our appointment. 😊",
+                        file_name=filename,
+                        file_content=file_bytes,
+                        content_type=mime
+                    )
+                    send_private_note(
+                        conversation_id,
+                        f"✅ **Acknowledgement Form {form_no} Dispatched to Customer via WhatsApp.**\nFile: `{filename}`"
+                    )
+                else:
+                    note_msg = (
+                        f"📄 **Customer Property Viewing Acknowledgement Generated**\n\n"
+                        f"• **Form No**: {form_no}\n"
+                        f"• **Customer**: {cust_name} ({phone})\n"
+                        f"• **DOCX**: `{docx_path}`\n"
+                        f"• **PDF**: `{pdf_path or 'Server-side headless converter'}`\n\n"
+                        f"💡 *To dispatch directly to customer on WhatsApp, reply with: `/acknowledgement send`*"
+                    )
+                    send_private_note(conversation_id, note_msg)
+                return {"status": "command_executed", "command": "/acknowledgement"}
+
+            elif content.startswith("/transcript"):
+                from app.services.transcript import generate_conversation_transcript_pdf
+                from app.services.chatwoot import send_private_note, send_message_with_attachment
+                
+                args = content.split()
+                should_send_customer = "send" in args
+                pdf_bytes, filename = generate_conversation_transcript_pdf(conversation_id)
+                
+                if should_send_customer:
+                    send_message_with_attachment(
+                        conversation_id=conversation_id,
+                        content="Here is a verified PDF transcript of our WhatsApp conversation for your records. 😊",
+                        file_name=filename,
+                        file_content=pdf_bytes,
+                        content_type="application/pdf"
+                    )
+                    send_private_note(
+                        conversation_id,
+                        f"📄 **Conversation Transcript {filename} dispatched to customer via WhatsApp.**"
+                    )
+                else:
+                    send_private_note(
+                        conversation_id,
+                        f"📄 **Conversation Transcript Generated**\n\n"
+                        f"• File: `{filename}` ({len(pdf_bytes):,} bytes)\n\n"
+                        f"💡 *To dispatch directly to customer on WhatsApp, reply with: `/transcript send`*"
+                    )
+                return {"status": "command_executed", "command": "/transcript"}
+
+            elif content.startswith("/reset"):
+                from app.services.session_manager import SessionManager
+                from app.services.chatwoot import send_private_note
+                from app.db.models import SessionLocal, Customer
+                
+                contact_info = conversation.get("meta", {}).get("sender", {}) or payload.get("sender", {})
+                phone = contact_info.get("phone_number") or ""
+                
+                # 1. Reset Redis Session
+                try:
+                    if phone:
+                        SessionManager.reset_session(phone)
+                        clean_phone = phone.replace("+", "").replace(" ", "").replace("-", "")
+                        SessionManager.reset_session(clean_phone)
+                    redis_client.delete(f"convo_active_{conversation_id}")
+                    redis_client.delete(f"convo_queue_{conversation_id}")
+                except Exception as rerr:
+                    logger.warning(f"Could not clear Redis session (Redis may be offline): {rerr}")
+                
+                # 2. Reset Customer bypass_ai and collected state in DB
+                try:
+                    db = SessionLocal()
+                    try:
+                        if phone:
+                            clean_p = phone.replace("+", "").replace(" ", "").replace("-", "")
+                            cust = db.query(Customer).filter((Customer.id == clean_p) | (Customer.id.like(f"%{clean_p}%"))).first()
+                            if cust:
+                                meta = dict(cust.metadata_json or {})
+                                meta["bypass_ai"] = False
+                                meta["lead_temp"] = "Warm"
+                                meta["collected_data"] = {}
+                                cust.metadata_json = meta
+                                db.commit()
+                    finally:
+                        db.close()
+                except Exception as dbe:
+                    logger.warning(f"Error resetting customer in DB: {dbe}")
+                
+                send_private_note(
+                    conversation_id,
+                    "🔄 **Session & AI State Reset Complete**\n\n"
+                    "• Redis session state cleared.\n"
+                    "• `bypass_ai` flag reset to `False` (AI re-enabled).\n"
+                    "• Next customer message will be treated as a fresh conversation."
+                )
+                return {"status": "command_executed", "command": "/reset"}
+
+        except Exception as cmd_err:
+            logger.error(f"Failed to execute agent command '{content}': {cmd_err}")
+            from app.services.chatwoot import send_private_note
+            try:
+                send_private_note(conversation_id, f"⚠️ Failed to execute command `{content}`: {cmd_err}")
+            except Exception:
+                pass
+            return {"status": "command_error", "error": str(cmd_err)}
+
     message_type = payload.get("message_type")
     # message_type == "incoming" means incoming message from customer
     if message_type != "incoming" and message_type != 0:

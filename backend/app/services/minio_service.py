@@ -1,8 +1,16 @@
 import os
-import boto3
-from botocore.exceptions import ClientError
-from botocore.client import Config
 import logging
+
+try:
+    import boto3
+    from botocore.exceptions import ClientError
+    from botocore.client import Config
+    HAS_BOTO3 = True
+except ImportError:
+    boto3 = None
+    ClientError = Exception
+    Config = None
+    HAS_BOTO3 = False
 
 logger = logging.getLogger(__name__)
 
@@ -11,34 +19,40 @@ MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
 MINIO_BUCKET_NAME = os.getenv("MINIO_BUCKET_NAME", "whatsapp-media")
 
-# Initialize boto3 client for MinIO
-s3_client = boto3.client(
-    's3',
-    endpoint_url=MINIO_ENDPOINT,
-    aws_access_key_id=MINIO_ACCESS_KEY,
-    aws_secret_access_key=MINIO_SECRET_KEY,
-    config=Config(signature_version='s3v4'),
-    region_name='us-east-1' # dummy region
-)
+# Initialize boto3 client for MinIO if available
+s3_client = None
+if HAS_BOTO3:
+    try:
+        s3_client = boto3.client(
+            's3',
+            endpoint_url=MINIO_ENDPOINT,
+            aws_access_key_id=MINIO_ACCESS_KEY,
+            aws_secret_access_key=MINIO_SECRET_KEY,
+            config=Config(signature_version='s3v4') if Config else None,
+            region_name='us-east-1' # dummy region
+        )
+    except Exception as e:
+        logger.warning(f"Could not initialize MinIO S3 client: {e}")
 
 def _ensure_bucket_exists():
+    if not s3_client:
+        return
     try:
         s3_client.head_bucket(Bucket=MINIO_BUCKET_NAME)
-    except ClientError as e:
-        error_code = e.response.get('Error', {}).get('Code')
+    except Exception as e:
+        error_code = getattr(e, 'response', {}).get('Error', {}).get('Code') if hasattr(e, 'response') else None
         if error_code == '404':
             # Create bucket
             logger.info(f"Bucket {MINIO_BUCKET_NAME} does not exist. Creating...")
             s3_client.create_bucket(Bucket=MINIO_BUCKET_NAME)
-            # Make it private by default (which it is)
         else:
-            logger.error(f"Error checking/creating bucket {MINIO_BUCKET_NAME}: {e}")
+            logger.warning(f"MinIO bucket check deferred: {e}")
 
-# Ensure bucket is created on module load
+# Ensure bucket is created on module load if available
 try:
     _ensure_bucket_exists()
 except Exception as e:
-    logger.error(f"Failed to ensure bucket exists on startup: {e}")
+    logger.warning(f"Failed to ensure bucket exists on startup: {e}")
 
 def upload_media(file_data: bytes, object_name: str, content_type: str = "application/octet-stream") -> str:
     """

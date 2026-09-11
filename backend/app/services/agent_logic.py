@@ -44,13 +44,16 @@ def check_completeness(persona: str, collected_data: dict) -> float:
     return filled / len(required)
 
 
-def process_persona_state_machine(phone_number: str, text: str, session: dict, conversation_history: str = "", contact_name: str = None) -> dict:
+def process_persona_state_machine(phone_number: str, text: str = "", session: dict = None, conversation_history: str = "", contact_name: str = None, raw_text: str = None, **kwargs) -> dict:
     """
     Enterprise-standard Conversational AI Engine for Home IHC.
     Engages naturally, provides on-demand property specs, dispatches native WhatsApp photos,
     suggests similar properties, and prevents premature handovers.
     """
-    raw_text = (text or "").strip()
+    if session is None:
+        session = {}
+    actual_text = (text or raw_text or "").strip()
+    raw_text = actual_text
     collected_data = session.setdefault("collected_data", {})
 
     # Auto-reset session if in completed/stale state
@@ -280,11 +283,25 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict, c
     }
 
 
-def generate_conversational_response(text: str, cached_property: dict, available_properties: list, conversation_history: str, collected_data: dict, customer_name: str = None, unlisted_property_text: str = None) -> dict:
+def generate_conversational_response(
+    text: str = "",
+    cached_property: dict = None,
+    available_properties: list = None,
+    conversation_history: str = "",
+    collected_data: dict = None,
+    customer_name: str = None,
+    unlisted_property_text: str = None,
+    contact_info: dict = None,
+    **kwargs
+) -> dict:
     """
     Calls LLM to generate a natural, empathetic, human-like response as Irene Leong from ERA Realtor representing Home IHC.
     Performs simultaneous silent background data extraction and multilingual Malaysian dialect comprehension.
     """
+    if collected_data is None:
+        collected_data = {}
+    if available_properties is None:
+        available_properties = []
     prop_context = ""
     if cached_property:
         prop_context = f"""
@@ -423,7 +440,7 @@ Output JSON format strictly:
     except Exception as e:
         logger.error(f"Error calling LLM for conversational response: {e}")
         if conversation_history:
-            fallback_msg = "Thank you for sharing your requirements! For this area, our rental listings are primarily sourced off-market directly from landlords. Could you let me know if you are open to nearby locations as well, or if you prefer strictly within 5 km?"
+            fallback_msg = "Thank you for sharing your requirements! For this area, our rental listings are primarily sourced off-market directly from landlords. Our team will follow up with suitable options. Could you let me know if you are open to nearby locations as well, or if you prefer strictly within 5 km?"
         else:
             fallback_msg = "Good day! 😊 I'm Irene Leong, a Senior Property Agent from ERA Realtor. How may Home IHC assist you with properties in Pahang today?"
         return {

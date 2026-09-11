@@ -1,0 +1,286 @@
+{
+  "timestamp": "2026-09-11T15:34:34.539124+00:00",
+  "total_scenarios": 7,
+  "passed_scenarios": 7,
+  "failed_scenarios": 0,
+  "pass_rate_percent": 100.0,
+  "total_latency_ms": 9.55,
+  "scenarios": [
+    {
+      "scenario_id": "SCENARIO-01-BUYER",
+      "name": "Buyer Qualification & Durian Land Criteria Matching",
+      "persona": "Buyer",
+      "passed": true,
+      "latency_ms": 0.01,
+      "turns_executed": 2,
+      "error": null,
+      "assertions_count": 4,
+      "assertions_passed": 4,
+      "assertions": [
+        {
+          "name": "Persona Intent Identification",
+          "expected": "buyer",
+          "actual": "buyer",
+          "passed": true,
+          "details": "Identified as Buyer persona."
+        },
+        {
+          "name": "Data Completeness Ratio",
+          "expected": ">= 0.80",
+          "actual": "1.00",
+          "passed": true,
+          "details": "Collected 5/5 required qualification fields (100%)."
+        },
+        {
+          "name": "Lead Temperature Calculation",
+          "expected": "Hot",
+          "actual": "Hot",
+          "passed": true,
+          "details": "Qualified buyer with >= 80% completeness correctly classified as Hot lead."
+        },
+        {
+          "name": "Interested Property Tracking",
+          "expected": "True",
+          "actual": "True",
+          "passed": true,
+          "details": "Tracked property interest: '5 Acres Karak Musang King Farm'."
+        }
+      ],
+      "metadata": {
+        "completeness_ratio": 1.0,
+        "lead_temp": "Hot"
+      }
+    },
+    {
+      "scenario_id": "SCENARIO-02-SELLER",
+      "name": "Landowner Intake & Anti-Bypassing Verification",
+      "persona": "Seller / Landowner",
+      "passed": true,
+      "latency_ms": 0.0,
+      "turns_executed": 2,
+      "error": null,
+      "assertions_count": 3,
+      "assertions_passed": 3,
+      "assertions": [
+        {
+          "name": "Ownership Verification",
+          "expected": "True",
+          "actual": "True",
+          "passed": true,
+          "details": "Confirmed direct registered landowner status."
+        },
+        {
+          "name": "Asking Price Extraction",
+          "expected": "RM 3,750,000",
+          "actual": "RM 3,750,000 (RM 250k/acre)",
+          "passed": true,
+          "details": "Extracted total asking price and per-acre metric."
+        },
+        {
+          "name": "Anti-Bypassing Agency Representation",
+          "expected": "True",
+          "actual": "True",
+          "passed": true,
+          "details": "AI maintains exclusive representation via Irene Leong (Home IHC Sdn Bhd). Anti-bypassing active."
+        }
+      ],
+      "metadata": {}
+    },
+    {
+      "scenario_id": "SCENARIO-03-TENANT",
+      "name": "Off-Market Rental Inquiry & Tenant Profiling",
+      "persona": "Tenant",
+      "passed": true,
+      "latency_ms": 0.0,
+      "turns_executed": 2,
+      "error": null,
+      "assertions_count": 3,
+      "assertions_passed": 3,
+      "assertions": [
+        {
+          "name": "Persona Intent",
+          "expected": "tenant",
+          "actual": "tenant",
+          "passed": true,
+          "details": "Identified as Tenant persona."
+        },
+        {
+          "name": "Rental Budget Captured",
+          "expected": "RM 1,200 / month",
+          "actual": "RM 1,200 / month",
+          "passed": true,
+          "details": "Captured monthly rental budget."
+        },
+        {
+          "name": "Off-Market Property Routing",
+          "expected": "True",
+          "actual": "True",
+          "passed": true,
+          "details": "Flagged off-market inquiry for internal matching without system failure."
+        }
+      ],
+      "metadata": {}
+    },
+    {
+      "scenario_id": "SCENARIO-04-VALUER",
+      "name": "Bank Valuer Intake & Automated Handover",
+      "persona": "Bank Valuer",
+      "passed": true,
+      "latency_ms": 0.0,
+      "turns_executed": 2,
+      "error": null,
+      "assertions_count": 3,
+      "assertions_passed": 3,
+      "assertions": [
+        {
+          "name": "Valuer Intent",
+          "expected": "bank valuer",
+          "actual": "bank valuer",
+          "passed": true,
+          "details": "Identified as Bank Valuer persona."
+        },
+        {
+          "name": "Lot & Mukim Extraction",
+          "expected": "Lot 1234, Mukim Sabai",
+          "actual": "Lot 1234, Mukim Sabai, Bentong, Pahang",
+          "passed": true,
+          "details": "Correctly parsed legal lot number and mukim."
+        },
+        {
+          "name": "Senior Agent Handover Triggered",
+          "expected": "True",
+          "actual": "True",
+          "passed": true,
+          "details": "Valuer request automatically prioritized and handed over to senior agent."
+        }
+      ],
+      "metadata": {}
+    },
+    {
+      "scenario_id": "SCENARIO-05-DOCS",
+      "name": "Customer Viewing Acknowledgement OpenXML & 22-Field Verification",
+      "persona": "Co-Broke Agent / Legal",
+      "passed": true,
+      "latency_ms": 6.04,
+      "turns_executed": 1,
+      "error": null,
+      "assertions_count": 4,
+      "assertions_passed": 4,
+      "assertions": [
+        {
+          "name": "Form Number Run Verification",
+          "expected": "0777",
+          "actual": "CUSTOMER PROPERTY VIEWING ACKNOWLEDGEMENT \t                                  \t\t      No: 0777",
+          "passed": true,
+          "details": "Found form number in header paragraph: 'CUSTOMER PROPERTY VIEWING ACKNOWLEDGEMENT \t                                  \t\t      No: 0777'."
+        },
+        {
+          "name": "Customer Name in Table 0",
+          "expected": "Dato' Seri Hisham",
+          "actual": "Present in XML",
+          "passed": true,
+          "details": "Customer name correctly populated inside Table 0 Cell 0."
+        },
+        {
+          "name": "Partner Agency Legal Override",
+          "expected": "Reapfield Properties Sdn Bhd",
+          "actual": "I/We acknowledge and confirm that I/We have visited and inspected the abovementioned property/properties through the efforts and services provided by Home IHC Sdn. Bhd. (Company No: 1292422-M) and Reapfield Properties Sdn Bhd. Furthermore, should I/We, my nominee, or a nominated company express interest in purchasing the abovementioned property/properties during the site viewing, it shall still be deemed a sale facilitated by Home IHC Sdn. Bhd. and Reapfield Properties Sdn Bhd. Should I/We, my nominee, or a nominated company in which I/We have an interest or connection, be interested in purchasing any of the abovementioned property/properties, I/We hereby agree not to negotiate directly with the landlord.",
+          "passed": true,
+          "details": "Partner agency accurately overridden in Paragraph 9."
+        },
+        {
+          "name": "OpenXML tblBorders Stabilization",
+          "expected": "True",
+          "actual": "True",
+          "passed": true,
+          "details": "Table 0 contains explicit <w:tblBorders> preventing headless border loss."
+        }
+      ],
+      "metadata": {}
+    },
+    {
+      "scenario_id": "SCENARIO-06-POLICY",
+      "name": "Meta 24-Hour Customer Care Policy Window Enforcement",
+      "persona": "Nurturing Daemon / Policy Guard",
+      "passed": true,
+      "latency_ms": 1.2,
+      "turns_executed": 2,
+      "error": null,
+      "assertions_count": 5,
+      "assertions_passed": 5,
+      "assertions": [
+        {
+          "name": "Customer A Eligibility Evaluation",
+          "expected": "True",
+          "actual": "True",
+          "passed": true,
+          "details": "Customer A evaluated as eligible and within 24-hour window."
+        },
+        {
+          "name": "Customer A Automated Follow-up Dispatch",
+          "expected": "message_sent",
+          "actual": "message_sent",
+          "passed": true,
+          "details": "Automated follow-up message sent within 24h window."
+        },
+        {
+          "name": "Customer B Eligibility Evaluation",
+          "expected": "True",
+          "actual": "True",
+          "passed": true,
+          "details": "Customer B evaluated as eligible but outside 24-hour window."
+        },
+        {
+          "name": "Customer B Meta Policy Block & Private Note",
+          "expected": "private_note_posted",
+          "actual": "private_note_posted",
+          "passed": true,
+          "details": "Free-form message blocked past 24h. Internal private note posted in Chatwoot."
+        },
+        {
+          "name": "Zero Policy Violations",
+          "expected": "True",
+          "actual": "True",
+          "passed": true,
+          "details": "Confirmed zero illegal WhatsApp messages dispatched outside 24h window."
+        }
+      ],
+      "metadata": {}
+    },
+    {
+      "scenario_id": "SCENARIO-07-PARITY",
+      "name": "OpenXML Archive & Excel Schema Parity Verification",
+      "persona": "System Architecture / QA",
+      "passed": true,
+      "latency_ms": 2.12,
+      "turns_executed": 2,
+      "error": null,
+      "assertions_count": 3,
+      "assertions_passed": 3,
+      "assertions": [
+        {
+          "name": "Buyer Excel Generation",
+          "expected": "True",
+          "actual": "True",
+          "passed": true,
+          "details": "Generated 1914 bytes of valid Excel OpenXML archive."
+        },
+        {
+          "name": "Buyer OpenXML Archive Integrity",
+          "expected": "True",
+          "actual": "True",
+          "passed": true,
+          "details": "Contains [Content_Types].xml, workbook.xml, and sheet1.xml."
+        },
+        {
+          "name": "Owner Excel Generation",
+          "expected": "True",
+          "actual": "True",
+          "passed": true,
+          "details": "Generated 1995 bytes of valid Owner Excel archive."
+        }
+      ],
+      "metadata": {}
+    }
+  ]
+}
