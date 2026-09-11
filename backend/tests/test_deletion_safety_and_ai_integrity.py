@@ -391,6 +391,56 @@ class TestDeletionSafetyAndAIIntegrity(unittest.TestCase):
                             f"File {os.path.basename(filepath)} at line {node.lineno} calls chat.completions.create without explicit max_tokens!"
                         )
 
+    def test_option_a_off_market_unlisted_protocol_and_handover_discipline(self):
+        """
+        Verifies Option A: Exploratory interest in unlisted locations does NOT prematurely
+        hand over or overwrite the conversational response, while explicit human requests do.
+        """
+        import app.services.agent_logic as al
+        from unittest.mock import MagicMock, patch
+
+        mock_llm_json = json.dumps({
+            "intent": "tenant",
+            "asked_photos": False,
+            "asked_specs": False,
+            "asked_meeting": False,
+            "asked_alternatives": False,
+            "new_constraints": {"city": "Temerloh", "max_price": 1400},
+            "is_out_of_context": False,
+            "extracted_data": {"location": "Temerloh", "property_type": "Terrace house", "budget": "1400"},
+            "response": "In Temerloh near HOSHAS, terrace house rentals are managed off-market. Would you like our local agent to check unlisted owners for you?"
+        })
+
+        mock_choice = MagicMock()
+        mock_choice.message.content = mock_llm_json
+        mock_res = MagicMock()
+        mock_res.choices = [mock_choice]
+
+        with patch.object(al.llm_client.chat.completions, "create", return_value=mock_res):
+            # 1. Exploratory interest without cached property: NO handover, preserves conversational response
+            session = {"collected_data": {}, "introduced": True}
+            result = al.process_persona_state_machine(
+                phone_number="+60123456789",
+                raw_text="If you have suitable houses, I would be interested in viewing them.",
+                session=session,
+                conversation_history="User: Looking for rent\nAI: Noted.",
+                contact_name="Nick"
+            )
+            self.assertFalse(result.get("handover", False))
+            self.assertIn("managed off-market", result.get("response", ""))
+            self.assertNotIn("senior property specialist from Home IHC will contact you shortly", result.get("response", ""))
+
+            # 2. Explicit demand for human: handover triggers
+            result_human = al.process_persona_state_machine(
+                phone_number="+60123456789",
+                raw_text="Please transfer to human agent right now, call me.",
+                session=session,
+                conversation_history="User: Looking for rent\nAI: Noted.",
+                contact_name="Nick"
+            )
+            self.assertTrue(result_human.get("handover", False))
+            self.assertIn("senior property specialist", result_human.get("response", "").lower())
+
 
 if __name__ == "__main__":
     unittest.main()

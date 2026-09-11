@@ -296,8 +296,16 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
             }
             alias_map = {
                 "location": ["buyer_location", "seller_location", "current_location", "coverage_area"],
+                "current_location": ["location", "buyer_location", "seller_location", "coverage_area"],
+                "buyer_location": ["location", "current_location", "seller_location"],
+                "seller_location": ["location", "current_location"],
                 "property_type": ["buyer_property_type", "seller_property_type"],
-                "budget": ["buyer_budget", "asking_price", "expected_rental"]
+                "buyer_property_type": ["property_type", "seller_property_type"],
+                "seller_property_type": ["property_type", "buyer_property_type"],
+                "budget": ["buyer_budget", "asking_price", "expected_rental", "max_price"],
+                "buyer_budget": ["budget", "asking_price", "expected_rental", "max_price"],
+                "asking_price": ["budget", "buyer_budget", "expected_rental"],
+                "expected_rental": ["budget", "buyer_budget", "asking_price"]
             }
             
             collected = session.get("collected_data", {})
@@ -318,27 +326,30 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
             else:
                 lead_temp = "Cold"
             
-            # Detect explicit meeting / call / direct agent requests
-            user_wants_meeting = any(phrase in final_prompt_text.lower() for phrase in [
-                "arrange a meeting", "schedule a meeting", "meeting with your team",
-                "meet up", "call me", "speak to human", "talk to agent", "contact me directly",
-                "advise your availability", "discuss in meeting", "have a meeting",
+            has_cached_prop = bool(session.get("interested_property"))
+            # Detect explicit immediate human contact / phone call requests
+            user_wants_immediate_human = any(phrase in final_prompt_text.lower() for phrase in [
+                "call me", "speak to human", "talk to agent", "contact me directly",
                 "transfer to human", "speak to a person", "talk to a person", "real agent",
                 "real person", "human agent", "human staff", "person in charge", "pic",
-                "真人", "转人工", "人工客服", "联系真人", "找真人", "安排看房", "预约看房", "睇楼",
+                "真人", "转人工", "人工客服", "联系真人", "找真人",
                 "电话联系", "安排见面", "nak jumpa", "call saya", "hubungi saya", "agent sebenar", 
-                "cakap dengan orang", "temujanji", "tengok rumah", "tengok tanah"
+                "cakap dengan orang", "temujanji"
+            ])
+            # Physical inspection bookings trigger handover when an actual property is selected
+            user_books_inspection = has_cached_prop and any(phrase in final_prompt_text.lower() for phrase in [
+                "安排看房", "预约看房", "睇楼", "tengok rumah", "tengok tanah", "arrange viewing", "schedule viewing", "book viewing"
             ])
             
             # Handover should ONLY trigger when:
             # 1. State machine finished workflow (handover_from_state == True)
-            # 2. Or user explicitly asks for a meeting / call / human agent
+            # 2. Or user explicitly asks for immediate human contact or books a physical inspection for a known property
             # 3. Or bank valuer submission complete
             handover_initiated = False
             if role not in ["admin", "employee"]:
                 if handover_from_state:
                     handover_initiated = True
-                elif user_wants_meeting:
+                elif user_wants_immediate_human or user_books_inspection:
                     handover_initiated = True
                     # Append polite wrap-up if not already present
                     if "senior" not in response_text.lower() and "specialist" not in response_text.lower() and "representative" not in response_text.lower():

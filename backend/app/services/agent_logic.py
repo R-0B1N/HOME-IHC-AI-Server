@@ -248,20 +248,17 @@ def process_persona_state_machine(phone_number: str, text: str, session: dict, c
     response_text = llm_analysis.get("response", "How may Home IHC assist you with properties in Pahang today? 😊")
 
     handover_phrases = [
-        "arrange a meeting", "schedule a meeting", "meeting with your team",
-        "meet up", "call me", "speak to human", "talk to agent", "contact me directly",
-        "advise your availability", "discuss in meeting", "have a meeting",
+        "call me", "speak to human", "talk to agent", "contact me directly",
         "transfer to human", "speak to a person", "talk to a person", "real agent",
         "real person", "human agent", "human staff", "person in charge",
-        "真人", "转人工", "人工客服", "联系真人", "找真人", "安排看房", "预约看房", "睇楼",
+        "真人", "转人工", "人工客服", "联系真人", "找真人",
         "电话联系", "安排见面", "nak jumpa", "call saya", "hubungi saya", "agent sebenar", 
-        "cakap dengan orang", "temujanji", "tengok rumah", "tengok tanah"
+        "cakap dengan orang", "temujanji"
     ]
-    user_wants_human_or_meeting = bool(asked_meeting) or any(
-        phrase in raw_text.lower() for phrase in handover_phrases
-    ) or bool(re.search(r'\bpic\b', raw_text.lower()))
+    user_wants_immediate_human = any(phrase in raw_text.lower() for phrase in handover_phrases) or bool(re.search(r'\bpic\b', raw_text.lower()))
+    user_books_cached_viewing = bool(cached_prop) and (bool(asked_meeting) or any(phrase in raw_text.lower() for phrase in ["安排看房", "预约看房", "睇楼", "tengok rumah", "tengok tanah", "arrange viewing", "schedule viewing", "viewing"]))
 
-    if user_wants_human_or_meeting:
+    if user_wants_immediate_human or user_books_cached_viewing:
         handover = True
         name_str = f" {current_user_name}" if current_user_name else ""
         prop_str = f" for {cached_prop.get('title')}" if cached_prop else ""
@@ -307,9 +304,15 @@ Inquired Property in Context:
         prop_context = "Matching Properties in Database:\n" + "\n".join(props_list)
     elif unlisted_property_text:
         prop_context = f"""
-[PROPERTY_STATUS: UNLISTED_OR_EXTERNAL_PROPERTY]
-The customer mentioned a specific property/location ("{unlisted_property_text}") that is NOT in Home IHC's active database listings.
-Do NOT claim to have details, size, status, or photos of this property.
+[PROPERTY_STATUS: UNLISTED_OR_OFF_MARKET_LOCATION]
+The customer inquired about a specific location or property ("{unlisted_property_text}") where Home IHC currently has 0 active published listings in the database.
+Off-Market Sourcing Protocol (Option A):
+- Rental and unlisted units in this area (e.g. {unlisted_property_text}) are handled through Home IHC's offline network of local property owners and private landlords.
+- Transparently explain this off-market sourcing mechanism to the customer.
+- Acknowledge and confirm all requirements they specified (property type, budget, location near landmarks like HOSHAS, move-in date, occupant background).
+- Ask if they would like our local area agent to scout unlisted landlords and offline listings for them, or if they are open to nearby areas.
+- Do NOT fabricate fake listings, addresses, or prices.
+- KEEP CHATTING naturally. Do NOT end the conversation with a generic handover message unless they explicitly ask for an immediate phone call or human agent.
 """
 
     has_prior_assistant_intro = (
@@ -362,12 +365,17 @@ Core Operational Directives:
    - If matching properties are provided in context, introduce 1-3 concrete options with titles and prices, and ask which one they would like more details or photos for.
    - NEVER hallucinate that the customer asked about a specific property (e.g. Taman Seri Galing house) unless they explicitly named it.
 4. Handover Discipline:
-   - Only say "A senior specialist from Home IHC will contact you" if the user explicitly requests an in-person viewing appointment, phone call, or contract signing.
-5. Unlisted / External Property Handling:
-   - If an explicit property address, lot number, or location was provided but NO matching property is found in the database context above, you must NEVER claim to have details, size, status, or photos of that property.
-   - Instead, ask the customer: Are they the property owner looking to list/sell with Home IHC, or are they a buyer/investor? Then route accordingly:
-     * If owner/seller: Offer to assist with valuation and marketing, ask for land size and asking price.
-     * If buyer/inquirer: Clarify that Home IHC primarily covers Pahang (Bentong, Raub, Karak, Temerloh, Kuantan), and offer our active listings in those areas.
+   - Only trigger human handover or say "A senior specialist from Home IHC will contact you" if:
+     * The customer explicitly demands an immediate telephone call, human agent ("转人工", "call me", "speak to human"), or confirms a concrete viewing appointment date/time for a specific existing listing.
+     * DO NOT hand over or terminate dialogue merely because a user expresses hypothetical future interest (e.g. "if you have suitable houses I would be interested in viewing"). Keep the consultative conversation going!
+5. Unlisted / Zero-Inventory Area Protocol (Off-Market Sourcing):
+   - When a tenant or buyer inquires about an area with 0 database matches (e.g. Temerloh, Mentakab, Jerantut):
+     * Transparently explain that rental units in that area are handled through our offline/off-market owner network rather than public advertisements.
+     * Confirm their requirements (location, budget, bedrooms, furnishings, move-in date, tenant profile).
+     * Ask if they want our local area agent to scout unlisted owners and private listings for them, or if they are open to nearby areas.
+     * KEEP CHATTING naturally. Ask friendly follow-up questions to complete their profile without sounding like an interrogation.
+   - If the customer is an owner/seller asking to list an unlisted property:
+     * Offer valuation and marketing assistance, and ask for property details (land size, title, asking price).
 6. Guardrails: If the user is applying for a job, selling unrelated services, or spamming, set "is_out_of_context": true.
 
 Output JSON format strictly:
@@ -375,7 +383,7 @@ Output JSON format strictly:
   "intent": "buyer" | "seller" | "tenant" | "agent" | "general",
   "asked_photos": boolean,
   "asked_specs": boolean,
-  "asked_meeting": boolean,
+  "asked_meeting": boolean (True ONLY if user demands an immediate telephone call or schedules a physical viewing for an existing listing; False for general/exploratory inquiries),
   "asked_alternatives": boolean,
   "new_constraints": {{ "max_price": float, "city": string, "category": string }},
   "is_out_of_context": boolean,
@@ -415,7 +423,7 @@ Output JSON format strictly:
     except Exception as e:
         logger.error(f"Error calling LLM for conversational response: {e}")
         if conversation_history:
-            fallback_msg = "Thank you for the details! I have noted your requirements and our team will follow up with you shortly with suitable property options."
+            fallback_msg = "Thank you for sharing your requirements! For this area, our rental listings are primarily sourced off-market directly from landlords. Could you let me know if you are open to nearby locations as well, or if you prefer strictly within 5 km?"
         else:
             fallback_msg = "Good day! 😊 I'm Irene Leong, a Senior Property Agent from ERA Realtor. How may Home IHC assist you with properties in Pahang today?"
         return {
