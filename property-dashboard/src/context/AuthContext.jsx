@@ -103,6 +103,7 @@ export const AuthProvider = ({ children }) => {
 
   const isAdmin = user?.role === 'admin';
   const isAgent = user?.role === 'agent' || user?.role === 'admin';
+  const isEmployee = user?.role === 'employee';
   const isViewer = user?.role === 'viewer';
   const isAuthenticated = !!token && !!user;
 
@@ -115,6 +116,7 @@ export const AuthProvider = ({ children }) => {
         isAuthenticated,
         isAdmin,
         isAgent,
+        isEmployee,
         isViewer,
         login,
         register,

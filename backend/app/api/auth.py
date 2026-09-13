@@ -27,6 +27,9 @@ class UserResponse(BaseModel):
     email: str
     full_name: Optional[str] = None
     role: str
+    phone_number: Optional[str] = None
+    assigned_locations: Optional[list] = None
+    assigned_property_types: Optional[list] = None
     is_active: bool
 
 class TokenResponse(BaseModel):
@@ -36,10 +39,13 @@ class TokenResponse(BaseModel):
 
 class RegisterRequest(BaseModel):
     username: str
-    email: EmailStr
+    email: str
     password: str
     full_name: Optional[str] = None
-    role: Optional[str] = "agent" # "admin", "agent", "viewer"
+    role: Optional[str] = "agent" # "admin", "agent", "employee", "viewer"
+    phone_number: Optional[str] = None
+    assigned_locations: Optional[list] = None
+    assigned_property_types: Optional[list] = None
 
 @router.post("/login", response_model=TokenResponse)
 def login(credentials: LoginRequest, db: Session = Depends(get_db)):
@@ -63,7 +69,7 @@ def login(credentials: LoginRequest, db: Session = Depends(get_db)):
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="This account has been deactivated. Please contact an administrator."
+            detail="This account has not been activated or has been deactivated. Please contact an administrator."
         )
         
     access_token = create_access_token(
@@ -82,8 +88,11 @@ def login(credentials: LoginRequest, db: Session = Depends(get_db)):
             "id": str(user.id),
             "username": user.username,
             "email": user.email,
+            "phone_number": user.phone_number,
             "full_name": user.full_name,
             "role": user.role,
+            "assigned_locations": user.assigned_locations or [],
+            "assigned_property_types": user.assigned_property_types or [],
             "is_active": user.is_active
         }
     }
@@ -97,8 +106,11 @@ def get_me(current_user: User = Depends(get_current_user)):
         "id": str(current_user.id),
         "username": current_user.username,
         "email": current_user.email,
+        "phone_number": current_user.phone_number,
         "full_name": current_user.full_name,
         "role": current_user.role,
+        "assigned_locations": current_user.assigned_locations or [],
+        "assigned_property_types": current_user.assigned_property_types or [],
         "is_active": current_user.is_active
     }
 
@@ -106,10 +118,12 @@ def get_me(current_user: User = Depends(get_current_user)):
 def register_account(data: RegisterRequest, db: Session = Depends(get_db)):
     """
     Register a new user account with a specified role.
-    If no admin exists in the system yet, the first registered user is automatically made an admin.
+    If no user exists in the system yet, the first registered user is automatically made an active admin.
+    Otherwise, newly registered accounts are set to is_active=False pending admin approval.
     """
     clean_username = data.username.strip().lower()
     clean_email = data.email.strip().lower()
+    clean_phone = data.phone_number.strip() if (data.phone_number and data.phone_number.strip()) else None
     
     # Check if username exists
     if db.query(User).filter(User.username == clean_username).first():
@@ -124,22 +138,37 @@ def register_account(data: RegisterRequest, db: Session = Depends(get_db)):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email address already registered"
         )
+
+    # Check if phone number exists if provided
+    if clean_phone:
+        if db.query(User).filter(User.phone_number == clean_phone).first():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Phone number already registered with another account"
+            )
         
-    # Check total user count - if 0, promote to admin
+    # Check total user count - if 0, bootstrap to active admin
     total_users = db.query(User).count()
-    assigned_role = "admin" if total_users == 0 else (data.role or "agent").lower()
-    
-    if assigned_role not in ["admin", "agent", "viewer"]:
-        assigned_role = "agent"
+    if total_users == 0:
+        assigned_role = "admin"
+        is_active_status = True
+    else:
+        assigned_role = (data.role or "agent").lower()
+        if assigned_role not in ["admin", "agent", "employee", "viewer"]:
+            assigned_role = "agent"
+        is_active_status = False  # New registrations require admin activation
         
     new_user = User(
         id=uuid.uuid4(),
         username=clean_username,
         email=clean_email,
+        phone_number=clean_phone,
         hashed_password=get_password_hash(data.password),
         full_name=data.full_name.strip() if data.full_name else clean_username,
         role=assigned_role,
-        is_active=True
+        assigned_locations=data.assigned_locations or [],
+        assigned_property_types=data.assigned_property_types or [],
+        is_active=is_active_status
     )
     
     db.add(new_user)
@@ -150,7 +179,10 @@ def register_account(data: RegisterRequest, db: Session = Depends(get_db)):
         "id": str(new_user.id),
         "username": new_user.username,
         "email": new_user.email,
+        "phone_number": new_user.phone_number,
         "full_name": new_user.full_name,
         "role": new_user.role,
+        "assigned_locations": new_user.assigned_locations or [],
+        "assigned_property_types": new_user.assigned_property_types or [],
         "is_active": new_user.is_active
     }

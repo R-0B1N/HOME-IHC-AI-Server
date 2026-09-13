@@ -1,10 +1,10 @@
 {
-  "timestamp": "2026-09-11T15:34:34.539124+00:00",
+  "timestamp": "2026-09-12T14:11:46.970114+00:00",
   "total_scenarios": 7,
   "passed_scenarios": 7,
   "failed_scenarios": 0,
   "pass_rate_percent": 100.0,
-  "total_latency_ms": 9.55,
+  "total_latency_ms": 10.08,
   "scenarios": [
     {
       "scenario_id": "SCENARIO-01-BUYER",
@@ -161,7 +161,7 @@
       "name": "Customer Viewing Acknowledgement OpenXML & 22-Field Verification",
       "persona": "Co-Broke Agent / Legal",
       "passed": true,
-      "latency_ms": 6.04,
+      "latency_ms": 6.56,
       "turns_executed": 1,
       "error": null,
       "assertions_count": 4,
@@ -203,7 +203,7 @@
       "name": "Meta 24-Hour Customer Care Policy Window Enforcement",
       "persona": "Nurturing Daemon / Policy Guard",
       "passed": true,
-      "latency_ms": 1.2,
+      "latency_ms": 1.34,
       "turns_executed": 2,
       "error": null,
       "assertions_count": 5,
@@ -252,7 +252,7 @@
       "name": "OpenXML Archive & Excel Schema Parity Verification",
       "persona": "System Architecture / QA",
       "passed": true,
-      "latency_ms": 2.12,
+      "latency_ms": 1.97,
       "turns_executed": 2,
       "error": null,
       "assertions_count": 3,
@@ -263,7 +263,7 @@
           "expected": "True",
           "actual": "True",
           "passed": true,
-          "details": "Generated 1914 bytes of valid Excel OpenXML archive."
+          "details": "Generated 1913 bytes of valid Excel OpenXML archive."
         },
         {
           "name": "Buyer OpenXML Archive Integrity",

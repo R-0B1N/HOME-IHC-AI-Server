@@ -3,12 +3,21 @@ import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { 
   Users, UserPlus, Shield, ShieldCheck, ShieldAlert, 
-  Trash2, Edit, Check, X, Search, Lock, RefreshCw, AlertTriangle 
+  Trash2, Edit, Check, X, Search, Lock, RefreshCw, AlertTriangle,
+  Phone, Briefcase, MapPin, Building2, Clock, UserCheck, UserX
 } from 'lucide-react';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
 
-function UsersManagement() {
+const ALL_LOCATIONS = [
+  'Bentong', 'Temerloh', 'Karak', 'Raub', 'Kuantan', 'Mentakab', 'Pahang', 'Selangor', 'KL'
+];
+
+const ALL_PROPERTY_TYPES = [
+  'Rental', 'Residential', 'Commercial', 'Land / Agriculture', 'Industrial', 'Durian Land', 'Factory'
+];
+
+function UsersManagement({ onUserApproved }) {
   const { user: currentUser, isAdmin } = useAuth();
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -26,16 +35,22 @@ function UsersManagement() {
   const [newUserForm, setNewUserForm] = useState({
     username: '',
     email: '',
+    phone_number: '',
     password: '',
     fullName: '',
     role: 'agent',
+    assigned_locations: [],
+    assigned_property_types: [],
     isActive: true,
   });
 
   const [editUserForm, setEditUserForm] = useState({
     fullName: '',
     email: '',
+    phone_number: '',
     role: 'agent',
+    assigned_locations: [],
+    assigned_property_types: [],
     isActive: true,
     newPassword: '',
   });
@@ -67,9 +82,12 @@ function UsersManagement() {
       await axios.post(`${API_BASE_URL}/users`, {
         username: newUserForm.username.trim(),
         email: newUserForm.email.trim(),
+        phone_number: newUserForm.phone_number?.trim() || null,
         password: newUserForm.password,
         full_name: newUserForm.fullName.trim(),
         role: newUserForm.role,
+        assigned_locations: newUserForm.assigned_locations,
+        assigned_property_types: newUserForm.assigned_property_types,
         is_active: newUserForm.isActive,
       });
 
@@ -78,12 +96,16 @@ function UsersManagement() {
       setNewUserForm({
         username: '',
         email: '',
+        phone_number: '',
         password: '',
         fullName: '',
         role: 'agent',
+        assigned_locations: [],
+        assigned_property_types: [],
         isActive: true,
       });
       fetchUsers();
+      if (onUserApproved) onUserApproved();
       setTimeout(() => setSuccessMsg(''), 4000);
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to create user account.');
@@ -95,7 +117,10 @@ function UsersManagement() {
     setEditUserForm({
       fullName: targetUser.full_name || '',
       email: targetUser.email || '',
+      phone_number: targetUser.phone_number || '',
       role: targetUser.role || 'agent',
+      assigned_locations: targetUser.assigned_locations || [],
+      assigned_property_types: targetUser.assigned_property_types || [],
       isActive: targetUser.is_active,
       newPassword: '',
     });
@@ -110,7 +135,10 @@ function UsersManagement() {
       const payload = {
         full_name: editUserForm.fullName.trim(),
         email: editUserForm.email.trim(),
+        phone_number: editUserForm.phone_number?.trim() || null,
         role: editUserForm.role,
+        assigned_locations: editUserForm.assigned_locations,
+        assigned_property_types: editUserForm.assigned_property_types,
         is_active: editUserForm.isActive,
       };
       if (editUserForm.newPassword) {
@@ -123,9 +151,35 @@ function UsersManagement() {
       setIsEditModalOpen(false);
       setSelectedUser(null);
       fetchUsers();
+      if (onUserApproved) onUserApproved();
       setTimeout(() => setSuccessMsg(''), 4000);
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to update user.');
+    }
+  };
+
+  const handleApproveUser = async (targetUser) => {
+    try {
+      await axios.post(`${API_BASE_URL}/users/${targetUser.id}/approve`);
+      setSuccessMsg(`User @${targetUser.username} approved and activated!`);
+      fetchUsers();
+      if (onUserApproved) onUserApproved();
+      setTimeout(() => setSuccessMsg(''), 4000);
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Failed to approve user.');
+    }
+  };
+
+  const handleRejectUser = async (targetUser) => {
+    if (!window.confirm(`Are you sure you want to deactivate / reject registration for @${targetUser.username}?`)) return;
+    try {
+      await axios.post(`${API_BASE_URL}/users/${targetUser.id}/reject`);
+      setSuccessMsg(`User @${targetUser.username} registration deactivated.`);
+      fetchUsers();
+      if (onUserApproved) onUserApproved();
+      setTimeout(() => setSuccessMsg(''), 4000);
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Failed to reject user.');
     }
   };
 
@@ -143,6 +197,7 @@ function UsersManagement() {
       await axios.delete(`${API_BASE_URL}/users/${targetUser.id}`);
       setSuccessMsg(`User ${targetUser.username} deleted.`);
       fetchUsers();
+      if (onUserApproved) onUserApproved();
       setTimeout(() => setSuccessMsg(''), 4000);
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to delete user.');
@@ -170,7 +225,9 @@ function UsersManagement() {
 
   const adminCount = users.filter((u) => u.role === 'admin').length;
   const agentCount = users.filter((u) => u.role === 'agent').length;
+  const employeeCount = users.filter((u) => u.role === 'employee').length;
   const viewerCount = users.filter((u) => u.role === 'viewer').length;
+  const pendingCount = users.filter((u) => !u.is_active).length;
 
   return (
     <div className="users-management-container">
@@ -181,7 +238,7 @@ function UsersManagement() {
             <ShieldCheck size={26} color="#d4af37" /> Role-Based Access Control (RBAC)
           </h2>
           <p className="users-page-desc" style={{ color: '#64748b', fontSize: '0.88rem', margin: 0 }}>
-            Manage user accounts, roles, and administrative access to the Real Estate Database.
+            Manage user accounts, roles, specializations, and administrative access to the Real Estate Database.
           </p>
         </div>
         <button
@@ -206,10 +263,20 @@ function UsersManagement() {
           <div className="rbac-stat-label">Property Agents</div>
           <div className="rbac-stat-value" style={{ color: '#10b981' }}>{agentCount}</div>
         </div>
+        <div className="rbac-stat-card employee-stat">
+          <div className="rbac-stat-label">Employees</div>
+          <div className="rbac-stat-value" style={{ color: '#f59e0b' }}>{employeeCount}</div>
+        </div>
         <div className="rbac-stat-card viewer-stat">
           <div className="rbac-stat-label">Viewers</div>
           <div className="rbac-stat-value" style={{ color: '#8b5cf6' }}>{viewerCount}</div>
         </div>
+        {pendingCount > 0 && (
+          <div className="rbac-stat-card" style={{ borderColor: 'rgba(245, 158, 11, 0.4)', background: 'rgba(245, 158, 11, 0.08)' }}>
+            <div className="rbac-stat-label" style={{ color: '#fbbf24' }}>Pending Activation</div>
+            <div className="rbac-stat-value" style={{ color: '#fbbf24' }}>{pendingCount}</div>
+          </div>
+        )}
       </div>
 
       {/* Messages */}
@@ -230,7 +297,7 @@ function UsersManagement() {
           <input
             type="text"
             className="lux-search-input"
-            placeholder="Search by name, username, or email..."
+            placeholder="Search by name, username, phone, or email..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
           />
@@ -251,6 +318,7 @@ function UsersManagement() {
             <option value="All">All Roles</option>
             <option value="admin">Admin Only</option>
             <option value="agent">Agent Only</option>
+            <option value="employee">Employee Only</option>
             <option value="viewer">Viewer Only</option>
           </select>
 
@@ -283,8 +351,9 @@ function UsersManagement() {
             <thead>
               <tr>
                 <th>User Details</th>
-                <th>Email</th>
+                <th>Contact & Phone</th>
                 <th>Role Tier</th>
+                <th>Specialization</th>
                 <th>Status</th>
                 <th>Registered</th>
                 <th>Actions</th>
@@ -307,25 +376,79 @@ function UsersManagement() {
                       </div>
                     </div>
                   </td>
-                  <td>{u.email}</td>
+                  <td>
+                    <div>{u.email}</div>
+                    {u.phone_number ? (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.78rem', color: '#10b981', marginTop: '2px' }}>
+                        <Phone size={12} /> {u.phone_number}
+                      </div>
+                    ) : (
+                      <div style={{ color: '#64748b', fontSize: '0.74rem', marginTop: '2px' }}>No phone linked</div>
+                    )}
+                  </td>
                   <td>
                     <span className={`role-badge ${u.role}`}>
-                      {u.role === 'admin' && '🛡️ '}
-                      {u.role === 'agent' && '🤝 '}
-                      {u.role === 'viewer' && '👁️ '}
-                      {u.role.toUpperCase()}
+                      {u.role === 'admin' && '🛡️ ADMIN'}
+                      {u.role === 'agent' && '🤝 AGENT'}
+                      {u.role === 'employee' && '💼 EMPLOYEE'}
+                      {u.role === 'viewer' && '👁️ VIEWER'}
                     </span>
                   </td>
                   <td>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', maxWidth: '220px' }}>
+                      {u.assigned_locations && u.assigned_locations.length > 0 ? (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '2px' }}>
+                          {u.assigned_locations.map(loc => (
+                            <span key={loc} style={{ fontSize: '0.67rem', padding: '1px 5px', background: 'rgba(59, 130, 246, 0.15)', color: '#60a5fa', borderRadius: '3px' }}>
+                              📍 {loc}
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+                      {u.assigned_property_types && u.assigned_property_types.length > 0 ? (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '2px' }}>
+                          {u.assigned_property_types.map(pt => (
+                            <span key={pt} style={{ fontSize: '0.67rem', padding: '1px 5px', background: 'rgba(168, 85, 247, 0.15)', color: '#c084fc', borderRadius: '3px' }}>
+                              🏷️ {pt}
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+                      {(!u.assigned_locations?.length && !u.assigned_property_types?.length) && (
+                        <span style={{ color: '#64748b', fontSize: '0.75rem' }}>General Pool</span>
+                      )}
+                    </div>
+                  </td>
+                  <td>
                     <span className={`status-pill ${u.is_active ? 'active' : 'disabled'}`}>
-                      {u.is_active ? '● Active' : '○ Disabled'}
+                      {u.is_active ? '● Active' : '⏳ Pending'}
                     </span>
                   </td>
                   <td className="date-cell">
                     {u.created_at ? new Date(u.created_at).toLocaleDateString() : 'N/A'}
                   </td>
                   <td>
-                    <div className="actions-cell">
+                    <div className="actions-cell" style={{ display: 'flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap' }}>
+                      {!u.is_active && (
+                        <>
+                          <button
+                            className="btn-icon approve"
+                            style={{ color: '#10b981', borderColor: 'rgba(16, 185, 129, 0.4)', background: 'rgba(16, 185, 129, 0.1)', padding: '3px 8px', borderRadius: '4px', display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer' }}
+                            onClick={() => handleApproveUser(u)}
+                            title="Approve & Activate Account"
+                          >
+                            <Check size={14} /> Approve
+                          </button>
+                          <button
+                            className="btn-icon reject"
+                            style={{ color: '#ef4444', borderColor: 'rgba(239, 68, 68, 0.4)', background: 'rgba(239, 68, 68, 0.1)', padding: '3px 8px', borderRadius: '4px', display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer' }}
+                            onClick={() => handleRejectUser(u)}
+                            title="Reject Account"
+                          >
+                            <X size={14} /> Reject
+                          </button>
+                        </>
+                      )}
                       <button
                         className="btn-icon edit"
                         onClick={() => handleOpenEdit(u)}
@@ -354,7 +477,7 @@ function UsersManagement() {
       {/* Add User Modal */}
       {isAddModalOpen && (
         <div className="modal-overlay">
-          <div className="modal-content auth-modal">
+          <div className="modal-content auth-modal" style={{ maxWidth: '540px' }}>
             <div className="modal-header">
               <h2>Add New User Account</h2>
               <button className="close-btn" onClick={() => setIsAddModalOpen(false)}>✕</button>
@@ -398,6 +521,17 @@ function UsersManagement() {
               </div>
 
               <div className="form-group">
+                <label>WhatsApp Phone Number (for AI RBAC & Hot Lead Routing)</label>
+                <input
+                  type="tel"
+                  className="form-input"
+                  placeholder="e.g. +60123456789"
+                  value={newUserForm.phone_number}
+                  onChange={(e) => setNewUserForm({ ...newUserForm, phone_number: e.target.value })}
+                />
+              </div>
+
+              <div className="form-group">
                 <label>Assigned Role</label>
                 <select
                   className="form-input"
@@ -406,8 +540,75 @@ function UsersManagement() {
                 >
                   <option value="admin">Administrator (Full DB & User Access)</option>
                   <option value="agent">Property Agent (Manage Leads & Properties)</option>
+                  <option value="employee">Employee (Operations & Handover Leads)</option>
                   <option value="viewer">Viewer (Read-Only Access)</option>
                 </select>
+              </div>
+
+              {/* Specialization: Locations */}
+              <div className="form-group">
+                <label style={{ display: 'block', marginBottom: '4px' }}>Assigned Locations (Handover Specialization)</label>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                  {ALL_LOCATIONS.map((loc) => {
+                    const isSelected = newUserForm.assigned_locations.includes(loc);
+                    return (
+                      <button
+                        key={loc}
+                        type="button"
+                        onClick={() => {
+                          const next = isSelected
+                            ? newUserForm.assigned_locations.filter((l) => l !== loc)
+                            : [...newUserForm.assigned_locations, loc];
+                          setNewUserForm({ ...newUserForm, assigned_locations: next });
+                        }}
+                        style={{
+                          fontSize: '0.76rem',
+                          padding: '4px 9px',
+                          borderRadius: '6px',
+                          border: isSelected ? '1px solid #3b82f6' : '1px solid #334155',
+                          background: isSelected ? 'rgba(59, 130, 246, 0.25)' : 'rgba(255, 255, 255, 0.04)',
+                          color: isSelected ? '#93c5fd' : '#94a3b8',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {isSelected ? '✓ ' : '+ '} {loc}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Specialization: Property Types */}
+              <div className="form-group">
+                <label style={{ display: 'block', marginBottom: '4px' }}>Assigned Property Types (Handover Specialization)</label>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                  {ALL_PROPERTY_TYPES.map((pt) => {
+                    const isSelected = newUserForm.assigned_property_types.includes(pt);
+                    return (
+                      <button
+                        key={pt}
+                        type="button"
+                        onClick={() => {
+                          const next = isSelected
+                            ? newUserForm.assigned_property_types.filter((p) => p !== pt)
+                            : [...newUserForm.assigned_property_types, pt];
+                          setNewUserForm({ ...newUserForm, assigned_property_types: next });
+                        }}
+                        style={{
+                          fontSize: '0.76rem',
+                          padding: '4px 9px',
+                          borderRadius: '6px',
+                          border: isSelected ? '1px solid #a855f7' : '1px solid #334155',
+                          background: isSelected ? 'rgba(168, 85, 247, 0.25)' : 'rgba(255, 255, 255, 0.04)',
+                          color: isSelected ? '#d8b4fe' : '#94a3b8',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {isSelected ? '✓ ' : '+ '} {pt}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
 
               <div className="form-group">
@@ -449,7 +650,7 @@ function UsersManagement() {
       {/* Edit User Modal */}
       {isEditModalOpen && selectedUser && (
         <div className="modal-overlay">
-          <div className="modal-content auth-modal">
+          <div className="modal-content auth-modal" style={{ maxWidth: '540px' }}>
             <div className="modal-header">
               <h2>Edit User: @{selectedUser.username}</h2>
               <button className="close-btn" onClick={() => setIsEditModalOpen(false)}>✕</button>
@@ -479,6 +680,17 @@ function UsersManagement() {
               </div>
 
               <div className="form-group">
+                <label>WhatsApp Phone Number (for AI RBAC & Hot Lead Routing)</label>
+                <input
+                  type="tel"
+                  className="form-input"
+                  placeholder="e.g. +60123456789"
+                  value={editUserForm.phone_number}
+                  onChange={(e) => setEditUserForm({ ...editUserForm, phone_number: e.target.value })}
+                />
+              </div>
+
+              <div className="form-group">
                 <label>Role</label>
                 <select
                   className="form-input"
@@ -487,8 +699,75 @@ function UsersManagement() {
                 >
                   <option value="admin">Administrator (Full DB & User Access)</option>
                   <option value="agent">Property Agent (Manage Leads & Properties)</option>
+                  <option value="employee">Employee (Operations & Handover Leads)</option>
                   <option value="viewer">Viewer (Read-Only Access)</option>
                 </select>
+              </div>
+
+              {/* Specialization: Locations */}
+              <div className="form-group">
+                <label style={{ display: 'block', marginBottom: '4px' }}>Assigned Locations (Handover Specialization)</label>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                  {ALL_LOCATIONS.map((loc) => {
+                    const isSelected = editUserForm.assigned_locations.includes(loc);
+                    return (
+                      <button
+                        key={loc}
+                        type="button"
+                        onClick={() => {
+                          const next = isSelected
+                            ? editUserForm.assigned_locations.filter((l) => l !== loc)
+                            : [...editUserForm.assigned_locations, loc];
+                          setEditUserForm({ ...editUserForm, assigned_locations: next });
+                        }}
+                        style={{
+                          fontSize: '0.76rem',
+                          padding: '4px 9px',
+                          borderRadius: '6px',
+                          border: isSelected ? '1px solid #3b82f6' : '1px solid #334155',
+                          background: isSelected ? 'rgba(59, 130, 246, 0.25)' : 'rgba(255, 255, 255, 0.04)',
+                          color: isSelected ? '#93c5fd' : '#94a3b8',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {isSelected ? '✓ ' : '+ '} {loc}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Specialization: Property Types */}
+              <div className="form-group">
+                <label style={{ display: 'block', marginBottom: '4px' }}>Assigned Property Types (Handover Specialization)</label>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                  {ALL_PROPERTY_TYPES.map((pt) => {
+                    const isSelected = editUserForm.assigned_property_types.includes(pt);
+                    return (
+                      <button
+                        key={pt}
+                        type="button"
+                        onClick={() => {
+                          const next = isSelected
+                            ? editUserForm.assigned_property_types.filter((p) => p !== pt)
+                            : [...editUserForm.assigned_property_types, pt];
+                          setEditUserForm({ ...editUserForm, assigned_property_types: next });
+                        }}
+                        style={{
+                          fontSize: '0.76rem',
+                          padding: '4px 9px',
+                          borderRadius: '6px',
+                          border: isSelected ? '1px solid #a855f7' : '1px solid #334155',
+                          background: isSelected ? 'rgba(168, 85, 247, 0.25)' : 'rgba(255, 255, 255, 0.04)',
+                          color: isSelected ? '#d8b4fe' : '#94a3b8',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {isSelected ? '✓ ' : '+ '} {pt}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
 
               <div className="form-group">

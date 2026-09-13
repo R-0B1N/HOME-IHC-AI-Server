@@ -2568,3 +2568,145 @@ main {
   max-height: 160px;
   overflow-y: auto;
 }
+
+/* ==========================================================================
+   Luxury Customer Detail Modal & Conversational Memory Styles
+   ========================================================================== */
+
+.lead-row-clickable {
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.lead-row-clickable:hover {
+  background-color: rgba(212, 175, 55, 0.08) !important;
+}
+
+.lux-customer-modal-overlay {
+  backdrop-filter: blur(4px);
+  background: rgba(15, 23, 42, 0.75);
+}
+
+.lux-customer-modal-card {
+  border-radius: 16px !important;
+  border: 1px solid rgba(212, 175, 55, 0.4) !important;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(212, 175, 55, 0.2) !important;
+  background: #ffffff !important;
+}
+
+.lux-info-card {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.lux-info-card:hover {
+  border-color: rgba(212, 175, 55, 0.4);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
+}
+
+.lux-info-label {
+  font-size: 0.72rem;
+  color: #64748b;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-bottom: 0.3rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.lux-info-val {
+  font-size: 0.88rem;
+  color: #0f172a;
+  word-break: break-word;
+}
+
+.lux-req-item {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 0.75rem 0.85rem;
+}
+
+.lux-req-item-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.3rem;
+}
+
+.lux-badge-loc {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.18rem 0.45rem;
+  border-radius: 4px;
+  border: 1px solid #dbeafe;
+}
+
+.lux-badge-type {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  background: #fefce8;
+  color: #a16207;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.18rem 0.45rem;
+  border-radius: 4px;
+  border: 1px solid #fef08a;
+}
+
+.lux-timeline-node {
+  transition: transform 0.15s ease;
+}
+
+.lux-property-card-compact {
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.lux-property-card-compact:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.08);
+  border-color: rgba(212, 175, 55, 0.4) !important;
+}
+
+.lux-btn-chatwoot {
+  background: #d4af37;
+  color: #0f172a;
+  font-weight: 700;
+  font-size: 0.78rem;
+  padding: 0.35rem 0.75rem;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.lux-btn-chatwoot:hover {
+  background: #c59b27;
+  transform: translateY(-1px);
+}
+
+.lux-btn-chatwoot-large:hover {
+  background: #c59b27 !important;
+  transform: translateY(-1px);
+}
+
+.lux-btn-mini:hover {
+  background: #1e293b !important;
+}

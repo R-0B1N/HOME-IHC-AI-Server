@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { UserPlus, User, Mail, Lock, Shield, ArrowLeft, CheckCircle2, Building2, Sparkles } from 'lucide-react';
+import { UserPlus, User, Mail, Lock, Shield, ArrowLeft, CheckCircle2, Building2, Sparkles, Phone, Briefcase, Clock } from 'lucide-react';
 
 function RegisterPage({ onSwitchToLogin }) {
   const { register } = useAuth();
@@ -8,13 +8,14 @@ function RegisterPage({ onSwitchToLogin }) {
     fullName: '',
     username: '',
     email: '',
+    phoneNumber: '',
     password: '',
     confirmPassword: '',
     role: 'agent',
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [success, setSuccess] = useState(false);
+  const [registeredData, setRegisteredData] = useState(null);
 
   const handleChange = (e) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
@@ -43,13 +44,14 @@ function RegisterPage({ onSwitchToLogin }) {
       full_name: formData.fullName.trim(),
       username: formData.username.trim(),
       email: formData.email.trim(),
+      phone_number: formData.phoneNumber.trim() || undefined,
       password: formData.password,
       role: formData.role,
     });
     setLoading(false);
 
     if (result.success) {
-      setSuccess(true);
+      setRegisteredData(result.data);
     } else {
       setError(result.error);
     }
@@ -86,15 +88,30 @@ function RegisterPage({ onSwitchToLogin }) {
             </div>
           )}
 
-          {success ? (
+          {registeredData ? (
             <div className="lux-success-panel">
               <div className="lux-success-icon-wrap">
-                <CheckCircle2 size={38} />
+                {registeredData.is_active ? <CheckCircle2 size={38} /> : <Clock size={38} className="text-amber-500" />}
               </div>
-              <h2 className="lux-success-title">Account Created</h2>
+              <h2 className="lux-success-title">
+                {registeredData.is_active ? "Account Created" : "Registration Pending Approval"}
+              </h2>
               <p className="lux-success-desc">
-                Account <strong>@{formData.username}</strong> has been provisioned with{' '}
-                <span className={`lux-role-pill ${formData.role}`}>{formData.role.toUpperCase()}</span> tier access.
+                {registeredData.is_active ? (
+                  <>
+                    Account <strong>@{registeredData.username}</strong> has been provisioned with{' '}
+                    <span className={`lux-role-pill ${registeredData.role}`}>{registeredData.role.toUpperCase()}</span> tier access.
+                  </>
+                ) : (
+                  <>
+                    Account <strong>@{registeredData.username}</strong> has been registered with{' '}
+                    <span className={`lux-role-pill ${registeredData.role}`}>{registeredData.role.toUpperCase()}</span> role request.
+                    <br />
+                    <span style={{ color: '#eab308', display: 'inline-block', marginTop: '8px' }}>
+                      ⏳ An administrator must approve and activate your account before you can sign in.
+                    </span>
+                  </>
+                )}
               </p>
               <button
                 type="button"
@@ -140,26 +157,43 @@ function RegisterPage({ onSwitchToLogin }) {
                 </div>
               </div>
 
-              <div className="lux-field-group">
-                <label className="lux-label">Corporate Email</label>
-                <div className="lux-input-box">
-                  <Mail size={17} className="lux-field-icon" />
-                  <input
-                    type="email"
-                    name="email"
-                    className="lux-input"
-                    placeholder="e.g. irene@bentongland.com.my"
-                    value={formData.email}
-                    onChange={handleChange}
-                    required
-                  />
+              <div className="lux-fields-grid">
+                <div className="lux-field-group">
+                  <label className="lux-label">Corporate Email</label>
+                  <div className="lux-input-box">
+                    <Mail size={17} className="lux-field-icon" />
+                    <input
+                      type="email"
+                      name="email"
+                      className="lux-input"
+                      placeholder="e.g. irene@bentongland.com.my"
+                      value={formData.email}
+                      onChange={handleChange}
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div className="lux-field-group">
+                  <label className="lux-label">WhatsApp Phone Number</label>
+                  <div className="lux-input-box">
+                    <Phone size={17} className="lux-field-icon" />
+                    <input
+                      type="tel"
+                      name="phoneNumber"
+                      className="lux-input"
+                      placeholder="e.g. +60123456789"
+                      value={formData.phoneNumber}
+                      onChange={handleChange}
+                    />
+                  </div>
                 </div>
               </div>
 
               {/* Role Tier Selector Cards */}
               <div className="lux-field-group">
                 <label className="lux-label">Select Role Tier</label>
-                <div className="lux-role-cards-grid">
+                <div className="lux-role-cards-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))' }}>
                   <div
                     className={`lux-role-option ${formData.role === 'admin' ? 'selected' : ''}`}
                     onClick={() => handleRoleSelect('admin')}
@@ -179,7 +213,18 @@ function RegisterPage({ onSwitchToLogin }) {
                       <Building2 size={16} />
                       <span className="lux-role-option-title">Agent</span>
                     </div>
-                    <span className="lux-role-option-sub">Manage properties & leads</span>
+                    <span className="lux-role-option-sub">Specialized lead routing</span>
+                  </div>
+
+                  <div
+                    className={`lux-role-option ${formData.role === 'employee' ? 'selected' : ''}`}
+                    onClick={() => handleRoleSelect('employee')}
+                  >
+                    <div className="lux-role-option-header">
+                      <Briefcase size={16} />
+                      <span className="lux-role-option-title">Employee</span>
+                    </div>
+                    <span className="lux-role-option-sub">Staff operations & leads</span>
                   </div>
 
                   <div

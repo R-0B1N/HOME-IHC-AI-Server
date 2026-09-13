@@ -250,6 +250,157 @@ def extract_property_search_criteria(prompt: str, conversation_history: str = ""
         logger.error(f"Failed to extract search criteria: {e}")
         return {}
 
+def extract_multi_intent_context(prompt: str, conversation_history: str = "", existing_profile: dict = None) -> dict:
+    """
+    Analyzes evolving customer preferences, multi-intent switches, budget contradictions,
+    and hybrid property opportunities using LLM with deterministic NLP fallback.
+    """
+    clean_text = (prompt or "").lower()
+    existing_profile = existing_profile or {}
+    
+    # 1. Deterministic NLP extraction baseline (Fast, reliable, offline-ready)
+    # Location mapping
+    detected_loc = None
+    for loc in ["bentong", "raub", "karak", "temerloh", "mentakab", "kuantan", "bukit tinggi", "janda baik", "cheroh", "tras", "lanchang", "maran", "triang", "pahang"]:
+        if loc in clean_text:
+            detected_loc = loc.title()
+            break
+            
+    # Category mapping
+    detected_cat = None
+    detected_type_label = None
+    if any(k in clean_text for k in ["rumah kedai", "shop-house", "shophouse", "commercial & residential", "live-work", "店屋"]):
+        detected_cat = "hybrid"
+        detected_type_label = "Dual-Purpose Shop-House"
+    elif any(k in clean_text for k in ["shop", "shoplot", "shop lot", "retail", "commercial", "office", "kedai", "店面", "铺位", "店"]):
+        detected_cat = "commercial"
+        detected_type_label = "Commercial Shop Lot"
+    elif any(k in clean_text for k in ["house", "terrace", "semi-d", "semi d", "bungalow", "apartment", "condo", "home", "residential", "排屋", "住宅", "住家"]):
+        detected_cat = "residential"
+        detected_type_label = "Residential House"
+    elif any(k in clean_text for k in ["durian", "orchard", "land", "tanah", "kebun", "ladang", "musang king", "农业地", "果园", "地皮"]):
+        detected_cat = "agricultural"
+        detected_type_label = "Agricultural Land"
+    elif any(k in clean_text for k in ["factory", "warehouse", "kilang", "gudang", "industrial", "工业", "厂房", "仓库"]):
+        detected_cat = "industrial"
+        detected_type_label = "Industrial Property"
+        
+    # Budget extraction
+    price_match = re.search(r'(?:rm|myr)?\s*(\d+(?:\.\d+)?)\s*(m|million|k|thousand|000|\b)', clean_text)
+    detected_budget = None
+    if price_match:
+        try:
+            num = float(price_match.group(1))
+            unit = price_match.group(2).lower()
+            if unit in ["m", "million"]:
+                detected_budget = num * 1_000_000
+            elif unit in ["k", "thousand"]:
+                detected_budget = num * 1_000
+            elif num >= 10000:
+                detected_budget = num
+        except (ValueError, TypeError):
+            pass
+
+    # Power supply (TNB Amp)
+    detected_amp = None
+    amp_match = re.search(r'(\d+)\s*(?:amp|ampere|a\b)', clean_text)
+    if amp_match:
+        try:
+            detected_amp = int(amp_match.group(1))
+        except (ValueError, TypeError):
+            pass
+
+    # Role extraction
+    detected_role = "buyer"
+    if any(k in clean_text for k in ["sell", "selling", "list my", "jual", "出让", "想卖", "放盘"]):
+        detected_role = "seller"
+    elif any(k in clean_text for k in ["rent out", "lease out", "for rent", "bagi sewa", "sewakan", "出租", "放租"]):
+        detected_role = "landlord"
+    elif any(k in clean_text for k in ["rent", "renting", "sewa", "租", "想要租"]):
+        detected_role = "tenant"
+
+    # Multi-intent switch detection against existing profile
+    prior_active = existing_profile.get("active_inquiry") or {}
+    prior_cat = prior_active.get("category")
+    is_switch = bool(detected_cat and prior_cat and detected_cat != prior_cat)
+    
+    # Hybrid opportunity detection (both residential and commercial in context)
+    all_categories = set()
+    if detected_cat:
+        all_categories.add(detected_cat)
+    if prior_cat:
+        all_categories.add(prior_cat)
+    for ret in existing_profile.get("retained_inquiries", []):
+        if ret.get("category"):
+            all_categories.add(ret["category"])
+            
+    has_hybrid = ("residential" in all_categories and "commercial" in all_categories) or detected_cat == "hybrid"
+
+    fallback_result = {
+        "active_inquiry": {
+            "category": detected_cat or prior_cat,
+            "property_type_label": detected_type_label or prior_active.get("property_type_label"),
+            "location": detected_loc or prior_active.get("location"),
+            "budget": detected_budget or (prior_active.get("budget") if not is_switch else None),
+            "power_amp": detected_amp or prior_active.get("power_amp"),
+            "role": detected_role
+        },
+        "is_intent_switch": is_switch,
+        "hybrid_opportunity": has_hybrid,
+        "retained_category": prior_cat if is_switch else None
+    }
+
+    # 2. LLM parsing enrichment
+    system_prompt = f"""You are an advanced real estate conversational memory engine.
+Analyze the customer's latest message and conversation history to track multi-intent criteria and preference evolutions.
+
+Existing Profile: {json.dumps(existing_profile)}
+Recent History:
+{conversation_history}
+
+Customer Message:
+{prompt}
+
+Determine:
+1. "active_inquiry": Current 1st priority search criteria ({{"category": "commercial"|"residential"|"agricultural"|"industrial"|"hybrid", "property_type_label": string, "location": string, "budget": float|null, "power_amp": int|null, "role": "buyer"|"seller"|"tenant"|"landlord"}}).
+2. "is_intent_switch": Boolean (true if customer evolved or switched property categories).
+3. "hybrid_opportunity": Boolean (true if profile contains both commercial and residential interest, making dual-purpose shop-houses / live-work suitable).
+4. "retained_category": String or null (previous category that must be retained in memory).
+
+Output strictly valid JSON with these keys."""
+
+    try:
+        response = llm_client.chat.completions.create(
+            model=LLM_MODEL_NAME,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ],
+            response_format={"type": "json_object"},
+            max_tokens=350,
+            timeout=15.0
+        )
+        parsed = _parse_json_from_llm(response.choices[0].message.content)
+        if parsed and isinstance(parsed, dict) and parsed.get("active_inquiry"):
+            # Ensure deterministic fields are preserved if LLM returned null
+            active = parsed.get("active_inquiry", {})
+            if not active.get("category") and detected_cat:
+                active["category"] = detected_cat
+            if not active.get("location") and detected_loc:
+                active["location"] = detected_loc
+            if not active.get("budget") and detected_budget:
+                active["budget"] = detected_budget
+            if not active.get("power_amp") and detected_amp:
+                active["power_amp"] = detected_amp
+            parsed["active_inquiry"] = active
+            if has_hybrid:
+                parsed["hybrid_opportunity"] = True
+            return parsed
+    except Exception as e:
+        logger.warning(f"LLM multi-intent extraction notice (using deterministic fallback): {e}")
+
+    return fallback_result
+
 def extract_valuer_data(prompt: str, conversation_history: str = "") -> dict:
     """
     Extracts Bank Valuer details from the user's prompt using the LLM.

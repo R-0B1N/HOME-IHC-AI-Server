@@ -260,8 +260,40 @@ async def chatwoot_webhook(request: Request):
                 pdf_path = res.get("pdf_path")
                 form_no = res["form_no"]
                 
+                dispatch_path = pdf_path if pdf_path and os.path.exists(pdf_path) else docx_path
+                from app.services.viewing_service import compute_file_sha256
+                from app.db.models import AcknowledgementForm
+                doc_hash = compute_file_sha256(dispatch_path)
+
+                # Persist generated form record into database
+                try:
+                    db = SessionLocal()
+                    try:
+                        existing_form = db.query(AcknowledgementForm).filter(AcknowledgementForm.form_no == form_no).first()
+                        if not existing_form:
+                            new_ack = AcknowledgementForm(
+                                form_no=form_no,
+                                customer_id=phone or cust_name,
+                                viewing_date=datetime.datetime.utcnow(),
+                                status="PENDING_SIGNATURE",
+                                file_path=dispatch_path,
+                                document_hash=doc_hash,
+                                metadata_json={
+                                    "conversation_id": conversation_id,
+                                    "docx_path": docx_path,
+                                    "pdf_path": pdf_path,
+                                    "customer_name": cust_name,
+                                    "phone": phone
+                                }
+                            )
+                            db.add(new_ack)
+                            db.commit()
+                    finally:
+                        db.close()
+                except Exception as dbe:
+                    logger.warning(f"Could not persist AcknowledgementForm record: {dbe}")
+                
                 if should_send_customer:
-                    dispatch_path = pdf_path if pdf_path and os.path.exists(pdf_path) else docx_path
                     mime = "application/pdf" if dispatch_path.endswith(".pdf") else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                     filename = os.path.basename(dispatch_path)
                     with open(dispatch_path, "rb") as f:

@@ -1,0 +1,63 @@
+import zipfile
+import os
+from xml.etree import ElementTree as ET
+import docx
+
+src_docx = "docs/Property Acknowledgement Document Correct Format.docx"
+target_docx = "artifacts/Property Acknowledgement Document Template.docx"
+os.makedirs("artifacts", exist_ok=True)
+
+# 1. Read numbering.xml
+with zipfile.ZipFile(src_docx, 'r') as zin:
+    num_xml = zin.read("word/numbering.xml").decode('utf-8')
+    doc_xml = zin.read("word/document.xml").decode('utf-8')
+
+root_num = ET.fromstring(num_xml)
+ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+
+# Find abstractNum 50 (which has Wingdings bullet)
+abs50 = root_num.find('.//w:abstractNum[@w:abstractNumId="50"]', ns)
+
+# Create abstractNum 998 (unchecked box: \uf0a8)
+abs998 = ET.fromstring(ET.tostring(abs50))
+abs998.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}abstractNumId', '998')
+lvl0_998 = abs998.find('.//w:lvl[@w:ilvl="0"]', ns)
+lvl0_998.find('w:lvlText', ns).set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val', '\uf0a8')
+
+# Create abstractNum 999 (checked box: \uf0fe)
+abs999 = ET.fromstring(ET.tostring(abs50))
+abs999.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}abstractNumId', '999')
+lvl0_999 = abs999.find('.//w:lvl[@w:ilvl="0"]', ns)
+lvl0_999.find('w:lvlText', ns).set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val', '\uf0fe')
+
+# Insert abstractNum 998 and 999 before first <w:num>
+first_num = root_num.find('w:num', ns)
+idx = list(root_num).index(first_num)
+root_num.insert(idx, abs998)
+root_num.insert(idx + 1, abs999)
+
+# Create <w:num w:numId="998"> and <w:num w:numId="999">
+num998 = ET.fromstring("""
+<w:num xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" w:numId="998">
+    <w:abstractNumId w:val="998"/>
+</w:num>
+""")
+num999 = ET.fromstring("""
+<w:num xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" w:numId="999">
+    <w:abstractNumId w:val="999"/>
+</w:num>
+""")
+root_num.append(num998)
+root_num.append(num999)
+
+# Write to target_docx
+new_num_xml = ET.tostring(root_num, encoding='utf-8', xml_declaration=True)
+with zipfile.ZipFile(src_docx, 'r') as zin:
+    with zipfile.ZipFile(target_docx, 'w') as zout:
+        for item in zin.infolist():
+            if item.filename == "word/numbering.xml":
+                zout.writestr(item, new_num_xml)
+            else:
+                zout.writestr(item, zin.read(item.filename))
+
+print(f"Created template at {target_docx}, size: {os.path.getsize(target_docx)} bytes")

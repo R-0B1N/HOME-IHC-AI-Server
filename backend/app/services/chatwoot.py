@@ -83,6 +83,8 @@ def send_message_with_attachment(conversation_id: int, content: str, file_name: 
             logger.error(f"Response: {e.response.text}")
         raise e
 
+send_attachment_message = send_message_with_attachment
+
 
 def send_whatsapp_image(inbox_id: int, to_phone: str, image_url: str, caption: str = None, override_phone_number_id: str = None):
     """

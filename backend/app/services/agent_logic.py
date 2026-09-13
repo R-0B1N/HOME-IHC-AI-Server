@@ -6,6 +6,15 @@ import redis
 from app.db.models import SessionLocal, Property, Customer
 from app.services.llm import llm_client, LLM_MODEL_NAME, _parse_json_from_llm
 from app.services.db_services import find_matching_property, find_similar_properties, search_properties
+from app.services.system_prompts import (
+    detect_customer_language,
+    is_explicit_handover_request,
+    get_multilingual_greeting,
+    get_multilingual_fallback,
+    get_multilingual_handover_wrapup,
+    build_system_prompt,
+    ADMIN_EMAIL
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +53,432 @@ def check_completeness(persona: str, collected_data: dict) -> float:
     return filled / len(required)
 
 
+class MultiIntentMemoryTracker:
+    """
+    Enterprise Conversational Multi-Intent Context & Priority Memory Tracker.
+    Manages evolving customer preferences, priority queues, hybrid dual-purpose suggestions,
+    and handles complex edge cases like budget contradictions, changing locations, and role switches.
+    """
+
+    @staticmethod
+    def extract_intent_entities(text: str) -> dict:
+        clean = (text or "").lower()
+        
+        # 1. Categories & property types
+        cat = None
+        type_label = None
+        if any(k in clean for k in ["rumah kedai", "shop-house", "shophouse", "commercial & residential", "live-work", "店屋", "商住"]):
+            cat = "hybrid"
+            type_label = "Dual-Purpose Shop-House"
+        elif any(k in clean for k in ["shop", "shoplot", "shop lot", "retail", "commercial", "office", "kedai", "店面", "铺位", "店", "商铺"]):
+            cat = "commercial"
+            type_label = "Commercial Shop Lot"
+        elif any(k in clean for k in ["house", "terrace", "semi-d", "semi d", "bungalow", "apartment", "condo", "home", "residential", "排屋", "住宅", "住家", "半独立"]):
+            cat = "residential"
+            type_label = "Residential House"
+        elif any(k in clean for k in ["durian", "orchard", "land", "tanah", "kebun", "ladang", "musang king", "农业地", "果园", "地皮", "农地"]):
+            cat = "agricultural"
+            type_label = "Agricultural Land"
+        elif any(k in clean for k in ["factory", "warehouse", "kilang", "gudang", "industrial", "工业", "厂房", "仓库"]):
+            cat = "industrial"
+            type_label = "Industrial Property"
+
+        # 2. Locations
+        loc = None
+        for town in ["bentong", "raub", "karak", "temerloh", "mentakab", "kuantan", "bukit tinggi", "janda baik", "cheroh", "tras", "lanchang", "maran", "triang", "pahang"]:
+            if town in clean:
+                loc = town.title()
+                break
+
+        # 3. Budget (MYR)
+        budget = None
+        price_match = re.search(r'(?:rm|myr)?\s*(\d+(?:\.\d+)?)\s*(m|million|k|thousand|000|\b)', clean)
+        if price_match:
+            try:
+                num = float(price_match.group(1))
+                unit = price_match.group(2).lower()
+                if unit in ["m", "million"]:
+                    budget = num * 1_000_000
+                elif unit in ["k", "thousand"]:
+                    budget = num * 1_000
+                elif num >= 10000:
+                    budget = num
+            except (ValueError, TypeError):
+                pass
+
+        # 4. Power requirements (TNB Amp)
+        power_amp = None
+        amp_match = re.search(r'(\d+)\s*(?:amp|ampere|a\b)', clean)
+        if amp_match:
+            try:
+                power_amp = int(amp_match.group(1))
+            except (ValueError, TypeError):
+                pass
+
+        # 5. Role
+        role = "buyer"
+        if any(k in clean for k in ["sell", "selling", "list my", "jual", "出让", "想卖", "放盘"]):
+            role = "seller"
+        elif any(k in clean for k in ["rent out", "lease out", "for rent", "bagi sewa", "sewakan", "出租", "放租", "招租"]):
+            role = "landlord"
+        elif any(k in clean for k in ["rent", "renting", "sewa", "租", "想要租"]):
+            role = "tenant"
+
+        # 6. Check for concurrent multi-intent in a single prompt
+        is_concurrent = False
+        concurrent_inquiries = []
+        has_res = any(k in clean for k in ["house", "residential", "semi-d", "terrace", "住家", "排屋"])
+        has_com = any(k in clean for k in ["shop", "shoplot", "commercial", "office", "店面", "铺位"])
+        has_land = any(k in clean for k in ["durian", "orchard", "land", "tanah", "农业地"])
+        
+        types_detected = []
+        if has_res: types_detected.append(("residential", "Residential House"))
+        if has_com: types_detected.append(("commercial", "Commercial Shop Lot"))
+        if has_land: types_detected.append(("agricultural", "Agricultural Land"))
+
+        if len(types_detected) > 1:
+            is_concurrent = True
+            for c_cat, c_label in types_detected:
+                concurrent_inquiries.append({
+                    "category": c_cat,
+                    "property_type_label": c_label,
+                    "location": loc,
+                    "budget": budget,
+                    "power_amp": power_amp,
+                    "role": role
+                })
+
+        return {
+            "category": cat,
+            "property_type_label": type_label,
+            "location": loc,
+            "budget": budget,
+            "power_amp": power_amp,
+            "role": role,
+            "is_concurrent": is_concurrent,
+            "concurrent_inquiries": concurrent_inquiries
+        }
+
+    @classmethod
+    def update_session_memory(cls, session: dict, text: str, conversation_history: str = "") -> dict:
+        """
+        Updates session and returns structured multi-intent memory context.
+        Enforces:
+        - Priority 1: Active inquiry takes first priority in search and response.
+        - Previous inquiries retained in customer profile memory.
+        - Intelligent hybrid opportunity detection (dual-purpose properties).
+        - Edge cases: Budget contradiction separation, location switching, role switches.
+        """
+        import datetime
+        now_iso = datetime.datetime.utcnow().isoformat()
+        req_profile = session.setdefault("requirements_profile", {})
+        intent_progression = session.setdefault("intent_progression", [])
+        
+        active_inq = req_profile.get("active_inquiry") or {}
+        retained_inqs = req_profile.get("retained_inquiries") or []
+        
+        extracted = cls.extract_intent_entities(text)
+        new_cat = extracted.get("category")
+        new_label = extracted.get("property_type_label")
+        new_loc = extracted.get("location")
+        new_budget = extracted.get("budget")
+        new_amp = extracted.get("power_amp")
+        new_role = extracted.get("role", "buyer")
+        
+        # 1. Handle Concurrent Multi-Intent Search
+        if extracted.get("is_concurrent") and extracted.get("concurrent_inquiries"):
+            inqs = extracted["concurrent_inquiries"]
+            primary_inq = inqs[0]
+            secondary_inqs = inqs[1:]
+            
+            # Archive old active inquiry if different
+            if active_inq and active_inq.get("category") not in [i["category"] for i in inqs]:
+                retained_inqs.append(active_inq)
+                
+            active_inq = {
+                "category": primary_inq["category"],
+                "property_type_label": primary_inq["property_type_label"],
+                "location": primary_inq["location"] or active_inq.get("location") or "Bentong",
+                "budget": primary_inq["budget"] or active_inq.get("budget"),
+                "budget_formatted": f"RM {int(primary_inq['budget']):,}" if primary_inq["budget"] else "To be advised",
+                "power_amp": primary_inq["power_amp"] or active_inq.get("power_amp"),
+                "role": primary_inq["role"],
+                "updated_at": now_iso
+            }
+            for sec in secondary_inqs:
+                retained_inqs.append({
+                    "category": sec["category"],
+                    "property_type_label": sec["property_type_label"],
+                    "location": sec["location"] or active_inq.get("location") or "Pahang",
+                    "budget": sec["budget"],
+                    "budget_formatted": f"RM {int(sec['budget']):,}" if sec["budget"] else "To be advised",
+                    "power_amp": sec["power_amp"],
+                    "role": sec["role"],
+                    "updated_at": now_iso
+                })
+                
+            intent_progression.append({
+                "timestamp": now_iso,
+                "event_type": "concurrent_search",
+                "title": "Multiple Concurrent Inquiries Registered",
+                "description": f"Customer initiated concurrent search for {active_inq['property_type_label']} (1st Priority) and {', '.join([s['property_type_label'] for s in secondary_inqs])} (Secondary Memory).",
+                "active_priority": f"{active_inq['property_type_label']} ({active_inq['location']})",
+                "retained_context": ", ".join([s['property_type_label'] for s in secondary_inqs]),
+                "hybrid_opportunity": any(s['category'] in ['commercial', 'residential'] for s in secondary_inqs) and active_inq['category'] in ['commercial', 'residential']
+            })
+            
+        # 2. Handle Intent Switch / Category Evolution
+        elif new_cat and active_inq.get("category") and new_cat != active_inq.get("category"):
+            old_inq = dict(active_inq)
+            # Retain old active inquiry in memory (preventing data loss)
+            retained_inqs.append(old_inq)
+            
+            # Formulate new active inquiry (1st Priority)
+            # Budget Contradiction Handling: Keep separate budget for new category, do not inherit old budget
+            active_budget = new_budget
+            active_budget_fmt = f"RM {int(active_budget):,}" if active_budget else "To be advised"
+            
+            active_inq = {
+                "category": new_cat,
+                "property_type_label": new_label or new_cat.title(),
+                "location": new_loc or old_inq.get("location") or "Bentong",
+                "budget": active_budget,
+                "budget_formatted": active_budget_fmt,
+                "power_amp": new_amp or old_inq.get("power_amp"),
+                "role": new_role,
+                "updated_at": now_iso
+            }
+            
+            # Check for hybrid opportunity
+            hybrid_opp = (
+                (new_cat == "residential" and any(r.get("category") == "commercial" for r in retained_inqs + [old_inq])) or
+                (new_cat == "commercial" and any(r.get("category") == "residential" for r in retained_inqs + [old_inq])) or
+                new_cat == "hybrid"
+            )
+            
+            intent_progression.append({
+                "timestamp": now_iso,
+                "event_type": "intent_switch",
+                "title": f"Intent Shift: {old_inq.get('property_type_label', 'Inquiry')} → {active_inq['property_type_label']}",
+                "description": (
+                    f"Customer shifted focus to {active_inq['property_type_label']} in {active_inq['location']} (Budget: {active_budget_fmt}). "
+                    f"Prior inquiry for {old_inq.get('property_type_label')} in {old_inq.get('location')} (Budget: {old_inq.get('budget_formatted', 'N/A')}) retained in memory."
+                ),
+                "active_priority": f"{active_inq['property_type_label']} ({active_inq['location']})",
+                "retained_context": f"{old_inq.get('property_type_label')} ({old_inq.get('location')})",
+                "hybrid_opportunity": hybrid_opp
+            })
+            
+        # 3. Handle Role Switch (e.g. Buyer to Seller / Landlord)
+        elif new_role in ["seller", "landlord"] and active_inq.get("role") == "buyer":
+            retained_inqs.append(dict(active_inq))
+            active_inq["role"] = new_role
+            if new_cat:
+                active_inq["category"] = new_cat
+                active_inq["property_type_label"] = new_label or new_cat.title()
+            if new_loc:
+                active_inq["location"] = new_loc
+            if new_budget:
+                active_inq["budget"] = new_budget
+                active_inq["budget_formatted"] = f"RM {int(new_budget):,}"
+            active_inq["updated_at"] = now_iso
+            
+            intent_progression.append({
+                "timestamp": now_iso,
+                "event_type": "role_switch",
+                "title": f"Role Expansion: Buyer → {new_role.title()}",
+                "description": f"Customer expanded engagement as a {new_role.title()} to list/rent property. Prior buyer requirements preserved.",
+                "active_priority": f"{new_role.title()} ({active_inq.get('property_type_label', 'Property')})",
+                "retained_context": "Buyer Portfolio",
+                "hybrid_opportunity": False
+            })
+            
+        # 4. Refinement or First Inquiry
+        else:
+            if not active_inq:
+                active_inq = {
+                    "category": new_cat or "general",
+                    "property_type_label": new_label or "Property Inquiry",
+                    "location": new_loc or "Bentong",
+                    "budget": new_budget,
+                    "budget_formatted": f"RM {int(new_budget):,}" if new_budget else "To be advised",
+                    "power_amp": new_amp,
+                    "role": new_role,
+                    "updated_at": now_iso
+                }
+                intent_progression.append({
+                    "timestamp": now_iso,
+                    "event_type": "initial_inquiry",
+                    "title": f"Initial Inquiry: {active_inq['property_type_label']}",
+                    "description": f"Customer initiated inquiry for {active_inq['property_type_label']} in {active_inq['location']}.",
+                    "active_priority": f"{active_inq['property_type_label']} ({active_inq['location']})",
+                    "retained_context": None,
+                    "hybrid_opportunity": False
+                })
+            else:
+                # Update with refinement if specified
+                if new_loc:
+                    active_inq["location"] = new_loc
+                if new_budget:
+                    active_inq["budget"] = new_budget
+                    active_inq["budget_formatted"] = f"RM {int(new_budget):,}"
+                if new_amp:
+                    active_inq["power_amp"] = new_amp
+                if new_label and not active_inq.get("property_type_label"):
+                    active_inq["property_type_label"] = new_label
+                active_inq["updated_at"] = now_iso
+
+        # Calculate Hybrid Opportunity (Dual-purpose shop-house)
+        categories_in_profile = {active_inq.get("category")} | {r.get("category") for r in retained_inqs}
+        has_hybrid_potential = ("residential" in categories_in_profile and "commercial" in categories_in_profile) or (active_inq.get("category") == "hybrid")
+
+        # Compile Aggregated Requirements Profile
+        target_locations = list(dict.fromkeys(filter(None, [active_inq.get("location")] + [r.get("location") for r in retained_inqs])))
+        preferred_types = list(dict.fromkeys(filter(None, [active_inq.get("property_type_label")] + [r.get("property_type_label") for r in retained_inqs])))
+        
+        # Formatted Budget Breakdown (Resolving Contradictions)
+        budget_parts = []
+        if active_inq.get("budget"):
+            budget_parts.append(f"{active_inq.get('budget_formatted')} ({active_inq.get('property_type_label')})")
+        for r in retained_inqs:
+            if r.get("budget"):
+                budget_parts.append(f"{r.get('budget_formatted')} ({r.get('property_type_label')})")
+        formatted_budget_str = " | ".join(budget_parts) if budget_parts else (active_inq.get("budget_formatted") or "To be advised")
+        
+        # Power supply
+        power_str = f"⚡ {active_inq.get('power_amp')} Amp (3-Phase)" if active_inq.get("power_amp") else "Standard Residential / Commercial"
+        
+        req_profile["active_inquiry"] = active_inq
+        req_profile["retained_inquiries"] = retained_inqs
+        req_profile["target_locations"] = target_locations
+        req_profile["preferred_property_types"] = preferred_types
+        req_profile["target_budget_myr"] = active_inq.get("budget")
+        req_profile["target_budget_formatted"] = formatted_budget_str
+        req_profile["power_requirements_amp"] = power_str
+        req_profile["hybrid_opportunity"] = has_hybrid_potential
+        
+        session["requirements_profile"] = req_profile
+        session["intent_progression"] = intent_progression
+        
+        # Map criteria for primary and hybrid searches
+        primary_criteria = {
+            "location": active_inq.get("location"),
+            "property_type": active_inq.get("category"),
+            "max_price": active_inq.get("budget"),
+            "min_power_amp": active_inq.get("power_amp")
+        }
+        hybrid_criteria = {
+            "location": active_inq.get("location") or "Bentong",
+            "is_hybrid": True
+        } if has_hybrid_potential else None
+
+        return {
+            "active_inquiry": active_inq,
+            "retained_inquiries": retained_inqs,
+            "hybrid_opportunity": has_hybrid_potential,
+            "has_multi_intent": bool(retained_inqs),
+            "primary_criteria": primary_criteria,
+            "hybrid_criteria": hybrid_criteria,
+            "requirements_profile": req_profile,
+            "intent_progression": intent_progression
+        }
+
+    @staticmethod
+    def persist_customer_memory(phone_number: str, session: dict):
+        """Persists multi-intent profile, progression timeline, and properties into Customer table."""
+        if not phone_number:
+            return
+        try:
+            db = SessionLocal()
+            try:
+                cust = db.query(Customer).filter(Customer.id == phone_number).first()
+                if cust:
+                    meta = dict(cust.metadata_json or {})
+                    meta["requirements_profile"] = session.get("requirements_profile")
+                    meta["intent_progression"] = session.get("intent_progression")
+                    meta["presented_properties"] = session.get("presented_properties")
+                    meta["shortlisted_properties"] = session.get("shortlisted_properties")
+                    if session.get("viewing_acknowledgement"):
+                        meta["viewing_acknowledgement"] = session.get("viewing_acknowledgement")
+                    if session.get("current_agent"):
+                        meta["intent_category"] = session.get("current_agent").lower()
+                    if session.get("lead_temp"):
+                        meta["intention_tag"] = session.get("lead_temp")
+                    cust.metadata_json = meta
+                    db.commit()
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning(f"Failed to persist customer memory for {phone_number}: {e}")
+
+
+def parse_viewing_schedule_datetime(text: str) -> datetime.datetime:
+    """
+    Parses natural language date/time references into a concrete upcoming datetime.
+    Supports English, Malay, and Chinese date/time phrases with standard business hours fallback.
+    """
+    import datetime
+    now = datetime.datetime.now()
+    text_lower = (text or "").lower()
+    target_dt = now + datetime.timedelta(days=1)
+    
+    # 1. Day offsets
+    if any(w in text_lower for w in ["tomorrow", "esok", "besok", "明天"]):
+        target_dt = now + datetime.timedelta(days=1)
+    elif any(w in text_lower for w in ["day after tomorrow", "lusa", "后天"]):
+        target_dt = now + datetime.timedelta(days=2)
+    elif any(w in text_lower for w in ["saturday", "sabtu", "周六", "星期六"]):
+        days_ahead = (5 - now.weekday()) % 7
+        if days_ahead == 0: days_ahead = 7
+        target_dt = now + datetime.timedelta(days=days_ahead)
+    elif any(w in text_lower for w in ["sunday", "ahad", "周日", "星期日", "礼拜天"]):
+        days_ahead = (6 - now.weekday()) % 7
+        if days_ahead == 0: days_ahead = 7
+        target_dt = now + datetime.timedelta(days=days_ahead)
+    elif any(w in text_lower for w in ["monday", "isnin", "周一", "星期一"]):
+        days_ahead = (0 - now.weekday()) % 7
+        if days_ahead == 0: days_ahead = 7
+        target_dt = now + datetime.timedelta(days=days_ahead)
+    elif any(w in text_lower for w in ["tuesday", "selasa", "周二", "星期二"]):
+        days_ahead = (1 - now.weekday()) % 7
+        if days_ahead == 0: days_ahead = 7
+        target_dt = now + datetime.timedelta(days=days_ahead)
+    elif any(w in text_lower for w in ["wednesday", "rabu", "周三", "星期三"]):
+        days_ahead = (2 - now.weekday()) % 7
+        if days_ahead == 0: days_ahead = 7
+        target_dt = now + datetime.timedelta(days=days_ahead)
+    elif any(w in text_lower for w in ["thursday", "khamis", "周四", "星期四"]):
+        days_ahead = (3 - now.weekday()) % 7
+        if days_ahead == 0: days_ahead = 7
+        target_dt = now + datetime.timedelta(days=days_ahead)
+    elif any(w in text_lower for w in ["friday", "jumaat", "周五", "星期五"]):
+        days_ahead = (4 - now.weekday()) % 7
+        if days_ahead == 0: days_ahead = 7
+        target_dt = now + datetime.timedelta(days=days_ahead)
+
+    # 2. Time parsing (default 10:00 AM)
+    hour = 10
+    minute = 0
+    time_match = re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm|pagi|petang|malam|ptg)?', text_lower)
+    if time_match:
+        parsed_h = int(time_match.group(1))
+        parsed_m = int(time_match.group(2)) if time_match.group(2) else 0
+        ampm = (time_match.group(3) or "").lower()
+        if ampm in ["pm", "petang", "malam", "ptg"] and parsed_h < 12:
+            parsed_h += 12
+        elif ampm in ["am", "pagi"] and parsed_h == 12:
+            parsed_h = 0
+        if 8 <= parsed_h <= 19:
+            hour = parsed_h
+            minute = parsed_m
+    elif any(w in text_lower for w in ["afternoon", "petang", "下午"]):
+        hour = 14
+    elif any(w in text_lower for w in ["morning", "pagi", "上午", "早上"]):
+        hour = 10
+
+    return target_dt.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+
 def process_persona_state_machine(phone_number: str, text: str = "", session: dict = None, conversation_history: str = "", contact_name: str = None, raw_text: str = None, **kwargs) -> dict:
     """
     Enterprise-standard Conversational AI Engine for Home IHC.
@@ -55,6 +490,12 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
     actual_text = (text or raw_text or "").strip()
     raw_text = actual_text
     collected_data = session.setdefault("collected_data", {})
+
+    # Detect and track customer language
+    detected_lang = detect_customer_language(actual_text)
+    if detected_lang != "en" or not session.get("language"):
+        session["language"] = detected_lang
+    customer_lang = session.get("language", detected_lang)
 
     # Auto-reset session if in completed/stale state
     if session.get("state") == "COMPLETED" or session.get("handover"):
@@ -112,11 +553,27 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
             session["interested_property"] = history_prop
             cached_prop = history_prop
 
-    # 3. Dynamic RAG Property Search based on user message context
+    # 3. Dynamic RAG Property Search & Multi-Intent Priority Memory
     available_properties = []
+    hybrid_properties = []
     
+    # Update multi-intent preferences and progression timeline
+    memory_context = MultiIntentMemoryTracker.update_session_memory(session, raw_text, conversation_history)
+    active_inq = memory_context["active_inquiry"]
+    is_intent_switch = memory_context.get("is_intent_switch", False)
+    
+    # Sync collected_data with active_inquiry for backward-compatibility
+    if active_inq.get("property_type_label"):
+        collected_data["buyer_property_type"] = active_inq["property_type_label"]
+    if active_inq.get("location"):
+        collected_data["buyer_location"] = active_inq["location"]
+    if active_inq.get("budget"):
+        collected_data["buyer_budget"] = active_inq.get("budget_formatted")
+    if active_inq.get("role"):
+        collected_data["customer_category"] = active_inq["role"]
+
     # Check if user explicitly wants to switch criteria
-    is_switching_context = any(phrase in raw_text.lower() for phrase in [
+    is_switching_context = is_intent_switch or any(phrase in raw_text.lower() for phrase in [
         "other", "another", "different", "instead", "switch to", "what else",
         "durian land", "commercial", "industrial", "house in", "shop in", "land in",
         "店面", "铺位", "店", "shop", "commercial", "rumah kedai"
@@ -127,53 +584,40 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
         cached_prop = None
 
     if not cached_prop:
-        # Search DB for properties relevant to the message
-        search_loc = None
-        for town in ["bentong", "raub", "karak", "temerloh", "mentakab", "pahang", "bukit tinggi", "lanchang", "maran", "kuantan"]:
-            if town in raw_text.lower() or (not is_switching_context and town in conversation_history.lower()):
-                search_loc = town
-                break
-        
-        search_cat = None
-        for cat in ["semi-d", "semi d", "bungalow", "terrace", "durian", "orchard", "shop", "commercial", "warehouse", "factory", "industrial", "land", "house", "店面", "铺位", "kedai"]:
-            if cat in raw_text.lower() or (not is_switching_context and cat in conversation_history.lower()):
-                search_cat = cat
-                break
-                
-        price_match = re.search(r'(\d+[\.\d]*)\s*(m|million|k|thousand|000)', raw_text.lower())
-        max_p = None
-        if price_match:
-            num = float(price_match.group(1))
-            unit = price_match.group(2)
-            if unit in ["m", "million"]:
-                max_p = num * 1_000_000
-            elif unit in ["k", "thousand"]:
-                max_p = num * 1_000
-            else:
-                max_p = num
-
-        criteria = {
-            "location": search_loc or collected_data.get("buyer_location"),
-            "property_type": search_cat or collected_data.get("buyer_property_type"),
-            "max_price": max_p or collected_data.get("buyer_budget")
-        }
-        # GUARD: Only search if at least one explicit criterion exists.
-        # Prevents hallucination when user sends greetings/referrals with no property intent.
-        has_any_criteria = any(v for v in criteria.values() if v and str(v).lower() not in ["none", "null", ""])
+        # Search DB for primary active criteria (1st Priority)
+        primary_crit = memory_context["primary_criteria"]
+        has_any_criteria = any(v for v in primary_crit.values() if v and str(v).lower() not in ["none", "null", ""])
         if has_any_criteria:
-            available_properties = search_properties(criteria, limit=5)
-        # Note: Do NOT force-lock available_properties[0] into session['interested_property']
-        # to avoid hallucinatory property locks on general queries.
+            available_properties = search_properties(primary_crit, limit=5)
+            
+        # Search DB for hybrid dual-purpose options (e.g. shop-house / rumah kedai) if applicable
+        if memory_context.get("hybrid_opportunity"):
+            hybrid_crit = memory_context.get("hybrid_criteria") or {"location": active_inq.get("location") or "Bentong", "is_hybrid": True}
+            hybrid_properties = search_properties(hybrid_crit, limit=3)
+
+    # Record presented properties into session for memory & dashboard display
+    all_presented = available_properties + hybrid_properties
+    if all_presented:
+        session_pres = session.setdefault("presented_properties", [])
+        existing_ids = {str(p.get("id")) for p in session_pres if isinstance(p, dict)}
+        for p in all_presented:
+            if str(p.get("id")) not in existing_ids:
+                session_pres.append(p)
 
     # 4. LLM Intent & Conversational Generation
+    llm_kwargs = dict(kwargs)
+    llm_kwargs["customer_language"] = customer_lang
     llm_analysis = generate_conversational_response(
         text=raw_text,
         cached_property=cached_prop,
         available_properties=available_properties if not cached_prop else [],
+        hybrid_properties=hybrid_properties,
+        memory_context=memory_context,
         conversation_history=conversation_history,
         collected_data=collected_data,
         customer_name=current_user_name,
-        unlisted_property_text=_property_entity_text if _property_entity_detected else None
+        unlisted_property_text=_property_entity_text if _property_entity_detected else None,
+        **llm_kwargs
     )
 
     # Merge extracted data
@@ -184,10 +628,16 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
     is_out_of_context = llm_analysis.get("is_out_of_context", False)
     if is_out_of_context:
         session["state"] = "COMPLETED"
+        if customer_lang == "zh":
+            ooc_resp = f"感谢您联系 Home IHC。您的咨询已转交至我们的行政团队（{ADMIN_EMAIL}），专员将尽快跟进处理。"
+        elif customer_lang == "ms":
+            ooc_resp = f"Terima kasih kerana menghubungi Home IHC. Pertanyaan anda telah dimajukan kepada pasukan pentadbiran kami di {ADMIN_EMAIL}, dan pegawai kami akan menghubungi anda sebentar lagi."
+        else:
+            ooc_resp = f"Thank you for contacting Home IHC. I have forwarded your inquiry to our administration team at {ADMIN_EMAIL}, and a representative will follow up with you shortly."
         return {
-            "response": "Thank you for contacting Home IHC. I have forwarded your inquiry to our administration team at homeihc13@gmail.com, and a representative will follow up with you shortly.",
+            "response": ooc_resp,
             "handover": True,
-            "assignee_email": "homeihc13@gmail.com",
+            "assignee_email": ADMIN_EMAIL,
             "images_to_send": [],
             "updated_session": session
         }
@@ -250,24 +700,74 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
     handover = False
     response_text = llm_analysis.get("response", "How may Home IHC assist you with properties in Pahang today? 😊")
 
-    handover_phrases = [
-        "call me", "speak to human", "talk to agent", "contact me directly",
-        "transfer to human", "speak to a person", "talk to a person", "real agent",
-        "real person", "human agent", "human staff", "person in charge",
-        "真人", "转人工", "人工客服", "联系真人", "找真人",
-        "电话联系", "安排见面", "nak jumpa", "call saya", "hubungi saya", "agent sebenar", 
-        "cakap dengan orang", "temujanji"
+    user_wants_immediate_human = is_explicit_handover_request(raw_text)
+    
+    # 7. Autonomous Viewing Scheduling & Viewing Acknowledgement Engine Trigger
+    schedule_viewing = False
+    scheduled_viewing_dt = None
+    
+    viewing_phrases = [
+        "安排看房", "预约看房", "睇楼", "tengok rumah", "tengok tanah", "arrange viewing", 
+        "schedule viewing", "book viewing", "view the property", "see the land", "visit the land",
+        "visit the property", "can view", "view tomorrow", "view saturday", "viewing on"
     ]
-    user_wants_immediate_human = any(phrase in raw_text.lower() for phrase in handover_phrases) or bool(re.search(r'\bpic\b', raw_text.lower()))
-    user_books_cached_viewing = bool(cached_prop) and (bool(asked_meeting) or any(phrase in raw_text.lower() for phrase in ["安排看房", "预约看房", "睇楼", "tengok rumah", "tengok tanah", "arrange viewing", "schedule viewing", "viewing"]))
+    has_viewing_confirmation = (
+        bool(llm_analysis.get("viewing_confirmed"))
+        or any(phrase in raw_text.lower() for phrase in viewing_phrases)
+        or (bool(cached_prop) and any(d in raw_text.lower() for d in ["tomorrow", "saturday", "sunday", "esok", "sabtu", "ahad", "周六", "周日", "明天", "后天", "next week", "minggu depan"]) and any(w in raw_text.lower() or w in conversation_history.lower() for w in ["view", "tengok", "see", "visit", "look", "看"]))
+    )
+    user_books_cached_viewing = bool(cached_prop) and (bool(asked_meeting) or has_viewing_confirmation)
 
-    if user_wants_immediate_human or user_books_cached_viewing:
+    if bool(cached_prop) and has_viewing_confirmation:
+        schedule_viewing = True
+        raw_date_hint = llm_analysis.get("viewing_date_text") or raw_text
+        scheduled_viewing_dt = parse_viewing_schedule_datetime(raw_date_hint)
+        formatted_date_str = scheduled_viewing_dt.strftime("%A, %d %B %Y at %I:%M %p")
+        
+        name_str = f" {current_user_name}" if current_user_name else ""
+        prop_title = cached_prop.get('title')
+        if customer_lang == "zh":
+            response_text = (
+                f"太好了{name_str}！😊 我已为您安排了在 {formatted_date_str} 实地参观 {prop_title}。"
+                f"我们正在为您准备官方客户看房确认书（Customer Property Viewing Acknowledgement），以便向业主预约确认。"
+            )
+        elif customer_lang == "ms":
+            response_text = (
+                f"Bagus sekali{name_str}! 😊 Saya telah jadualkan sesi lawatan tapak anda untuk {prop_title} "
+                f"pada {formatted_date_str}. Kami sedang menyediakan borang Pengesahan Lawatan Hartanah Pelanggan rasmi untuk semakan anda."
+            )
+        else:
+            response_text = (
+                f"Wonderful{name_str}! 😊 I have scheduled your onsite viewing for {prop_title} "
+                f"on {formatted_date_str}. I am generating and sending your official Customer Property "
+                f"Viewing Acknowledgement form right now for your review."
+            )
+        collected_data["scheduled_viewing_date"] = scheduled_viewing_dt.isoformat()
+        collected_data["scheduled_property_title"] = prop_title
+        session["viewing_scheduled"] = True
+
+    if user_wants_immediate_human:
         handover = True
         name_str = f" {current_user_name}" if current_user_name else ""
         prop_str = f" for {cached_prop.get('title')}" if cached_prop else ""
-        if "senior" not in response_text.lower() and "specialist" not in response_text.lower() and "representative" not in response_text.lower():
-            response_text = f"Thank you{name_str}! 😊 We have recorded your request{prop_str}. A senior property specialist from Home IHC will contact you shortly to follow up directly."
+        if "senior" not in response_text.lower() and "specialist" not in response_text.lower() and "representative" not in response_text.lower() and "专员" not in response_text and "pegawai" not in response_text.lower():
+            response_text = get_multilingual_handover_wrapup(customer_lang, current_user_name, cached_prop.get('title') if cached_prop else None)
         session["state"] = "COMPLETED"
+    elif user_books_cached_viewing:
+        handover = True
+        session["state"] = "COMPLETED"
+
+    # Track viewing acknowledgement status if user expressed inspection intent
+    if user_books_cached_viewing or bool(asked_meeting) or any(k in raw_text.lower() for k in ["viewing", "看房", "睇楼", "tengok rumah", "tengok tanah", "arrange viewing", "schedule viewing"]):
+        import datetime
+        prop_title = cached_prop.get('title') if cached_prop else (session.get("requirements_profile", {}).get("active_inquiry", {}).get("property_type_label") or "Property")
+        session["viewing_acknowledgement"] = {
+            "status": "Scheduled",
+            "form_no": "Form 0190",
+            "date": (scheduled_viewing_dt or datetime.datetime.utcnow()).strftime("%d.%m.%Y"),
+            "agent_name": "Irene Leong (ERA Realtor / Home IHC)",
+            "notes": f"Inspection appointment requested for {prop_title}"
+        }
 
     # Save session state & mark introduction as completed
     collected_data["introduced"] = True
@@ -275,10 +775,16 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
     session["current_agent"] = collected_data.get("customer_category", "BUYER").upper()
     session["collected_data"] = collected_data
 
+    # Persist updated multi-intent memory and profile to Customer table
+    MultiIntentMemoryTracker.persist_customer_memory(phone_number, session)
+
     return {
         "response": response_text,
         "handover": handover,
         "images_to_send": images_to_send,
+        "schedule_viewing": schedule_viewing,
+        "viewing_property": cached_prop if schedule_viewing else None,
+        "viewing_date": scheduled_viewing_dt,
         "updated_session": session
     }
 
@@ -302,111 +808,26 @@ def generate_conversational_response(
         collected_data = {}
     if available_properties is None:
         available_properties = []
-    prop_context = ""
-    if cached_property:
-        prop_context = f"""
-Inquired Property in Context:
-- Title: {cached_property.get('title')}
-- Price: RM {cached_property.get('price', 'N/A')}
-- Location: {cached_property.get('city')}, {cached_property.get('state')}
-- Size / Tenure: {cached_property.get('acres')} Acres ({cached_property.get('sqft')} sqft), {cached_property.get('tenure')}
-- Status: {cached_property.get('status')}
-- Photos Available: {len(cached_property.get('image_urls', []))} photos
-"""
-    elif available_properties:
-        props_list = []
-        for p in available_properties[:4]:
-            price_str = f"RM {p['price']:,.0f}" if p.get('price') else "Price on inquiry"
-            props_list.append(f"- {p['title']} ({price_str}) - {p.get('city') or 'Pahang'}")
-        prop_context = "Matching Properties in Database:\n" + "\n".join(props_list)
-    elif unlisted_property_text:
-        prop_context = f"""
-[PROPERTY_STATUS: UNLISTED_OR_OFF_MARKET_LOCATION]
-The customer inquired about a specific location or property ("{unlisted_property_text}") where Home IHC currently has 0 active published listings in the database.
-Off-Market Sourcing Protocol (Option A):
-- Rental and unlisted units in this area (e.g. {unlisted_property_text}) are handled through Home IHC's offline network of local property owners and private landlords.
-- Transparently explain this off-market sourcing mechanism to the customer.
-- Acknowledge and confirm all requirements they specified (property type, budget, location near landmarks like HOSHAS, move-in date, occupant background).
-- Ask if they would like our local area agent to scout unlisted landlords and offline listings for them, or if they are open to nearby areas.
-- Do NOT fabricate fake listings, addresses, or prices.
-- KEEP CHATTING naturally. Do NOT end the conversation with a generic handover message unless they explicitly ask for an immediate phone call or human agent.
-"""
 
-    has_prior_assistant_intro = (
-        "Assistant:" in conversation_history or 
-        "Irene Leong" in conversation_history or 
-        "mecard.my" in conversation_history or
-        bool(collected_data.get("introduced"))
+    role = (kwargs.get("role") or "customer").lower()
+    db_context = kwargs.get("db_context") or {}
+    memory_context = kwargs.get("memory_context") or {}
+    hybrid_properties = kwargs.get("hybrid_properties") or []
+    customer_lang = kwargs.get("customer_language") or detect_customer_language(text)
+
+    system_prompt = build_system_prompt(
+        cached_property=cached_property,
+        available_properties=available_properties if not cached_property else [],
+        unlisted_property_text=unlisted_property_text,
+        collected_data=collected_data,
+        customer_name=customer_name,
+        conversation_history=conversation_history,
+        customer_language=customer_lang,
+        role=role,
+        db_context=db_context,
+        memory_context=memory_context,
+        hybrid_properties=hybrid_properties
     )
-
-    if has_prior_assistant_intro:
-        greeting_instruction = """[CONVERSATION_STAGE: ONGOING_DIALOGUE]
-CRITICAL ANTI-REPETITION RULE:
-- You have ALREADY introduced yourself in this conversation.
-- STRICTLY DO NOT repeat your introduction (DO NOT say "我是来自 ERA Realtor 的 Irene Leong" or "I'm Irene Leong").
-- STRICTLY DO NOT re-send your digital name card link (https://my.mecard.my/1733211127).
-- Proceed DIRECTLY, concisely, and naturally to addressing the customer's question."""
-    else:
-        greeting_instruction = """[CONVERSATION_STAGE: FIRST_INTERACTION]
-- In your introductory greeting, introduce yourself as: "I'm Irene Leong, a Senior Property Agent from ERA Realtor." (In Chinese: "我是来自 ERA Realtor 的 Irene Leong。")
-- The company providing the properties and assistance is Home IHC (e.g. "How can Home IHC assist you today?").
-- Share your digital name card: https://my.mecard.my/1733211127."""
-
-    name_instruction = f"The customer's name is '{customer_name}'. Greet them naturally by name (e.g. 'Hi {customer_name}! 😊'). DO NOT ask for their name." if customer_name else "If the customer mentions their name, address them by name. Do not interrogate."
-
-    system_prompt = f"""You are Irene Leong, a Senior Property Agent from ERA Realtor representing Home IHC (Home IHC Sdn. Bhd. / BentongLand).
-Agency / License Affiliation: ERA Realtor
-Company Name / Brand: Home IHC (Strictly Home IHC for company services, reviews, and general assistance)
-Digital Name Card: https://my.mecard.my/1733211127
-
-{prop_context}
-Known Customer Context: {json.dumps(collected_data)}
-
-{greeting_instruction}
-
-Core Operational Directives:
-1. Tone & Persona: Warm, professional, consultative, and natural—like an experienced senior Malaysian real estate negotiator chatting on WhatsApp. Never sound robotic or like a rigid questionnaire.
-2. Multilingual & Malaysian Dialect Fluency:
-   - You fully comprehend Cantonese (广东话), Hokkien (福建话), Bahasa Melayu (Pasar Malay), Malaysian Mandarin (华语), and English/Manglish.
-   - Reply in the customer's primary language (English, Chinese, or Malay).
-   - Dialect Context Mapping:
-     * Cantonese: 铺位/铺头 = Commercial shoplot; 睇楼 = Viewing; 几多钱 = How much; 顶手/顶租 = Takeover; 屋主 = Landlord/Owner; 水钱/佣金 = Commission.
-     * Hokkien: Tiàm-thâu = Shoplot; Chhu = House; Chhut-cho͘ = Rent; Thô͘-tī = Land; Lō͘-piⁿ = Roadside.
-     * Malay: sewa = Rent; jual = Sell; kedai/rumah kedai = Shoplot; tanah lot = Land; sewa sebulan = 1 month rental; deposit 2+1 = 2 months security deposit + 1 month utility.
-3. Active Guidance & Direct Answers (Never Loop):
-   - If a customer mentions shorthand like "一个月" (one month), answer directly with Malaysian real estate standards:
-     * Tenancy Advance: 1 month advance rental required before key handover.
-     * Security & Utility Deposit: Standard is 2 months security deposit + 1 month utility deposit.
-     * Agency Commission: Standard 1 month rental payable by the landlord/owner.
-   - If a customer clarifies they want a commercial shop (店面) rather than a house, IMMEDIATELY pivot, acknowledge the commercial shop requirement, suggest 1-2 suitable areas (e.g., Kuantan Town Center, Indera Mahkota, Air Putih) with typical price ranges, and ask if they need ground floor or upper floor.
-   - If matching properties are provided in context, introduce 1-3 concrete options with titles and prices, and ask which one they would like more details or photos for.
-   - NEVER hallucinate that the customer asked about a specific property (e.g. Taman Seri Galing house) unless they explicitly named it.
-4. Handover Discipline:
-   - Only trigger human handover or say "A senior specialist from Home IHC will contact you" if:
-     * The customer explicitly demands an immediate telephone call, human agent ("转人工", "call me", "speak to human"), or confirms a concrete viewing appointment date/time for a specific existing listing.
-     * DO NOT hand over or terminate dialogue merely because a user expresses hypothetical future interest (e.g. "if you have suitable houses I would be interested in viewing"). Keep the consultative conversation going!
-5. Unlisted / Zero-Inventory Area Protocol (Off-Market Sourcing):
-   - When a tenant or buyer inquires about an area with 0 database matches (e.g. Temerloh, Mentakab, Jerantut):
-     * Transparently explain that rental units in that area are handled through our offline/off-market owner network rather than public advertisements.
-     * Confirm their requirements (location, budget, bedrooms, furnishings, move-in date, tenant profile).
-     * Ask if they want our local area agent to scout unlisted owners and private listings for them, or if they are open to nearby areas.
-     * KEEP CHATTING naturally. Ask friendly follow-up questions to complete their profile without sounding like an interrogation.
-   - If the customer is an owner/seller asking to list an unlisted property:
-     * Offer valuation and marketing assistance, and ask for property details (land size, title, asking price).
-6. Guardrails: If the user is applying for a job, selling unrelated services, or spamming, set "is_out_of_context": true.
-
-Output JSON format strictly:
-{{
-  "intent": "buyer" | "seller" | "tenant" | "agent" | "general",
-  "asked_photos": boolean,
-  "asked_specs": boolean,
-  "asked_meeting": boolean (True ONLY if user demands an immediate telephone call or schedules a physical viewing for an existing listing; False for general/exploratory inquiries),
-  "asked_alternatives": boolean,
-  "new_constraints": {{ "max_price": float, "city": string, "category": string }},
-  "is_out_of_context": boolean,
-  "extracted_data": {{ "name": string, "customer_category": string, "buyer_location": string, "buyer_property_type": string, "buyer_budget": string, "location": string, "property_type": string, "asking_price": string, "company_name": string }},
-  "response": "Your friendly, human-like, consultative response to the customer."
-}}"""
 
     messages = [
         {"role": "system", "content": system_prompt}
@@ -439,15 +860,20 @@ Output JSON format strictly:
         raise ValueError(f"Failed to parse valid JSON response from LLM content: {content[:100] if content else 'empty'}")
     except Exception as e:
         logger.error(f"Error calling LLM for conversational response: {e}")
-        if conversation_history:
-            fallback_msg = "Thank you for sharing your requirements! For this area, our rental listings are primarily sourced off-market directly from landlords. Our team will follow up with suitable options. Could you let me know if you are open to nearby locations as well, or if you prefer strictly within 5 km?"
-        else:
-            fallback_msg = "Good day! 😊 I'm Irene Leong, a Senior Property Agent from ERA Realtor. How may Home IHC assist you with properties in Pahang today?"
+        lang = kwargs.get("customer_language") or detect_customer_language(text)
+        # P0 fix: Always treat as ongoing conversation if introduced flag is set or any history exists
+        has_prior_history = bool(conversation_history or collected_data.get("introduced") or kwargs.get("session", {}).get("introduced"))
+        # If introduced but conversation_history is empty, synthesize a minimal history marker
+        # so get_multilingual_fallback returns the ongoing-conversation message, not the greeting
+        effective_history = conversation_history if conversation_history else ("Assistant: [prior conversation exists]" if has_prior_history else None)
+        fallback_msg = get_multilingual_fallback(lang, effective_history)
         return {
             "intent": "general",
             "asked_photos": False,
             "asked_specs": False,
             "asked_meeting": False,
+            "viewing_confirmed": False,
+            "viewing_date_text": None,
             "asked_alternatives": False,
             "new_constraints": {},
             "is_out_of_context": False,

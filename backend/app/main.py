@@ -13,6 +13,7 @@ from app.api.admin import router as admin_router
 from app.api.auth import router as auth_router
 from app.api.users import router as users_router
 from app.api.transcripts import router as transcripts_router
+from app.api.acknowledgements import router as acknowledgements_router
 from app.db.models import Base, engine, SessionLocal, User, WorkflowTemplate, Customer, Property, run_schema_migrations
 from app.core.security import get_password_hash
 
@@ -127,6 +128,7 @@ app.include_router(customers_router, prefix="/api/v1/customers", tags=["Customer
 app.include_router(settings_router, prefix="/api/v1/settings", tags=["Settings"])
 app.include_router(admin_router, prefix="/api/v1/admin", tags=["Workflows & Admin"])
 app.include_router(transcripts_router)
+app.include_router(acknowledgements_router, prefix="/api/v1/acknowledgements", tags=["Viewing Acknowledgements"])
 
 @app.get("/health")
 def health_check():

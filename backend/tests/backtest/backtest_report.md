@@ -1,10 +1,10 @@
 # Conversational & Workflow Backtesting Report
 
 **System:** Home IHC WhatsApp AI CRM Automation ([BentongLand.com.my](https://bentongland.com.my/))
-**Execution Timestamp:** 2026-09-11T15:34:34.539124+00:00
+**Execution Timestamp:** 2026-09-12T14:11:46.970114+00:00
 **Status:** ✅ PASSED
 **Pass Rate:** 100.0% (7/7 scenarios)
-**Total Execution Latency:** 9.55 ms
+**Total Execution Latency:** 10.08 ms
 
 ## Scenario Summary Matrix
 
@@ -14,9 +14,9 @@
 | `SCENARIO-02-SELLER` | Landowner Intake & Anti-Bypassing Verification | Seller / Landowner | ✅ Pass | 0.0ms | 3/3 |
 | `SCENARIO-03-TENANT` | Off-Market Rental Inquiry & Tenant Profiling | Tenant | ✅ Pass | 0.0ms | 3/3 |
 | `SCENARIO-04-VALUER` | Bank Valuer Intake & Automated Handover | Bank Valuer | ✅ Pass | 0.0ms | 3/3 |
-| `SCENARIO-05-DOCS` | Customer Viewing Acknowledgement OpenXML & 22-Field Verification | Co-Broke Agent / Legal | ✅ Pass | 6.0ms | 4/4 |
-| `SCENARIO-06-POLICY` | Meta 24-Hour Customer Care Policy Window Enforcement | Nurturing Daemon / Policy Guard | ✅ Pass | 1.2ms | 5/5 |
-| `SCENARIO-07-PARITY` | OpenXML Archive & Excel Schema Parity Verification | System Architecture / QA | ✅ Pass | 2.1ms | 3/3 |
+| `SCENARIO-05-DOCS` | Customer Viewing Acknowledgement OpenXML & 22-Field Verification | Co-Broke Agent / Legal | ✅ Pass | 6.6ms | 4/4 |
+| `SCENARIO-06-POLICY` | Meta 24-Hour Customer Care Policy Window Enforcement | Nurturing Daemon / Policy Guard | ✅ Pass | 1.3ms | 5/5 |
+| `SCENARIO-07-PARITY` | OpenXML Archive & Excel Schema Parity Verification | System Architecture / QA | ✅ Pass | 2.0ms | 3/3 |
 
 ## Detailed Scenario Audit & Assertions
 
@@ -55,7 +55,7 @@
 
 ### `SCENARIO-05-DOCS`: Customer Viewing Acknowledgement OpenXML & 22-Field Verification
 - **Persona:** Co-Broke Agent / Legal
-- **Execution Time:** 6.04 ms
+- **Execution Time:** 6.56 ms
 - **Verification Assertions:**
   - [✓] **Form Number Run Verification**: Found form number in header paragraph: 'CUSTOMER PROPERTY VIEWING ACKNOWLEDGEMENT 	                                  		      No: 0777'.
   - [✓] **Customer Name in Table 0**: Customer name correctly populated inside Table 0 Cell 0.
@@ -64,7 +64,7 @@
 
 ### `SCENARIO-06-POLICY`: Meta 24-Hour Customer Care Policy Window Enforcement
 - **Persona:** Nurturing Daemon / Policy Guard
-- **Execution Time:** 1.20 ms
+- **Execution Time:** 1.34 ms
 - **Verification Assertions:**
   - [✓] **Customer A Eligibility Evaluation**: Customer A evaluated as eligible and within 24-hour window.
   - [✓] **Customer A Automated Follow-up Dispatch**: Automated follow-up message sent within 24h window.
@@ -74,8 +74,8 @@
 
 ### `SCENARIO-07-PARITY`: OpenXML Archive & Excel Schema Parity Verification
 - **Persona:** System Architecture / QA
-- **Execution Time:** 2.12 ms
+- **Execution Time:** 1.97 ms
 - **Verification Assertions:**
-  - [✓] **Buyer Excel Generation**: Generated 1914 bytes of valid Excel OpenXML archive.
+  - [✓] **Buyer Excel Generation**: Generated 1913 bytes of valid Excel OpenXML archive.
   - [✓] **Buyer OpenXML Archive Integrity**: Contains [Content_Types].xml, workbook.xml, and sheet1.xml.
   - [✓] **Owner Excel Generation**: Generated 1995 bytes of valid Owner Excel archive.

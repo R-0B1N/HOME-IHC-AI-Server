@@ -1,16 +1,17 @@
+import os
+import json
 import logging
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
-from app.db.models import SessionLocal, Customer, Admin, Employee, InteractionLog, Property
+from sqlalchemy.orm.attributes import flag_modified
+from app.db.models import SessionLocal, Customer, Admin, Employee, InteractionLog, Property, User
 
 logger = logging.getLogger(__name__)
 
-import json
-
 def get_or_create_customer(phone_number: str, contact_name: str, email: str = None, conversation_id: int = None, metadata: dict = None) -> Customer:
     """
-    Checks if a customer exists by phone_number. If not, creates one.
+    Checks if a customer exists by phone_number (with normalization). If not, creates one.
     Returns the Customer object.
     """
     db: Session = SessionLocal()
@@ -19,18 +20,38 @@ def get_or_create_customer(phone_number: str, contact_name: str, email: str = No
             logger.warning("No phone number provided to get_or_create_customer")
             return None
             
-        customer = db.query(Customer).filter(Customer.id == phone_number).first()
+        clean_phone = phone_number.replace("+", "").replace(" ", "").replace("-", "").strip()
+        customer = db.query(Customer).filter(
+            (Customer.id == phone_number) | 
+            (Customer.id == clean_phone) | 
+            (Customer.id == f"+{clean_phone}") |
+            (Customer.id.like(f"%{clean_phone}%"))
+        ).first()
+
+        is_staging_env = (
+            os.getenv("DB_HOST") == "whatsapp_ai_db_staging"
+            or "staging" in os.getenv("REDIS_HOST", "")
+            or os.getenv("APP_ENV") == "staging"
+            or os.getenv("ENVIRONMENT", "").lower() == "staging"
+        )
+        staging_inbox = int(os.getenv("STAGING_INBOX_ID", "4"))
+
+        merged_meta = dict(metadata or {})
+        if is_staging_env and "inbox_id" not in merged_meta:
+            merged_meta["inbox_id"] = staging_inbox
+            merged_meta["environment"] = "staging"
+
         if not customer:
             logger.info(f"Creating new customer: {contact_name} ({phone_number})")
             # Parse country if possible (simple heuristic for Malaysia)
-            country = "Malaysia" if phone_number.startswith("+60") else "Unknown"
+            country = "Malaysia" if phone_number.startswith("+60") or phone_number.startswith("60") else "Unknown"
             customer = Customer(
                 id=phone_number,
                 country=country,
                 contact_name=contact_name,
                 email=email,
                 conversation_ids=[conversation_id] if conversation_id else [],
-                metadata_json=metadata if metadata else {}
+                metadata_json=merged_meta
             )
             db.add(customer)
             try:
@@ -39,7 +60,9 @@ def get_or_create_customer(phone_number: str, contact_name: str, email: str = No
             except IntegrityError:
                 db.rollback()
                 logger.warning(f"Customer {phone_number} was created concurrently. Fetching existing.")
-                customer = db.query(Customer).filter(Customer.id == phone_number).first()
+                customer = db.query(Customer).filter(
+                    (Customer.id == phone_number) | (Customer.id == clean_phone)
+                ).first()
                 if not customer:
                     return None
         if customer:
@@ -51,17 +74,18 @@ def get_or_create_customer(phone_number: str, contact_name: str, email: str = No
                 updated = True
                 
             if conversation_id:
-                conv_ids = customer.conversation_ids or []
+                conv_ids = list(customer.conversation_ids or [])
                 if conversation_id not in conv_ids:
                     conv_ids.append(conversation_id)
                     customer.conversation_ids = conv_ids
+                    flag_modified(customer, "conversation_ids")
                     updated = True
                     
-            if metadata:
-                current_meta = customer.metadata_json or {}
-                # Update with new metadata
-                current_meta.update(metadata)
+            if merged_meta:
+                current_meta = dict(customer.metadata_json or {})
+                current_meta.update(merged_meta)
                 customer.metadata_json = current_meta
+                flag_modified(customer, "metadata_json")
                 updated = True
 
             if updated:
@@ -103,30 +127,119 @@ def log_interaction(customer_id: str, message_in: str, message_out: str):
     finally:
         db.close()
 
+def normalize_phone_variants(phone_number: str) -> list:
+    """
+    Normalizes a phone number into all equivalent standard formats:
+    - Strips spaces, dashes, dots, parentheses, and WhatsApp suffixes (@s.whatsapp.net, @c.us).
+    - Produces variants with and without '+' prefix, and Malaysian local prefix variants.
+    """
+    if not phone_number:
+        return []
+    
+    clean = str(phone_number).strip().split("@")[0]
+    digits_only = "".join(c for c in clean if c.isdigit())
+    
+    if not digits_only:
+        return []
+        
+    variants = set()
+    variants.add(digits_only)
+    variants.add(f"+{digits_only}")
+    
+    # Malaysian regional format expansions:
+    # If starts with 601... (Malaysia country code)
+    if digits_only.startswith("60") and len(digits_only) >= 11:
+        local_my = "0" + digits_only[2:]
+        variants.add(local_my)
+    # If starts with 01... (Malaysia local number)
+    elif digits_only.startswith("01") and len(digits_only) >= 10:
+        intl_my = "60" + digits_only[1:]
+        variants.add(intl_my)
+        variants.add(f"+{intl_my}")
+
+    return list(variants)
+
+
 def get_sender_role(phone_number: str) -> str:
     """
-    Checks the phone number against Admin, Employee, and Customer tables.
-    Returns 'admin', 'employee', or 'customer'.
+    Checks the phone number against crm_users (User), with legacy Admin and Employee tables as fallback.
+    Returns 'admin', 'agent', 'employee', 'viewer', or 'customer'.
+    Only active accounts (is_active=True) in crm_users are granted non-customer roles.
     """
     db: Session = SessionLocal()
     try:
         if not phone_number:
-            return "unknown"
+            return "customer"
             
-        is_admin = db.query(Admin).filter(Admin.phone_number == phone_number).first()
+        variants = normalize_phone_variants(phone_number)
+        if not variants:
+            return "customer"
+            
+        # 1. Primary Lookup: crm_users table (active users)
+        crm_user = db.query(User).filter(
+            User.phone_number.in_(variants),
+            User.is_active == True
+        ).first()
+        
+        if crm_user and crm_user.role:
+            role = crm_user.role.strip().lower()
+            if role in ["admin", "agent", "employee", "viewer"]:
+                return role
+                
+        # 2. Legacy fallback: admins table
+        is_admin = db.query(Admin).filter(Admin.phone_number.in_(variants)).first()
         if is_admin:
             return "admin"
             
-        is_employee = db.query(Employee).filter(Employee.phone_number == phone_number).first()
+        # 3. Legacy fallback: employees table
+        is_employee = db.query(Employee).filter(Employee.phone_number.in_(variants)).first()
         if is_employee:
             return "employee"
             
         return "customer"
     except Exception as e:
-        logger.error(f"Error checking sender role: {e}")
+        logger.error(f"Error checking sender role for {phone_number}: {e}")
         return "customer"
     finally:
         db.close()
+
+
+def get_active_crm_user_by_phone(phone_number: str):
+    """
+    Retrieves the active User object from crm_users matching phone variants.
+    """
+    db: Session = SessionLocal()
+    try:
+        variants = normalize_phone_variants(phone_number)
+        if not variants:
+            return None
+        return db.query(User).filter(
+            User.phone_number.in_(variants),
+            User.is_active == True
+        ).first()
+    except Exception as e:
+        logger.error(f"Error fetching crm_user by phone {phone_number}: {e}")
+        return None
+    finally:
+        db.close()
+
+
+def get_active_agents_and_employees() -> list:
+    """
+    Queries all active agents and employees from crm_users.
+    """
+    db: Session = SessionLocal()
+    try:
+        return db.query(User).filter(
+            User.is_active == True,
+            User.role.in_(["agent", "employee"])
+        ).all()
+    except Exception as e:
+        logger.error(f"Error querying active agents and employees: {e}")
+        return []
+    finally:
+        db.close()
+
 
 def search_properties(criteria: dict, limit: int = 10) -> list:
     """
@@ -136,7 +249,13 @@ def search_properties(criteria: dict, limit: int = 10) -> list:
     db: Session = SessionLocal()
     try:
         query = db.query(Property).filter(
-            Property.listing_status.in_(["Available", "For Sale", "For Rent"])
+            Property.listing_status.in_(["Available", "For Sale", "For Rent"]),
+            ~Property.title.ilike("test%"),
+            ~Property.title.ilike("dummy%"),
+            or_(
+                Property.asking_price_myr > 0,
+                Property.monthly_rental_income_myr > 0
+            )
         )
         
         location = criteria.get("location")
@@ -151,12 +270,38 @@ def search_properties(criteria: dict, limit: int = 10) -> list:
             ))
             
         property_type = criteria.get("property_type")
-        if property_type and str(property_type).lower() not in ["none", "null", "all"]:
+        is_hybrid = criteria.get("is_hybrid", False)
+
+        if is_hybrid:
+            # Query for dual-purpose properties (shop-house, rumah kedai, mixed commercial/residential, live-work)
+            query = query.filter(or_(
+                Property.title.ilike("%kedai%"),
+                Property.title.ilike("%shop%"),
+                Property.title.ilike("%mixed%"),
+                Property.title.ilike("%live-work%"),
+                Property.property_type_sub.ilike("%kedai%"),
+                Property.property_type_sub.ilike("%shop%"),
+                Property.property_type_sub.ilike("%mixed%"),
+                Property.search_corpus_markdown.ilike("%rumah kedai%"),
+                Property.search_corpus_markdown.ilike("%shop-house%"),
+                Property.search_corpus_markdown.ilike("%shophouse%")
+            ))
+        elif property_type and str(property_type).lower() not in ["none", "null", "all"]:
             search_type = f"%{property_type}%"
             query = query.filter(or_(
                 Property.title.ilike(search_type),
-                Property.search_corpus_markdown.ilike(search_type)
+                Property.search_corpus_markdown.ilike(search_type),
+                Property.property_type_sub.ilike(search_type)
             ))
+
+        min_power_amp = criteria.get("min_power_amp")
+        if min_power_amp:
+            try:
+                min_amp_val = int(min_power_amp)
+                if min_amp_val > 0:
+                    query = query.filter(Property.power_supply_amp >= min_amp_val)
+            except (ValueError, TypeError):
+                pass
             
         max_price = criteria.get("max_price")
         if max_price:
@@ -197,6 +342,10 @@ def search_properties(criteria: dict, limit: int = 10) -> list:
                 "city": p.city,
                 "state": p.state,
                 "acres": p.land_area_acres,
+                "built_up_area_sqft": p.built_up_area_sqft,
+                "property_type_sub": p.property_type_sub,
+                "property_category": p.property_category or [],
+                "power_supply_amp": p.power_supply_amp,
                 "status": p.listing_status,
                 "url": p.source_url or f"https://bentongland.com.my/land/{p.id}",
                 "image_urls": p.image_urls or []
@@ -227,8 +376,22 @@ def _clean_search_tokens(text: str) -> list:
         cleaned = cleaned.replace(filler, " ")
     # Keep alphanumeric tokens with length >= 2
     tokens = re.findall(r'[a-zA-Z0-9\-]+', cleaned)
-    stop_words = {"the", "a", "an", "at", "in", "on", "of", "and", "or", "to", "for", "is", "it", "with", "this", "that", "some", "any"}
+    stop_words = {"the", "a", "an", "at", "in", "on", "of", "and", "or", "to", "for", "is", "it", "with", "this", "that", "some", "any", "test", "testing", "dummy", "sample"}
     return [t for t in tokens if t not in stop_words and len(t) > 1]
+
+
+def _is_authentic_listing(p: Property) -> bool:
+    """Validates that a property is an authentic active listing, not a dummy or zero-price test record."""
+    if not p or not p.title:
+        return False
+    title_lower = p.title.strip().lower()
+    if title_lower in ["test", "testing", "dummy", "sample"] or title_lower.startswith("test ") or title_lower.startswith("dummy "):
+        return False
+    has_price = (p.asking_price_myr is not None and p.asking_price_myr > 0)
+    has_rent = (p.monthly_rental_income_myr is not None and p.monthly_rental_income_myr > 0)
+    if not has_price and not has_rent:
+        return False
+    return True
 
 
 def find_matching_property(text: str) -> dict:
@@ -240,6 +403,10 @@ def find_matching_property(text: str) -> dict:
     if not text or len(text.strip()) < 3:
         return None
         
+    raw_clean = text.strip().lower()
+    if raw_clean in ["test", "testing", "sample", "dummy"]:
+        return None
+
     db: Session = SessionLocal()
     try:
         raw_text = text.strip()
@@ -249,18 +416,18 @@ def find_matching_property(text: str) -> dict:
         if url_match:
             url_str = url_match.group(0).rstrip('/')
             p = db.query(Property).filter(Property.source_url.ilike(f"%{url_str}%")).first()
-            if p:
+            if p and _is_authentic_listing(p):
                 return _format_property_dict(p)
             # Try matching by slug
             slug = url_str.split('/')[-1]
             if slug:
                 p = db.query(Property).filter(Property.source_url.ilike(f"%{slug}%")).first()
-                if p:
+                if p and _is_authentic_listing(p):
                     return _format_property_dict(p)
 
         # 2. Exact Title Match (Case-insensitive)
         exact_match = db.query(Property).filter(Property.title.ilike(f"{raw_text}")).first()
-        if exact_match:
+        if exact_match and _is_authentic_listing(exact_match):
             return _format_property_dict(exact_match)
 
         # 3. Substring Title Match
@@ -271,7 +438,7 @@ def find_matching_property(text: str) -> dict:
                     Property.source_url.ilike(f"%{raw_text.lower().replace(' ', '-')}%")
                 )
             ).first()
-            if substr_match:
+            if substr_match and _is_authentic_listing(substr_match):
                 return _format_property_dict(substr_match)
 
         # 4. Token Overlap Scoring
@@ -282,6 +449,7 @@ def find_matching_property(text: str) -> dict:
         # Build query for properties containing any of the major tokens
         token_filters = [Property.title.ilike(f"%{token}%") for token in tokens]
         candidates = db.query(Property).filter(or_(*token_filters)).all()
+        candidates = [p for p in candidates if _is_authentic_listing(p)]
 
         best_prop = None
         highest_score = 0

@@ -28,7 +28,7 @@ from app.services.document_parser import extract_text_from_document
 from app.services.db_services import get_or_create_customer, get_sender_role, search_properties
 from app.services.session_manager import SessionManager
 from app.services.minio_service import upload_media
-from app.db.models import SessionLocal, Customer, Property, Transaction, Order, InteractionLog
+from app.db.models import SessionLocal, Customer, Property, Transaction, Order, InteractionLog, User
 
 
 logger = logging.getLogger(__name__)
@@ -38,6 +38,244 @@ REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
 
 TIMEOUT_SECONDS = 10
+
+CONFIGURED_LOCATIONS = [
+    "Bentong", "Temerloh", "Karak", "Raub", "Kuantan",
+    "Mentakab", "Pahang", "Selangor", "KL"
+]
+
+CONFIGURED_PROPERTY_TYPES = [
+    "Rental", "Residential", "Commercial", "Land / Agriculture",
+    "Industrial", "Durian Land", "Factory"
+]
+
+DEFAULT_FALLBACK_ADMIN_NUMBERS = ["+601165144931", "+14709202239"]
+
+
+def calculate_agent_specialization_score(agent, lead_location: str = "", lead_property_type: str = "", raw_inquiry_text: str = "") -> int:
+    """
+    Scores an agent based on how many lead criteria match their assigned_locations
+    and assigned_property_types.
+    Returns integer hit count.
+    """
+    if not agent:
+        return 0
+
+    assigned_locs = getattr(agent, "assigned_locations", None) or getattr(agent, "specialization_locations", None) or []
+    assigned_ptypes = getattr(agent, "assigned_property_types", None) or getattr(agent, "specialization_property_types", None) or []
+
+    score = 0
+    searchable_text = f"{lead_location or ''} {lead_property_type or ''} {raw_inquiry_text or ''}".lower()
+
+    # Match locations
+    for loc in assigned_locs:
+        if not loc or not isinstance(loc, str):
+            continue
+        loc_clean = loc.strip().lower()
+        if not loc_clean:
+            continue
+        if (lead_location and loc_clean in lead_location.lower()) or (loc_clean in searchable_text):
+            score += 1
+
+    # Match property types
+    for ptype in assigned_ptypes:
+        if not ptype or not isinstance(ptype, str):
+            continue
+        ptype_clean = ptype.strip().lower()
+        if not ptype_clean:
+            continue
+        if (lead_property_type and ptype_clean in lead_property_type.lower()) or (ptype_clean in searchable_text):
+            score += 1
+        elif ptype_clean == "land / agriculture" and any(k in searchable_text for k in ["agriculture", "tanah", "kebun", "ladang", "land"]):
+            score += 1
+        elif ptype_clean == "durian land" and any(k in searchable_text for k in ["durian", "musang king", "black thorn", "d24"]):
+            score += 1
+
+    return score
+
+
+def dispatch_hot_lead_handover(
+    conversation_id: int,
+    customer_name: str,
+    customer_phone: str,
+    intent: str,
+    location: str,
+    property_type: str,
+    budget: str,
+    conversation_summary: str,
+    cw_link: str,
+    inbox_id: int,
+    raw_inquiry_text: str = "",
+    db: SessionLocal = None
+) -> dict:
+    """
+    Dynamic Hot Lead Handover routing based on agent specialization:
+    - Queries active agents and employees from crm_users.
+    - Scores each candidate based on hit count matching assigned_locations and assigned_property_types.
+    - Top scoring agent receives WhatsApp alert template and customer contact card.
+    - Tie Handling: If multiple agents have identical highest hit count, sends to all tied agents
+      with additional remark: '⚠️ Shared Case: This inquiry is also shared with Agent [Name/Phone].'
+    - Fallback: If no agents have hits (score = 0) or no active agents, routes to the 2 main admin numbers.
+    - Always attaches the customer's contact card (vCard / WhatsApp contact payload).
+    """
+    close_db = False
+    if db is None:
+        db = SessionLocal()
+        close_db = True
+
+    try:
+        # 1. Query active agents and employees with configured phone number
+        active_agents = db.query(User).filter(
+            User.is_active == True,
+            User.role.in_(["agent", "employee"]),
+            User.phone_number.isnot(None),
+            User.phone_number != ""
+        ).all()
+
+        scored_candidates = []
+        for agent in active_agents:
+            score = calculate_agent_specialization_score(
+                agent=agent,
+                lead_location=location,
+                lead_property_type=property_type,
+                raw_inquiry_text=raw_inquiry_text
+            )
+            scored_candidates.append({
+                "agent": agent,
+                "score": score,
+                "phone": agent.phone_number,
+                "name": agent.full_name or agent.username
+            })
+
+        # Sort descending by score
+        scored_candidates.sort(key=lambda x: x["score"], reverse=True)
+        max_score = scored_candidates[0]["score"] if scored_candidates else 0
+
+        TEMPLATE_PHONE_NUMBER_ID = os.getenv(
+            "WHATSAPP_TEMPLATE_PHONE_NUMBER_ID",
+            "1039310802596891"
+        )
+
+        routed_targets = []
+        is_fallback = False
+        is_tie = False
+
+        if max_score > 0:
+            top_candidates = [c for c in scored_candidates if c["score"] == max_score]
+            if len(top_candidates) == 1:
+                winner = top_candidates[0]
+                routed_targets.append({
+                    "phone": winner["phone"],
+                    "name": winner["name"],
+                    "score": winner["score"],
+                    "remark": ""
+                })
+            else:
+                is_tie = True
+                for cand in top_candidates:
+                    other_agents = [f"{o['name']} ({o['phone']})" for o in top_candidates if o["phone"] != cand["phone"]]
+                    others_str = ", ".join(other_agents)
+                    shared_remark = f"⚠️ Shared Case: This inquiry is also shared with Agent {others_str}."
+                    routed_targets.append({
+                        "phone": cand["phone"],
+                        "name": cand["name"],
+                        "score": cand["score"],
+                        "remark": shared_remark
+                    })
+        else:
+            is_fallback = True
+            for admin_phone in DEFAULT_FALLBACK_ADMIN_NUMBERS:
+                routed_targets.append({
+                    "phone": admin_phone,
+                    "name": f"Admin ({admin_phone})",
+                    "score": 0,
+                    "remark": "ℹ️ Handover Fallback: No matching agent specialization found."
+                })
+
+        dispatched_phones = []
+        for target in routed_targets:
+            target_phone = target["phone"]
+            try:
+                contact_id = get_or_create_contact(target_phone, f"Staff/Admin {target['name']}")
+                if contact_id:
+                    create_conversation(contact_id, inbox_id)
+            except Exception as ce:
+                logger.warning(f"Could not prepare chatwoot contact for {target_phone}: {ce}")
+
+            summary_with_remark = conversation_summary
+            if target.get("remark"):
+                summary_with_remark = f"{conversation_summary}\n\n{target['remark']}"
+            if len(summary_with_remark) > 500:
+                summary_with_remark = summary_with_remark[:497] + "..."
+
+            template_params = [
+                customer_name,
+                customer_phone,
+                intent.upper(),
+                str(location),
+                str(property_type),
+                str(budget),
+                summary_with_remark,
+                cw_link
+            ]
+
+            # 1. Send WhatsApp Template
+            send_whatsapp_template(
+                inbox_id=inbox_id,
+                to_phone=target_phone,
+                template_name="new_lead_alert_utility",
+                parameters=template_params,
+                language_code="en",
+                override_phone_number_id=TEMPLATE_PHONE_NUMBER_ID
+            )
+
+            # 2. Always attach customer's contact card (vCard / WhatsApp contact payload)
+            send_whatsapp_contact(
+                inbox_id=inbox_id,
+                to_phone=target_phone,
+                contact_name=customer_name,
+                contact_phone=customer_phone,
+                override_phone_number_id=TEMPLATE_PHONE_NUMBER_ID
+            )
+            dispatched_phones.append(target_phone)
+
+        routing_notes = []
+        if is_fallback:
+            routing_notes.append("⚠️ Routed to Main Admin Lines (Score: 0 - No specialization matches)")
+        elif is_tie:
+            tied_names = [f"{t['name']} ({t['phone']})" for t in routed_targets]
+            routing_notes.append(f"⚠️ Multi-Agent Shared Tie (Score: {max_score}) dispatched to: {', '.join(tied_names)}")
+        else:
+            w = routed_targets[0]
+            routing_notes.append(f"✅ Routed to Specialist Agent: {w['name']} ({w['phone']}) with Match Score: {w['score']}")
+
+        private_note_text = (
+            f"🔥 **HOT LEAD / HUMAN HANDOVER TRIGGERED**\n\n"
+            f"👤 **Customer**: {customer_name} ({customer_phone})\n"
+            f"🎯 **Intent**: {intent.upper()}\n"
+            f"📍 **Location**: {location}\n"
+            f"🏡 **Property Type**: {property_type}\n"
+            f"💰 **Budget / Price**: {budget}\n\n"
+            f"🔀 **Routing Decision**: {'; '.join(routing_notes)}\n"
+            f"📝 **AI Summary**: {conversation_summary}\n\n"
+            f"⚡ **Status**: AI response paused (`bypass_ai=True`). Handed over to human agent."
+        )
+        try:
+            send_private_note(conversation_id, private_note_text)
+        except Exception as ne:
+            logger.error(f"Failed to post internal private note on handover: {ne}")
+
+        return {
+            "routed_to": dispatched_phones,
+            "is_fallback": is_fallback,
+            "is_tie": is_tie,
+            "top_score": max_score,
+            "targets": routed_targets
+        }
+    finally:
+        if close_db:
+            db.close()
+
 
 @celery_app.task(bind=True, max_retries=3)
 def process_conversation_queue(self, conversation_id: int, task_scheduled_time: float):
@@ -179,16 +417,27 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
         first_msg = messages[0] if messages else {}
         convo_data = first_msg.get("conversation", {})
         session_id = convo_data.get("uuid") or convo_data.get("session_id") or "Unknown"
-        inbox_id_val = (
+
+        is_staging_env = (
+            os.getenv("DB_HOST") == "whatsapp_ai_db_staging"
+            or "staging" in os.getenv("REDIS_HOST", "")
+            or os.getenv("APP_ENV") == "staging"
+            or os.getenv("ENVIRONMENT", "").lower() == "staging"
+        )
+        staging_inbox_id = int(os.getenv("STAGING_INBOX_ID", "4"))
+        default_inbox = staging_inbox_id if is_staging_env else 1
+
+        inbox_id_raw = (
             first_msg.get("inbox", {}).get("id") 
             or convo_data.get("inbox_id") 
             or first_msg.get("inbox_id")
-            or (3 if os.getenv("DB_HOST") == "whatsapp_ai_db_staging" else 1)
         )
+        inbox_id_val = int(inbox_id_raw) if inbox_id_raw is not None else default_inbox
         metadata = {
             "session_id": session_id,
-            "inbox_id": int(inbox_id_val) if inbox_id_val is not None else (3 if os.getenv("DB_HOST") == "whatsapp_ai_db_staging" else 1),
+            "inbox_id": inbox_id_val,
             "contact_id": contact_info.get("id"),
+            "environment": "staging" if is_staging_env else "production"
         }
         
         customer = get_or_create_customer(
@@ -217,13 +466,35 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
         db = SessionLocal()
         try:
             if role == "admin":
-                # Admin: all data (limited for token size)
-                db_context["data"]["customers"] = [{"id": str(c.id), "name": c.contact_name, "phone": c.phone_number} for c in db.query(Customer).limit(50).all()]
-                db_context["data"]["properties"] = [{"id": str(p.id), "name": p.name, "price": p.price, "status": p.status} for p in db.query(Property).limit(50).all()]
-            elif role == "employee":
-                # Employee: customer data only
-                db_context["data"]["customers"] = [{"id": str(c.id), "name": c.contact_name, "phone": c.phone_number} for c in db.query(Customer).limit(50).all()]
-                db_context["data"]["properties"] = [{"id": str(p.id), "name": p.name, "price": p.price, "status": p.status} for p in db.query(Property).limit(50).all()]
+                # Admin: all data (properties, all customer records, employee/agent roster, system metrics)
+                db_context["data"]["metrics"] = {
+                    "total_properties": db.query(Property).count(),
+                    "total_customers": db.query(Customer).count(),
+                    "total_users": db.query(User).count(),
+                    "active_agents": db.query(User).filter(User.role.in_(["agent", "employee"]), User.is_active == True).count()
+                }
+                db_context["data"]["customers"] = [
+                    {"id": str(c.id), "name": c.contact_name, "phone": str(c.id), "email": c.email, "last_interaction": c.last_interaction.isoformat() if c.last_interaction else None}
+                    for c in db.query(Customer).order_by(Customer.last_interaction.desc()).limit(20).all()
+                ]
+                db_context["data"]["properties"] = [
+                    {"id": str(p.id), "title": p.title, "price": p.asking_price_myr, "status": p.listing_status, "city": p.city, "category": p.property_category}
+                    for p in db.query(Property).limit(20).all()
+                ]
+                db_context["data"]["roster"] = [
+                    {"username": u.username, "name": u.full_name, "role": u.role, "phone": u.phone_number, "locations": u.assigned_locations, "types": u.assigned_property_types}
+                    for u in db.query(User).filter(User.is_active == True).all()
+                ]
+            elif role in ["agent", "employee"]:
+                # Agent or Employee: full property details plus customer information (leads, inquiries, customer requirements)
+                db_context["data"]["customers"] = [
+                    {"id": str(c.id), "name": c.contact_name, "phone": str(c.id), "email": c.email, "metadata": c.metadata_json}
+                    for c in db.query(Customer).order_by(Customer.last_interaction.desc()).limit(25).all()
+                ]
+                db_context["data"]["properties"] = [
+                    {"id": str(p.id), "title": p.title, "price": p.asking_price_myr, "status": p.listing_status, "city": p.city, "specs": p.search_corpus_markdown[:200] if p.search_corpus_markdown else None}
+                    for p in db.query(Property).limit(25).all()
+                ]
             else:
                 # Customer: own data only
                 if customer:
@@ -275,7 +546,9 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
             agent_result = process_persona_state_machine(
                 phone_number, final_prompt_text, session,
                 conversation_history=conversation_history,
-                contact_name=contact_name
+                contact_name=contact_name,
+                role=role,
+                db_context=db_context
             )
             session = agent_result.get("updated_session", session)
             
@@ -345,11 +618,13 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
             # 1. State machine finished workflow (handover_from_state == True)
             # 2. Or user explicitly asks for immediate human contact or books a physical inspection for a known property
             # 3. Or bank valuer submission complete
+            # P1 fix: Require at least 1 prior AI response before explicit handover triggers
+            assistant_msg_count = conversation_history.count("Assistant:") if conversation_history else 0
             handover_initiated = False
             if role not in ["admin", "employee"]:
                 if handover_from_state:
                     handover_initiated = True
-                elif user_wants_immediate_human or user_books_inspection:
+                elif (user_wants_immediate_human or user_books_inspection) and assistant_msg_count >= 1:
                     handover_initiated = True
                     # Append polite wrap-up if not already present
                     if "senior" not in response_text.lower() and "specialist" not in response_text.lower() and "representative" not in response_text.lower():
@@ -399,14 +674,8 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                     finally:
                         db.close()
 
-        if role not in ["admin", "employee"] and handover_initiated:
-            # 1. Assign Agent 1 (ID 4) to the conversation in Chatwoot
-            try:
-                assign_agent(conversation_id, agent_id=4)
-            except Exception as e:
-                logger.error(f"Failed to assign agent 1 to conversation {conversation_id}: {e}")
-
-            # 2. Extract enriched lead details for alert template and internal note
+        if role not in ["admin", "employee", "agent"] and handover_initiated:
+            # 1. Extract enriched lead details for alert template and internal note
             loc_val = (
                 collected.get("location") or 
                 collected.get("seller_location") or 
@@ -443,69 +712,27 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                 if len(conversation_summary) > 500:
                     conversation_summary = conversation_summary[:497] + "..."
 
-            inbox_id = metadata.get("inbox_id") or 4
+            inbox_id = metadata.get("inbox_id") or (staging_inbox_id if is_staging_env else 1)
             cw_link = f"https://inbox.bentongland.com.my/app/accounts/{CHATWOOT_ACCOUNT_ID}/inbox/{inbox_id}/conversations/{conversation_id}"
 
-            # 3. Post Internal Private Note in Chatwoot conversation for human agents
+            # 2. Dynamic Hot Lead Handover routing based on agent specialization
             try:
-                private_note_text = (
-                    f"🔥 **HOT LEAD / HUMAN HANDOVER TRIGGERED**\n\n"
-                    f"👤 **Customer**: {contact_name} ({phone_number})\n"
-                    f"🎯 **Intent**: {intent.upper()}\n"
-                    f"📍 **Location**: {location}\n"
-                    f"🏡 **Property Type**: {property_type}\n"
-                    f"💰 **Budget / Price**: {budget}\n\n"
-                    f"📝 **AI Summary**: {conversation_summary}\n\n"
-                    f"⚡ **Status**: AI response paused (`bypass_ai=True`). Handed over to human agent."
+                handover_result = dispatch_hot_lead_handover(
+                    conversation_id=conversation_id,
+                    customer_name=contact_name,
+                    customer_phone=phone_number,
+                    intent=intent,
+                    location=location,
+                    property_type=property_type,
+                    budget=budget,
+                    conversation_summary=conversation_summary,
+                    cw_link=cw_link,
+                    inbox_id=inbox_id,
+                    raw_inquiry_text=final_prompt_text
                 )
-                send_private_note(conversation_id, private_note_text)
-            except Exception as ne:
-                logger.error(f"Failed to post internal private note on handover: {ne}")
-
-            # 4. Forward WhatsApp Alert Template & Contact Card to Main Lines
-            try:
-                main_phones = ["+601165144931", "+14709202239"]
-                template_params = [
-                    contact_name,
-                    phone_number,
-                    intent.upper(),
-                    str(location),
-                    str(property_type),
-                    str(budget),
-                    conversation_summary,
-                    cw_link
-                ]
-                TEMPLATE_PHONE_NUMBER_ID = os.getenv(
-                    "WHATSAPP_TEMPLATE_PHONE_NUMBER_ID",
-                    "1039310802596891"
-                )
-                for main_phone in main_phones:
-                    try:
-                        contact_id = get_or_create_contact(main_phone, f"Main Line {main_phone}")
-                        if contact_id:
-                            create_conversation(contact_id, inbox_id)
-                    except Exception:
-                        pass
-                    
-                    # Direct WhatsApp Cloud API calls (independent of conversation existence)
-                    send_whatsapp_template(
-                        inbox_id=inbox_id,
-                        to_phone=main_phone,
-                        template_name="new_lead_alert_utility",
-                        parameters=template_params,
-                        language_code="en",
-                        override_phone_number_id=TEMPLATE_PHONE_NUMBER_ID
-                    )
-                    
-                    send_whatsapp_contact(
-                        inbox_id=inbox_id,
-                        to_phone=main_phone,
-                        contact_name=contact_name,
-                        contact_phone=phone_number,
-                        override_phone_number_id=TEMPLATE_PHONE_NUMBER_ID
-                    )
+                logger.info(f"Dynamic handover completed: {handover_result}")
             except Exception as e:
-                logger.error(f"Failed to forward lead to main lines: {e}")
+                logger.error(f"Failed in dispatch_hot_lead_handover: {e}")
         
         # 3. Dispatch native images if requested
         if images_to_send:
@@ -525,6 +752,27 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
         # 4. Send response back to Chatwoot FIRST (ensures wrap-up message is delivered)
         logger.info(f"Sending response to conversation {conversation_id}")
         send_message(conversation_id, response_text)
+
+        # 4.1 Autonomous Viewing Acknowledgement Form Dispatch
+        if agent_result.get("schedule_viewing") and customer:
+            try:
+                from app.services.viewing_service import create_and_dispatch_viewing_form
+                viewing_prop = agent_result.get("viewing_property") or {}
+                prop_id = viewing_prop.get("id")
+                v_date = agent_result.get("viewing_date")
+                
+                logger.info(f"Triggering autonomous viewing form generation for customer {phone_number} on {v_date}")
+                create_and_dispatch_viewing_form(
+                    customer_id=phone_number,
+                    property_id=prop_id,
+                    viewing_date=v_date,
+                    conversation_id=conversation_id,
+                    customer_name=contact_name or customer.contact_name,
+                    phone_number=phone_number,
+                    dispatch_to_customer=True
+                )
+            except Exception as vf_err:
+                logger.error(f"Error in autonomous viewing form generation/dispatch: {vf_err}")
         
         # Turn typing off
         try:
@@ -556,8 +804,8 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
         
         # 4. Apply intent label and priority
         labels_to_apply = []
-        if role in ["admin", "employee"]:
-            labels_to_apply.append("employee")
+        if role in ["admin", "employee", "agent"]:
+            labels_to_apply.append(role)
         else:
             if intent in ["buyer", "seller", "tenant", "agent", "bank valuer"]:
                 labels_to_apply.append(intent.lower())

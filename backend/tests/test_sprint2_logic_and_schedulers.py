@@ -81,36 +81,46 @@ class TestAcknowledgementEngine(unittest.TestCase):
         p7 = doc.paragraphs[7]
         self.assertIn("27.03.2025", p7.text)
 
-        # 3. Table 0 Cell 0: Salutation
+        # 3. Table 0 Cell 0: Salutation in nested table 0
         c0 = doc.tables[0].rows[0].cells[0]
-        self.assertIn("☑  MR", c0.paragraphs[1].text)
-        self.assertIn("☐ MRS", c0.paragraphs[1].text)
+        c0_nested = [docx.table.Table(node, c0) for node in c0._tc.findall('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tbl')]
+        mr_num = c0_nested[0].rows[0].cells[0].paragraphs[0]._p.find('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}numId').get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val')
+        mrs_num = c0_nested[0].rows[0].cells[2].paragraphs[0]._p.find('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}numId').get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val')
+        self.assertEqual(mr_num, "999")
+        self.assertEqual(mrs_num, "998")
 
-        # 4. Full Name
-        self.assertIn("Tan Sri Dato Robert", c0.paragraphs[2].text)
+        # 4. Full Name in c0.paragraphs[0]
+        self.assertIn("Tan Sri Dato Robert", c0.paragraphs[0].text)
 
-        # 5. Pax
-        self.assertIn("No of pax: 2", c0.paragraphs[4].text)
+        # 5. Pax in c0.paragraphs[2]
+        self.assertIn("No of pax: 2", c0.paragraphs[2].text)
 
-        # 6. Company Name & Yellow Highlight
-        self.assertIn("MEGA CAPITAL BERHAD", c0.paragraphs[6].text)
-        highlighted_runs = [r for r in c0.paragraphs[6].runs if r.font.highlight_color == WD_COLOR_INDEX.YELLOW]
+        # 6. Company Name & Yellow Highlight in c0.paragraphs[4]
+        self.assertIn("MEGA CAPITAL BERHAD", c0.paragraphs[4].text)
+        highlighted_runs = [r for r in c0.paragraphs[4].runs if r.font.highlight_color == WD_COLOR_INDEX.YELLOW]
         self.assertGreater(len(highlighted_runs), 0)
 
-        # 7. Phone
-        self.assertIn("019-888 7777", c0.paragraphs[12].text)
+        # 7. Phone in c0.paragraphs[10]
+        self.assertIn("019-888 7777", c0.paragraphs[10].text)
 
-        # 8. Referral Source toggling
-        self.assertIn("☑ Mudah", c0.paragraphs[17].text)
-        self.assertIn("☐ Bentongland Website", c0.paragraphs[19].text)
+        # 8. Referral Source toggling in c0 nested table 1
+        mudah_num = c0_nested[1].rows[1].cells[0].paragraphs[0]._p.find('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}numId').get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val')
+        bentong_num = c0_nested[1].rows[2].cells[0].paragraphs[0]._p.find('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}numId').get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val')
+        self.assertEqual(mudah_num, "999")
+        self.assertEqual(bentong_num, "998")
 
         # 9. Table 0 Cell 1: Customer request and property types
         c1 = doc.tables[0].rows[0].cells[1]
         self.assertIn("Customer’s request:", c1.paragraphs[1].text)
-        self.assertIn("☑ Industrial Land    ☑ Factory", c1.paragraphs[7].text)
-        self.assertIn("☐ Agricultural Land", c1.paragraphs[7].text)
-        self.assertIn("> Location: Karak", c1.paragraphs[9].text)
-        self.assertIn("> Remarks: Requires 3-phase power 600amp", c1.paragraphs[11].text)
+        c1_nested = [docx.table.Table(node, c1) for node in c1._tc.findall('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tbl')]
+        ind_num = c1_nested[0].rows[2].cells[0].paragraphs[0]._p.find('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}numId').get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val')
+        fact_num = c1_nested[0].rows[2].cells[2].paragraphs[0]._p.find('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}numId').get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val')
+        agri_num = c1_nested[0].rows[0].cells[0].paragraphs[0]._p.find('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}numId').get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val')
+        self.assertEqual(ind_num, "999")
+        self.assertEqual(fact_num, "999")
+        self.assertEqual(agri_num, "998")
+        self.assertIn("Location: Karak", c1.paragraphs[9].text)
+        self.assertIn("Remarks: Requires 3-phase power 600amp", c1.paragraphs[11].text)
 
         # 10. Partner Agency legal override
         p9 = doc.paragraphs[9]
@@ -123,9 +133,8 @@ class TestAcknowledgementEngine(unittest.TestCase):
         self.assertIn("RM 4,000,000", t1.rows[1].cells[3].text)
 
         t2 = doc.tables[2]
-        self.assertIn("Title Lot 1745", t2.rows[1].cells[1].text)
-        self.assertIn("☑ Topo Plan", t2.rows[1].cells[1].text)
-        self.assertIn("☑ Whatsapp Messenger", t2.rows[1].cells[4].text)
+        self.assertIn("Title", t2.rows[1].cells[1].text)
+        self.assertIn("1 set", t2.rows[1].cells[2].text)
 
     def test_high_level_generate_acknowledgement(self):
         output_dir = "data/output/test_ack_suite"

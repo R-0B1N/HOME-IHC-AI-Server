@@ -4,7 +4,8 @@ import {
   Plus, Home, MapPin, Tag, Edit, Trash2, Map, Users, 
   LayoutGrid, MessageCircle, X, GitBranch, LogOut, ShieldCheck, Shield, User,
   Sparkles, Table, Grid, Eye, Search, Layers, Activity, TrendingUp, Droplets, Zap,
-  Compass, ExternalLink, CheckCircle2, ArrowRight, TreePine, Building2
+  Compass, ExternalLink, CheckCircle2, ArrowRight, TreePine, Building2,
+  Phone, Mail, Calendar, Clock, Flame, Sun, Snowflake, FileText
 } from 'lucide-react';
 import { useAuth } from './context/AuthContext';
 import WorkflowViewer from './pages/WorkflowViewer';
@@ -39,6 +40,9 @@ function App() {
   const [isLeadModalOpen, setIsLeadModalOpen] = useState(false);
   const [isEditingLead, setIsEditingLead] = useState(false);
   const [selectedLead, setSelectedLead] = useState(null);
+  const [isLeadDetailModalOpen, setIsLeadDetailModalOpen] = useState(false);
+  const [selectedLeadDetail, setSelectedLeadDetail] = useState(null);
+  const [isLoadingCustomerDetail, setIsLoadingCustomerDetail] = useState(false);
 
   // Embeddings Explorer States
   const [embeddingsSummary, setEmbeddingsSummary] = useState(null);
@@ -86,6 +90,43 @@ function App() {
   });
   const [isSyncingLeads, setIsSyncingLeads] = useState(false);
   const [isSeedingProps, setIsSeedingProps] = useState(false);
+  const [pendingUsers, setPendingUsers] = useState([]);
+
+  const fetchPendingUsers = async () => {
+    if (!isAdmin) return;
+    try {
+      const res = await axios.get(`${API_BASE_URL}/users/pending`);
+      setPendingUsers(res.data);
+    } catch (err) {
+      console.error('Failed to fetch pending users:', err);
+    }
+  };
+
+  const handleApprovePendingUser = async (userId) => {
+    try {
+      await axios.post(`${API_BASE_URL}/users/${userId}/approve`);
+      await fetchPendingUsers();
+      if (activeTab === 'users') {
+        // Will refresh on tab
+      }
+    } catch (err) {
+      console.error('Failed to approve user:', err);
+      alert('Failed to activate user account.');
+    }
+  };
+
+  const handleApproveAllPending = async () => {
+    try {
+      for (const pUser of pendingUsers) {
+        await axios.post(`${API_BASE_URL}/users/${pUser.id}/approve`);
+      }
+      await fetchPendingUsers();
+      alert(`Successfully approved and activated ${pendingUsers.length} account(s)!`);
+    } catch (err) {
+      console.error('Failed to approve all users:', err);
+      alert('Error activating some user accounts.');
+    }
+  };
 
   const fetchProperties = async () => {
     try {
@@ -264,6 +305,9 @@ function App() {
   // Fetch data on tab or environment change + auto-refresh every 30s for real-time updates
   useEffect(() => {
     fetchMasterAiStatus();
+    if (isAdmin) {
+      fetchPendingUsers();
+    }
     
     if (activeTab === 'properties') {
       fetchProperties();
@@ -273,6 +317,9 @@ function App() {
 
     const interval = setInterval(() => {
       fetchMasterAiStatus();
+      if (isAdmin) {
+        fetchPendingUsers();
+      }
       if (activeTab === 'properties') {
         fetchProperties();
       } else if (activeTab === 'leads') {
@@ -281,7 +328,7 @@ function App() {
     }, 30000);
 
     return () => clearInterval(interval);
-  }, [activeTab, environment]);
+  }, [activeTab, environment, isAdmin]);
   // Sync selectedProperty details with updated properties data (keep modals in sync)
   useEffect(() => {
     if (selectedProperty) {
@@ -392,6 +439,22 @@ function App() {
       ignore_ai: lead.metadata_json?.ignore_ai || false
     });
     setIsLeadModalOpen(true);
+  };
+
+  const handleOpenLeadDetailModal = async (lead) => {
+    setSelectedLeadDetail(lead);
+    setIsLeadDetailModalOpen(true);
+    try {
+      setIsLoadingCustomerDetail(true);
+      const res = await axios.get(`${API_BASE_URL}/customers/${encodeURIComponent(lead.id)}`);
+      if (res.data) {
+        setSelectedLeadDetail(res.data);
+      }
+    } catch (err) {
+      console.warn('Could not fetch real-time customer detail, using cached lead state:', err);
+    } finally {
+      setIsLoadingCustomerDetail(false);
+    }
   };
 
   const handleDeleteLead = async (id, e) => {
@@ -635,7 +698,7 @@ function App() {
             <div className="lux-user-details">
               <span className="lux-user-name">{user?.full_name || user?.username}</span>
               <span className={`lux-role-pill ${user?.role || 'agent'}`}>
-                {user?.role === 'admin' ? '🛡️ Admin' : user?.role === 'agent' ? '🤝 Agent' : '👁️ Viewer'}
+                {user?.role === 'admin' ? '🛡️ Admin' : user?.role === 'agent' ? '🤝 Agent' : user?.role === 'employee' ? '💼 Employee' : '👁️ Viewer'}
               </span>
             </div>
             <button 
@@ -648,6 +711,50 @@ function App() {
           </div>
         </div>
       </header>
+
+      {/* Pending User Activation Banner for Administrators */}
+      {isAdmin && pendingUsers.length > 0 && (
+        <div style={{
+          background: 'linear-gradient(90deg, rgba(234, 179, 8, 0.22) 0%, rgba(234, 179, 8, 0.1) 100%)',
+          borderBottom: '1px solid rgba(234, 179, 8, 0.45)',
+          color: '#fef08a',
+          padding: '10px 24px',
+          fontSize: '0.86rem',
+          fontWeight: 500,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: '12px'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ fontSize: '1.2rem' }}>⚠️</span>
+            <div>
+              <strong style={{ color: '#facc15' }}>{pendingUsers.length} New User Registration{pendingUsers.length > 1 ? 's' : ''} Awaiting Activation:</strong>{' '}
+              <span style={{ color: '#f1f5f9' }}>
+                {pendingUsers.map(u => `@${u.username} (${u.role}${u.phone_number ? ` • ${u.phone_number}` : ''})`).join(', ')}
+              </span>
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <button
+              className="lux-btn-primary"
+              style={{ padding: '5px 14px', fontSize: '0.8rem', height: 'auto', background: '#10b981', borderColor: '#10b981', cursor: 'pointer' }}
+              onClick={handleApproveAllPending}
+              title="Activate all pending users immediately"
+            >
+              ✓ 1-Click Activate All ({pendingUsers.length})
+            </button>
+            <button
+              className="lux-btn-secondary"
+              style={{ padding: '5px 12px', fontSize: '0.8rem', height: 'auto', cursor: 'pointer' }}
+              onClick={() => setActiveTab('users')}
+            >
+              Review Accounts →
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Staging Notification Banner */}
       {environment === 'staging' && (
@@ -703,18 +810,33 @@ function App() {
           >
             <Sparkles size={17} color="#a855f7" /> Vector Embeddings
           </button>
-          <button 
-            className={`lux-tab-btn ${activeTab === 'workflows' ? 'active' : ''}`}
-            onClick={() => setActiveTab('workflows')}
-          >
-            <GitBranch size={17} /> Workflows
-          </button>
+          {isAdmin && (
+            <button 
+              className={`lux-tab-btn ${activeTab === 'workflows' ? 'active' : ''}`}
+              onClick={() => setActiveTab('workflows')}
+            >
+              <GitBranch size={17} /> Workflows
+            </button>
+          )}
           {isAdmin && (
             <button 
               className={`lux-tab-btn ${activeTab === 'users' ? 'active' : ''}`}
               onClick={() => setActiveTab('users')}
             >
               <ShieldCheck size={17} /> User Accounts
+              {pendingUsers.length > 0 && (
+                <span style={{
+                  background: '#f59e0b',
+                  color: '#000',
+                  borderRadius: '10px',
+                  padding: '1px 6px',
+                  fontSize: '0.72rem',
+                  fontWeight: 800,
+                  marginLeft: '6px'
+                }}>
+                  {pendingUsers.length}
+                </span>
+              )}
             </button>
           )}
         </div>
@@ -1196,7 +1318,13 @@ function App() {
                     }
                     return 0;
                   }).map((lead) => (
-                    <tr key={lead.id}>
+                    <tr 
+                      key={lead.id}
+                      onClick={() => handleOpenLeadDetailModal(lead)}
+                      className="lead-row-clickable"
+                      title="Click to view full customer particulars & conversational intent dossier"
+                      style={{ cursor: 'pointer' }}
+                    >
                       <td className="lead-name">{lead.contact_name || 'Unknown'}</td>
                       <td>{lead.phone_number}</td>
                       <td>{lead.email || '-'}</td>
@@ -1210,7 +1338,10 @@ function App() {
                       <td>
                         <button 
                           className={`ai-status-btn ${lead.metadata_json?.ignore_ai ? 'disabled' : 'active'}`}
-                          onClick={() => toggleIgnoreAI(lead)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleIgnoreAI(lead);
+                          }}
                           title={lead.metadata_json?.ignore_ai ? "Click to enable AI replies" : "Click to disable AI replies"}
                           style={{
                             padding: '0.25rem 0.5rem',
@@ -1241,7 +1372,10 @@ function App() {
                             <button 
                               className="btn-primary" 
                               style={{ padding: '0.4rem 0.8rem', fontSize: '0.8rem', marginRight: '0.5rem', whiteSpace: 'nowrap' }}
-                              onClick={() => window.open(`https://inbox.bentongland.com.my/app/accounts/1/conversations/${lead.conversation_ids[0]}`, '_blank')} 
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                window.open(`https://inbox.bentongland.com.my/app/accounts/1/conversations/${lead.conversation_ids[0]}`, '_blank');
+                              }} 
                               title="Open in Chatwoot"
                             >
                               <MessageCircle size={14} /> Open Chat
@@ -1531,9 +1665,9 @@ function App() {
             </div>
           </div>
         ) : activeTab === 'workflows' ? (
-          <WorkflowViewer />
+          isAdmin ? <WorkflowViewer /> : null
         ) : activeTab === 'users' ? (
-          <UsersManagement />
+          isAdmin ? <UsersManagement onUserApproved={fetchPendingUsers} /> : null
         ) : null}
 
       </main>
@@ -1867,6 +2001,491 @@ function App() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Customer Detail & Conversational Memory Dossier Modal */}
+      {isLeadDetailModalOpen && selectedLeadDetail && (
+        <div className="modal-overlay lux-customer-modal-overlay" onClick={() => setIsLeadDetailModalOpen(false)}>
+          <div 
+            className="modal-content lux-customer-modal-card" 
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: '920px', width: '95%', maxHeight: '90vh', padding: '2rem', overflowY: 'auto' }}
+          >
+            {/* Modal Header */}
+            <div className="modal-header lux-customer-modal-header" style={{ alignItems: 'flex-start', borderBottom: '1px solid rgba(212, 175, 55, 0.25)', paddingBottom: '1.25rem', marginBottom: '1.5rem' }}>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap', marginBottom: '0.35rem' }}>
+                  <h2 style={{ fontSize: '1.6rem', fontWeight: 800, color: '#0f172a', margin: 0, letterSpacing: '-0.02em' }}>
+                    {selectedLeadDetail.contact_name || 'WhatsApp Customer'}
+                  </h2>
+                  <span className={`temp-badge ${(selectedLeadDetail.intention_tag || 'cold').toLowerCase()}`} style={{ fontSize: '0.82rem', padding: '0.3rem 0.75rem' }}>
+                    {selectedLeadDetail.intention_tag === 'Hot' ? '🔥 Hot' : selectedLeadDetail.intention_tag === 'Warm' ? '☀️ Warm' : '❄️ Cold'}
+                  </span>
+                  <span style={{ 
+                    background: 'rgba(212, 175, 55, 0.12)', 
+                    color: '#b48a1e', 
+                    fontWeight: 700, 
+                    fontSize: '0.78rem', 
+                    padding: '0.28rem 0.7rem', 
+                    borderRadius: '6px', 
+                    border: '1px solid rgba(212, 175, 55, 0.3)',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em'
+                  }}>
+                    {selectedLeadDetail.intent_category || 'General Inquiry'}
+                  </span>
+                  {selectedLeadDetail.metadata_json?.ignore_ai ? (
+                    <span style={{ background: '#fef2f2', color: '#b91c1c', fontSize: '0.75rem', padding: '0.25rem 0.6rem', borderRadius: '6px', fontWeight: 600, border: '1px solid #fecaca' }}>
+                      AI Suspended (Human Agent)
+                    </span>
+                  ) : (
+                    <span style={{ background: '#ecfdf5', color: '#047857', fontSize: '0.75rem', padding: '0.25rem 0.6rem', borderRadius: '6px', fontWeight: 600, border: '1px solid #a7f3d0' }}>
+                      ✨ AI Concierge Active
+                    </span>
+                  )}
+                </div>
+                <div style={{ fontSize: '0.85rem', color: '#64748b' }}>
+                  Customer ID: <code style={{ color: '#0f172a', fontWeight: 600 }}>{selectedLeadDetail.id}</code> &nbsp;•&nbsp; CRM Dossier & Conversational Memory
+                  {isLoadingCustomerDetail && <span style={{ color: '#d4af37', fontStyle: 'italic', marginLeft: '0.5rem' }}>🔄 Refreshing dossier...</span>}
+                </div>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+                {selectedLeadDetail.conversation_ids && selectedLeadDetail.conversation_ids.length > 0 && (
+                  <button 
+                    className="lux-btn-chatwoot" 
+                    onClick={() => window.open(`https://inbox.bentongland.com.my/app/accounts/1/conversations/${selectedLeadDetail.conversation_ids[0]}`, '_blank')}
+                    title="Open Live Chatwoot Thread"
+                  >
+                    <MessageCircle size={15} /> Chatwoot #{selectedLeadDetail.conversation_ids[0]} <ExternalLink size={13} />
+                  </button>
+                )}
+                <button className="close-btn" onClick={() => setIsLeadDetailModalOpen(false)} title="Close Modal">✕</button>
+              </div>
+            </div>
+
+            {/* Section 1: Full Customer Particulars */}
+            <div className="lux-section-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.85rem' }}>
+              <User size={18} color="#d4af37" />
+              <span style={{ fontWeight: 700, fontSize: '0.95rem', color: '#0f172a', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                Customer Particulars
+              </span>
+            </div>
+            <div className="lux-particulars-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '0.85rem', marginBottom: '1.75rem' }}>
+              <div className="lux-info-card">
+                <div className="lux-info-label"><Phone size={13} /> Phone Number</div>
+                <div className="lux-info-val" style={{ fontWeight: 700 }}>{selectedLeadDetail.phone_number || selectedLeadDetail.id}</div>
+              </div>
+              <div className="lux-info-card">
+                <div className="lux-info-label"><Mail size={13} /> Email Address</div>
+                <div className="lux-info-val">{selectedLeadDetail.email || 'Not Provided'}</div>
+              </div>
+              <div className="lux-info-card">
+                <div className="lux-info-label"><MapPin size={13} /> Country / Region</div>
+                <div className="lux-info-val">{selectedLeadDetail.country || 'Malaysia'}</div>
+              </div>
+              <div className="lux-info-card">
+                <div className="lux-info-label"><Calendar size={13} /> Registered Date</div>
+                <div className="lux-info-val">
+                  {selectedLeadDetail.registered_date 
+                    ? new Date(selectedLeadDetail.registered_date).toLocaleDateString() 
+                    : (selectedLeadDetail.last_interaction ? new Date(selectedLeadDetail.last_interaction).toLocaleDateString() : 'N/A')}
+                </div>
+              </div>
+              <div className="lux-info-card">
+                <div className="lux-info-label"><Clock size={13} /> Last Active</div>
+                <div className="lux-info-val">
+                  {selectedLeadDetail.last_interaction 
+                    ? new Date(selectedLeadDetail.last_interaction).toLocaleString() 
+                    : 'N/A'}
+                </div>
+              </div>
+            </div>
+
+            {/* Section 2: Requirements Profile */}
+            {(() => {
+              const req = selectedLeadDetail.requirements_profile || selectedLeadDetail.metadata_json?.requirements_profile || {};
+              const targetBudget = req.target_budget_formatted || (req.target_budget_myr ? `RM ${Number(req.target_budget_myr).toLocaleString()}` : (selectedLeadDetail.metadata_json?.target_budget_myr ? `RM ${Number(selectedLeadDetail.metadata_json.target_budget_myr).toLocaleString()}` : 'Flexible / Unspecified'));
+              const targetLocations = (req.target_locations && req.target_locations.length > 0) 
+                ? req.target_locations 
+                : (selectedLeadDetail.metadata_json?.target_locations || ['Bentong', 'Pahang']);
+              const preferredTypes = (req.preferred_property_types && req.preferred_property_types.length > 0)
+                ? req.preferred_property_types
+                : (selectedLeadDetail.intent_category ? [selectedLeadDetail.intent_category] : ['Commercial', 'Residential', 'Agricultural']);
+              const powerAmp = req.power_requirements_amp || selectedLeadDetail.metadata_json?.minimum_power_amp;
+              const hasHybrid = req.hybrid_opportunity || selectedLeadDetail.metadata_json?.hybrid_opportunity;
+
+              return (
+                <div className="lux-requirements-section" style={{ marginBottom: '1.75rem', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '12px', padding: '1.25rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <Sparkles size={18} color="#d4af37" />
+                      <span style={{ fontWeight: 700, fontSize: '0.95rem', color: '#0f172a', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                        AI Requirements Profile
+                      </span>
+                    </div>
+                    {req.active_inquiry && (
+                      <span style={{ background: '#0f172a', color: '#d4af37', padding: '0.25rem 0.65rem', borderRadius: '6px', fontSize: '0.75rem', fontWeight: 700 }}>
+                        Active 1st Priority: {req.active_inquiry.category ? req.active_inquiry.category.toUpperCase() : 'SEARCH'}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Requirements Metrics Grid */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem', marginBottom: '1rem' }}>
+                    <div className="lux-req-item">
+                      <div className="lux-req-item-label">Target Budget (MYR)</div>
+                      <div className="lux-req-item-value" style={{ color: '#047857', fontWeight: 800, fontSize: '1.1rem' }}>
+                        {targetBudget}
+                      </div>
+                    </div>
+                    <div className="lux-req-item">
+                      <div className="lux-req-item-label">Target Locations</div>
+                      <div className="lux-req-item-value" style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem', marginTop: '0.2rem' }}>
+                        {targetLocations.map((loc, idx) => (
+                          <span key={idx} className="lux-badge-loc"><MapPin size={11} /> {loc}</span>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="lux-req-item">
+                      <div className="lux-req-item-label">Preferred Property Types</div>
+                      <div className="lux-req-item-value" style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem', marginTop: '0.2rem' }}>
+                        {preferredTypes.map((pt, idx) => (
+                          <span key={idx} className="lux-badge-type"><Tag size={11} /> {pt}</span>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="lux-req-item">
+                      <div className="lux-req-item-label">Power Requirements (TNB)</div>
+                      <div className="lux-req-item-value" style={{ fontWeight: 700, color: powerAmp ? '#d97706' : '#64748b' }}>
+                        <Zap size={14} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '3px' }} />
+                        {powerAmp ? `${powerAmp} Amp (3-Phase Supply)` : 'Standard Grid (Flexible)'}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Dual-Intent Memory / Active vs Retained Inquiries */}
+                  {req.retained_inquiries && req.retained_inquiries.length > 0 && (
+                    <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '0.85rem', marginBottom: '0.75rem' }}>
+                      <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#475569', textTransform: 'uppercase', marginBottom: '0.4rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                        <Clock size={13} color="#64748b" /> Retained Background Inquiries (Prior Interests Preserved)
+                      </div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                        {req.retained_inquiries.map((ret, idx) => (
+                          <span key={idx} style={{ background: '#f1f5f9', border: '1px solid #cbd5e1', borderRadius: '6px', padding: '0.3rem 0.6rem', fontSize: '0.78rem', color: '#334155' }}>
+                            <strong>{ret.category || 'Inquiry'}</strong> {ret.target_budget_myr ? `(RM ${Number(ret.target_budget_myr).toLocaleString()})` : ''} {ret.location ? `in ${ret.location}` : ''}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Intelligent Hybrid Suggestion Opportunity */}
+                  {hasHybrid && (
+                    <div className="lux-hybrid-banner" style={{ background: 'linear-gradient(135deg, #fefce8 0%, #fffbeb 100%)', border: '1px solid #fde047', borderRadius: '8px', padding: '0.85rem', display: 'flex', alignItems: 'flex-start', gap: '0.75rem' }}>
+                      <Building2 size={20} color="#b45309" style={{ flexShrink: 0, marginTop: '2px' }} />
+                      <div>
+                        <div style={{ fontWeight: 700, color: '#92400e', fontSize: '0.88rem' }}>
+                          💡 Intelligent Hybrid Suggestion Active (Shop-House / Rumah Kedai Opportunity)
+                        </div>
+                        <div style={{ fontSize: '0.8rem', color: '#78350f', marginTop: '0.2rem', lineHeight: 1.4 }}>
+                          Dual-purpose interest detected (Commercial business + Residential accommodation). AI prioritizes the active primary inquiry, then proactively introduces synergistic <strong>Rumah Kedai (Shop-House)</strong> listings in Bentong Town as a high-value alternative.
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
+            {/* Section 3: Historical Inquiries & Intent Progression Timeline */}
+            <div style={{ marginBottom: '1.75rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.85rem' }}>
+                <Activity size={18} color="#d4af37" />
+                <span style={{ fontWeight: 700, fontSize: '0.95rem', color: '#0f172a', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  Historical Inquiries & Intent Progression Timeline
+                </span>
+              </div>
+              
+              {(() => {
+                const progression = selectedLeadDetail.intent_progression || selectedLeadDetail.metadata_json?.intent_progression || [];
+                const req = selectedLeadDetail.requirements_profile || selectedLeadDetail.metadata_json?.requirements_profile || {};
+                
+                const timelineItems = progression.length > 0 ? progression : [
+                  {
+                    timestamp: selectedLeadDetail.last_interaction || new Date().toISOString(),
+                    event_type: 'active_inquiry',
+                    title: req.active_inquiry ? `Primary Focus: ${req.active_inquiry.category}` : 'Active Property Inquiry',
+                    description: req.active_inquiry 
+                      ? `Customer is actively seeking ${req.active_inquiry.category} properties. Budget: ${req.target_budget_formatted || 'Flexible'}. AI ensures 1st-priority response matches this criteria.`
+                      : 'Lead actively engaged with AI Concierge on WhatsApp.',
+                    active_priority: req.active_inquiry?.category || selectedLeadDetail.intent_category,
+                    hybrid_opportunity: req.hybrid_opportunity
+                  },
+                  ...(req.retained_inquiries && req.retained_inquiries.length > 0 ? [{
+                    timestamp: selectedLeadDetail.registered_date || selectedLeadDetail.last_interaction,
+                    event_type: 'intent_pivot',
+                    title: `Intent Pivot & Memory Retention`,
+                    description: `Pivoted from previous interest (${req.retained_inquiries.map(r => r.category).join(', ')}) to current primary inquiry. Prior criteria stored in background memory.`,
+                    active_priority: null,
+                    hybrid_opportunity: false
+                  }] : []),
+                  {
+                    timestamp: selectedLeadDetail.registered_date || selectedLeadDetail.last_interaction,
+                    event_type: 'lead_registration',
+                    title: 'Inbound WhatsApp Lead Ingested',
+                    description: `Channel connection established via Chatwoot${selectedLeadDetail.conversation_ids?.[0] ? ` (#${selectedLeadDetail.conversation_ids[0]})` : ''}. Initial qualification parameters assigned.`,
+                    active_priority: null,
+                    hybrid_opportunity: false
+                  }
+                ];
+
+                return (
+                  <div className="lux-timeline-container" style={{ position: 'relative', paddingLeft: '1.75rem', borderLeft: '2px solid rgba(212, 175, 55, 0.35)', marginLeft: '0.75rem' }}>
+                    {timelineItems.map((item, idx) => (
+                      <div key={idx} className="lux-timeline-node" style={{ position: 'relative', marginBottom: idx === timelineItems.length - 1 ? '0' : '1.25rem' }}>
+                        <div style={{ 
+                          position: 'absolute', 
+                          left: '-2.35rem', 
+                          top: '2px', 
+                          width: '14px', 
+                          height: '14px', 
+                          borderRadius: '50%', 
+                          background: idx === 0 ? '#d4af37' : '#94a3b8', 
+                          border: '3px solid #ffffff',
+                          boxShadow: '0 0 0 2px rgba(212, 175, 55, 0.4)'
+                        }} />
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '0.2rem' }}>
+                          <div style={{ fontWeight: 700, fontSize: '0.9rem', color: '#0f172a' }}>
+                            {item.title}
+                          </div>
+                          <span style={{ fontSize: '0.75rem', color: '#64748b' }}>
+                            {item.timestamp ? new Date(item.timestamp).toLocaleString() : 'Recent'}
+                          </span>
+                        </div>
+                        <div style={{ fontSize: '0.82rem', color: '#475569', lineHeight: 1.45 }}>
+                          {item.description}
+                        </div>
+                        {item.active_priority && (
+                          <div style={{ marginTop: '0.35rem' }}>
+                            <span style={{ background: '#f1f5f9', border: '1px solid #cbd5e1', borderRadius: '4px', padding: '0.2rem 0.5rem', fontSize: '0.72rem', color: '#334155', fontWeight: 600 }}>
+                              Active: {item.active_priority}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Section 4: Shortlisted & Presented Properties */}
+            <div style={{ marginBottom: '1.75rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.85rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <Home size={18} color="#d4af37" />
+                  <span style={{ fontWeight: 700, fontSize: '0.95rem', color: '#0f172a', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                    Presented & Shortlisted Properties
+                  </span>
+                </div>
+                <span style={{ fontSize: '0.78rem', color: '#64748b' }}>
+                  Properties recommended or sent to client
+                </span>
+              </div>
+
+              {(() => {
+                const presented = selectedLeadDetail.presented_properties || selectedLeadDetail.metadata_json?.presented_properties || [];
+                const shortlisted = selectedLeadDetail.shortlisted_properties || selectedLeadDetail.metadata_json?.shortlisted_properties || [];
+                const allCards = [...presented, ...shortlisted];
+
+                const displayProperties = allCards.length > 0 ? allCards : properties.filter(p => {
+                  const reqLocs = selectedLeadDetail.requirements_profile?.target_locations || [];
+                  const reqTypes = selectedLeadDetail.requirements_profile?.preferred_property_types || [];
+                  const matchesLoc = reqLocs.some(loc => (p.city || '').toLowerCase().includes(loc.toLowerCase()) || (p.area || '').toLowerCase().includes(loc.toLowerCase()));
+                  const matchesType = reqTypes.some(t => (p.property_type_sub || '').toLowerCase().includes(t.toLowerCase()) || (p.property_category || []).some(c => c.toLowerCase().includes(t.toLowerCase())));
+                  return matchesLoc || matchesType;
+                }).slice(0, 3);
+
+                if (displayProperties.length === 0) {
+                  return (
+                    <div style={{ background: '#f8fafc', border: '1px dashed #cbd5e1', borderRadius: '8px', padding: '1.25rem', textAlign: 'center', color: '#64748b', fontSize: '0.85rem' }}>
+                      No properties presented to this customer yet. The AI Bot will automatically record cards when presenting options.
+                    </div>
+                  );
+                }
+
+                return (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '1rem' }}>
+                    {displayProperties.map((p, idx) => {
+                      const img = (p.image_urls && p.image_urls.length > 0) ? p.image_urls[0] : null;
+                      return (
+                        <div key={idx} className="lux-property-card-compact" style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '10px', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                          <div style={{ height: '110px', background: '#0f172a', position: 'relative' }}>
+                            {img ? (
+                              <img src={img} alt={p.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                            ) : (
+                              <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#64748b' }}>
+                                <Home size={32} color="#475569" />
+                              </div>
+                            )}
+                            {p.property_type_sub && (
+                              <span style={{ position: 'absolute', bottom: '8px', left: '8px', background: 'rgba(15, 23, 42, 0.85)', color: '#d4af37', padding: '0.15rem 0.5rem', borderRadius: '4px', fontSize: '0.7rem', fontWeight: 700 }}>
+                                {p.property_type_sub}
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ padding: '0.85rem', flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                            <div>
+                              <div style={{ fontWeight: 700, fontSize: '0.85rem', color: '#0f172a', marginBottom: '0.25rem', lineHeight: 1.3 }}>
+                                {p.title}
+                              </div>
+                              <div style={{ fontSize: '0.75rem', color: '#64748b', display: 'flex', alignItems: 'center', gap: '0.25rem', marginBottom: '0.5rem' }}>
+                                <MapPin size={12} /> {p.city || 'Pahang'}, {p.area || p.state || 'Malaysia'}
+                              </div>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderTop: '1px solid #f1f5f9', paddingTop: '0.5rem', marginTop: '0.5rem' }}>
+                              <div style={{ fontWeight: 800, color: '#047857', fontSize: '0.9rem' }}>
+                                {formatPrice(p.asking_price_myr || p.price_myr || p.monthly_rental_income_myr)}
+                              </div>
+                              <button 
+                                className="lux-btn-mini"
+                                onClick={() => {
+                                  const match = properties.find(prop => prop.id === p.id);
+                                  if (match) {
+                                    setDetailProperty(match);
+                                  } else {
+                                    setDetailProperty(p);
+                                  }
+                                }}
+                                style={{ padding: '0.25rem 0.6rem', fontSize: '0.72rem', background: '#0f172a', color: '#ffffff', borderRadius: '4px', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
+                              >
+                                <Eye size={12} /> View Specs
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Section 5: Direct Chatwoot Link & Viewing Acknowledgement Status */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.25rem', marginBottom: '1.75rem' }}>
+              {/* Viewing Acknowledgement Card */}
+              <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '10px', padding: '1.15rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.85rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <FileText size={17} color="#d4af37" />
+                    <span style={{ fontWeight: 700, fontSize: '0.88rem', color: '#0f172a', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                      Viewing Acknowledgement
+                    </span>
+                  </div>
+                  {(() => {
+                    const ack = selectedLeadDetail.viewing_acknowledgement || selectedLeadDetail.metadata_json?.viewing_acknowledgement;
+                    const status = ack?.status || 'No Form Issued';
+                    const isSigned = status.toLowerCase() === 'signed' || status.toLowerCase() === 'acknowledged';
+                    const isPending = status.toLowerCase().includes('pending') || status.toLowerCase() === 'scheduled';
+                    return (
+                      <span style={{ 
+                        padding: '0.2rem 0.6rem', 
+                        borderRadius: '6px', 
+                        fontSize: '0.75rem', 
+                        fontWeight: 700,
+                        background: isSigned ? '#ecfdf5' : isPending ? '#fef3c7' : '#f1f5f9',
+                        color: isSigned ? '#047857' : isPending ? '#b45309' : '#64748b',
+                        border: `1px solid ${isSigned ? '#a7f3d0' : isPending ? '#fde68a' : '#e2e8f0'}`
+                      }}>
+                        {status}
+                      </span>
+                    );
+                  })()}
+                </div>
+
+                {(() => {
+                  const ack = selectedLeadDetail.viewing_acknowledgement || selectedLeadDetail.metadata_json?.viewing_acknowledgement || {};
+                  return (
+                    <div style={{ fontSize: '0.82rem', color: '#334155', display: 'flex', flexDirection: 'column', gap: '0.45rem' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ color: '#64748b' }}>Form / Ref Number:</span>
+                        <strong style={{ color: '#0f172a' }}>{ack.form_no || 'VA-IHC-PENDING'}</strong>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ color: '#64748b' }}>Scheduled Inspection:</span>
+                        <span>{ack.date ? new Date(ack.date).toLocaleString() : 'Pending Confirmation'}</span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ color: '#64748b' }}>Assigned IHC Consultant:</span>
+                        <span>{ack.agent_name || 'Senior IHC Agent'}</span>
+                      </div>
+                      {ack.notes && (
+                        <div style={{ background: '#f8fafc', padding: '0.5rem', borderRadius: '6px', marginTop: '0.35rem', fontSize: '0.76rem', color: '#475569' }}>
+                          <strong>Notes:</strong> {ack.notes}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* Chatwoot Live Channel Card */}
+              <div style={{ background: 'linear-gradient(135deg, #0f172a 0%, #1e293b 100%)', borderRadius: '10px', padding: '1.15rem', color: '#ffffff', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.65rem' }}>
+                    <MessageCircle size={18} color="#d4af37" />
+                    <span style={{ fontWeight: 700, fontSize: '0.88rem', color: '#d4af37', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                      Chatwoot Live Integration
+                    </span>
+                  </div>
+                  <div style={{ fontSize: '0.82rem', color: '#cbd5e1', lineHeight: 1.45, marginBottom: '1rem' }}>
+                    Direct communication bridge with customer on WhatsApp. View full message transcripts, audit AI responses, or take over conversation manually.
+                  </div>
+                </div>
+                <div>
+                  {selectedLeadDetail.conversation_ids && selectedLeadDetail.conversation_ids.length > 0 ? (
+                    <button 
+                      className="lux-btn-chatwoot-large"
+                      onClick={() => window.open(`https://inbox.bentongland.com.my/app/accounts/1/conversations/${selectedLeadDetail.conversation_ids[0]}`, '_blank')}
+                      style={{ width: '100%', padding: '0.65rem 1rem', background: '#d4af37', color: '#0f172a', fontWeight: 800, fontSize: '0.85rem', borderRadius: '6px', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', transition: 'all 0.2s' }}
+                    >
+                      <MessageCircle size={16} /> Open Chatwoot Thread #{selectedLeadDetail.conversation_ids[0]} <ExternalLink size={14} />
+                    </button>
+                  ) : (
+                    <button 
+                      className="lux-btn-chatwoot-large"
+                      onClick={() => window.open(`https://inbox.bentongland.com.my/app/accounts/1/conversations`, '_blank')}
+                      style={{ width: '100%', padding: '0.65rem 1rem', background: '#d4af37', color: '#0f172a', fontWeight: 800, fontSize: '0.85rem', borderRadius: '6px', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}
+                    >
+                      <MessageCircle size={16} /> Open Chatwoot Inbox <ExternalLink size={14} />
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="modal-footer" style={{ borderTop: '1px solid #e2e8f0', paddingTop: '1rem', display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
+              <button 
+                type="button" 
+                className="btn-secondary" 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleOpenEditLeadModal(selectedLeadDetail, e);
+                }}
+              >
+                <Edit size={14} /> Edit Customer Lead
+              </button>
+              <button 
+                type="button" 
+                className="btn-primary" 
+                onClick={() => setIsLeadDetailModalOpen(false)}
+              >
+                Close Dossier
+              </button>
+            </div>
           </div>
         </div>
       )}

@@ -266,6 +266,41 @@ class WorkflowTemplate(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
+class ViewingAppointment(Base):
+    __tablename__ = "viewing_appointments"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    form_no = Column(String, unique=True, index=True, nullable=False)
+    customer_id = Column(String, ForeignKey("customers.id"), nullable=False, index=True)
+    property_id = Column(UUID(as_uuid=True), ForeignKey("properties.id"), nullable=True)
+    conversation_id = Column(Integer, nullable=True, index=True)
+    status = Column(String, default="SCHEDULED") # SCHEDULED, CONFIRMED, COMPLETED, CANCELLED
+    appointment_date = Column(DateTime, nullable=True)
+    no_of_pax = Column(String, nullable=True)
+    car_plate = Column(String, nullable=True)
+    document_data = Column(JSON, default=dict)
+    pdf_path = Column(String, nullable=True)
+    docx_path = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+class AcknowledgementForm(Base):
+    __tablename__ = "acknowledgement_forms"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    form_no = Column(String, unique=True, index=True, nullable=False)
+    customer_id = Column(String, ForeignKey("customers.id"), nullable=True, index=True)
+    property_id = Column(UUID(as_uuid=True), ForeignKey("properties.id"), nullable=True, index=True)
+    viewing_date = Column(DateTime, nullable=True)
+    status = Column(String, default="PENDING_SIGNATURE", index=True) # PENDING_SIGNATURE, SIGNED, CANCELLED
+    file_path = Column(String, nullable=True)
+    document_hash = Column(String, nullable=True)
+    metadata_json = Column(JSON, nullable=True, default=dict)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+ViewingRecord = AcknowledgementForm
+
 class User(Base):
     __tablename__ = "crm_users"
 
@@ -274,10 +309,31 @@ class User(Base):
     email = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
     full_name = Column(String, nullable=True)
-    role = Column(String, nullable=False, default="agent") # "admin", "agent", "viewer"
-    is_active = Column(Boolean, default=True)
+    role = Column(String, nullable=False, default="agent") # "admin", "agent", "employee", "viewer"
+    phone_number = Column(String, unique=True, index=True, nullable=True)
+    assigned_locations = Column(ARRAY(String), default=list) # e.g. ["Bentong", "Temerloh"]
+    assigned_property_types = Column(ARRAY(String), default=list) # e.g. ["Rental", "Residential"]
+    is_active = Column(Boolean, default=False)
+    is_approved = Column(Boolean, default=True)
+    receive_lead_handovers = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+    @property
+    def specialization_locations(self):
+        return self.assigned_locations or []
+
+    @specialization_locations.setter
+    def specialization_locations(self, val):
+        self.assigned_locations = val or []
+
+    @property
+    def specialization_property_types(self):
+        return self.assigned_property_types or []
+
+    @specialization_property_types.setter
+    def specialization_property_types(self, val):
+        self.assigned_property_types = val or []
 
 
 def run_schema_migrations(eng):
@@ -335,7 +391,47 @@ def run_schema_migrations(eng):
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS embedding_specs vector(384);",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS embedding_features vector(384);",
                 "ALTER TABLE properties ADD COLUMN IF NOT EXISTS embedding_suitability vector(384);",
-                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS embedding_overview vector(384);"
+                "ALTER TABLE properties ADD COLUMN IF NOT EXISTS embedding_overview vector(384);",
+                "ALTER TABLE crm_users ADD COLUMN IF NOT EXISTS phone_number VARCHAR;",
+                "ALTER TABLE crm_users ADD COLUMN IF NOT EXISTS role VARCHAR DEFAULT 'agent';",
+                "ALTER TABLE crm_users ADD COLUMN IF NOT EXISTS assigned_locations TEXT[] DEFAULT '{}';",
+                "ALTER TABLE crm_users ADD COLUMN IF NOT EXISTS assigned_property_types TEXT[] DEFAULT '{}';",
+                "ALTER TABLE crm_users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT FALSE;",
+                "ALTER TABLE crm_users ADD COLUMN IF NOT EXISTS is_approved BOOLEAN DEFAULT TRUE;",
+                "ALTER TABLE crm_users ADD COLUMN IF NOT EXISTS specialization_locations TEXT[] DEFAULT '{}';",
+                "ALTER TABLE crm_users ADD COLUMN IF NOT EXISTS specialization_property_types TEXT[] DEFAULT '{}';",
+                "ALTER TABLE crm_users ADD COLUMN IF NOT EXISTS receive_lead_handovers BOOLEAN DEFAULT TRUE;",
+                "UPDATE crm_users SET assigned_locations = specialization_locations WHERE (assigned_locations IS NULL OR assigned_locations = '{}') AND specialization_locations IS NOT NULL AND specialization_locations <> '{}';",
+                "UPDATE crm_users SET assigned_property_types = specialization_property_types WHERE (assigned_property_types IS NULL OR assigned_property_types = '{}') AND specialization_property_types IS NOT NULL AND specialization_property_types <> '{}';",
+                """CREATE TABLE IF NOT EXISTS viewing_appointments (
+                    id UUID PRIMARY KEY,
+                    form_no VARCHAR UNIQUE NOT NULL,
+                    customer_id VARCHAR REFERENCES customers(id),
+                    property_id UUID REFERENCES properties(id),
+                    conversation_id INTEGER,
+                    status VARCHAR DEFAULT 'SCHEDULED',
+                    appointment_date TIMESTAMP,
+                    no_of_pax VARCHAR,
+                    car_plate VARCHAR,
+                    document_data JSONB DEFAULT '{}',
+                    pdf_path VARCHAR,
+                    docx_path VARCHAR,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );""",
+                """CREATE TABLE IF NOT EXISTS acknowledgement_forms (
+                    id SERIAL PRIMARY KEY,
+                    form_no VARCHAR UNIQUE NOT NULL,
+                    customer_id VARCHAR REFERENCES customers(id),
+                    property_id UUID REFERENCES properties(id),
+                    viewing_date TIMESTAMP,
+                    status VARCHAR DEFAULT 'PENDING_SIGNATURE',
+                    file_path TEXT,
+                    document_hash VARCHAR,
+                    metadata_json JSONB DEFAULT '{}',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );"""
             ]
             for query in migrations:
                 try:

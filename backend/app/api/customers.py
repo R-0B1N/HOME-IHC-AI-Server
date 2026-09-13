@@ -36,42 +36,75 @@ IS_STAGING = (
     os.getenv("DB_HOST") == "whatsapp_ai_db_staging" 
     or "staging" in os.getenv("REDIS_HOST", "")
     or os.getenv("APP_ENV") == "staging"
+    or os.getenv("ENVIRONMENT", "").lower() == "staging"
 )
+
+def serialize_customer(c: Customer) -> dict:
+    meta = c.metadata_json or {}
+    cust_inbox = meta.get("inbox_id")
+    req_profile = meta.get("requirements_profile") or {
+        "active_inquiry": None,
+        "retained_inquiries": [],
+        "target_locations": [],
+        "preferred_property_types": [],
+        "target_budget_myr": None,
+        "target_budget_formatted": "Not Specified",
+        "power_requirements_amp": None,
+        "hybrid_opportunity": False
+    }
+    return {
+        "id": c.id,
+        "phone_number": c.id,
+        "contact_name": c.contact_name,
+        "email": c.email,
+        "country": c.country,
+        "intent_category": meta.get("intent_category", "general"),
+        "intention_tag": meta.get("intention_tag", "Cold"),
+        "inbox_id": cust_inbox,
+        "conversation_ids": c.conversation_ids or [],
+        "metadata_json": meta,
+        "last_interaction": c.last_interaction.isoformat() if c.last_interaction else None,
+        "registered_date": meta.get("registered_date") or (c.last_interaction.isoformat() if c.last_interaction else None),
+        "requirements_profile": req_profile,
+        "intent_progression": meta.get("intent_progression") or [],
+        "presented_properties": meta.get("presented_properties") or [],
+        "shortlisted_properties": meta.get("shortlisted_properties") or [],
+        "viewing_acknowledgement": meta.get("viewing_acknowledgement") or {
+            "status": "No Form Issued",
+            "form_no": None,
+            "date": None,
+            "agent_name": None,
+            "notes": ""
+        }
+    }
 
 @router.get("")
 def get_customers(environment: Optional[str] = None, db: Session = Depends(get_db)):
     customers = db.query(Customer).order_by(Customer.last_interaction.desc()).all()
     result = []
     effective_env = environment or ("staging" if IS_STAGING else "production")
+    staging_inbox_id = str(os.getenv("STAGING_INBOX_ID", "4"))
     
     for c in customers:
         meta = c.metadata_json or {}
         cust_inbox = meta.get("inbox_id")
         source = meta.get("source")
         
-        # Staging isolation:
-        # In staging, only show contacts from test WhatsApp inbox 4 and exclude bulk-imported Chatwoot syncs
-        staging_inbox_id = str(os.getenv("STAGING_INBOX_ID", "4"))
+        # Staging isolation criteria:
+        is_staging_contact = (
+            str(cust_inbox) == staging_inbox_id
+            or meta.get("environment") == "staging"
+            or (cust_inbox is None and IS_STAGING and source not in ["chatwoot_sync", "chatwoot_startup_sync"])
+        )
+        
         if effective_env == 'staging':
-            if source == "chatwoot_sync" or str(cust_inbox) != staging_inbox_id:
+            if not is_staging_contact:
                 continue
         elif effective_env == 'production':
-            if str(cust_inbox) == staging_inbox_id:
+            if is_staging_contact:
                 continue
             
-        result.append({
-            "id": c.id,
-            "phone_number": c.id, # id is phone_number
-            "contact_name": c.contact_name,
-            "email": c.email,
-            "country": c.country,
-            "intent_category": meta.get("intent_category", "general"),
-            "intention_tag": meta.get("intention_tag", "Cold"),
-            "inbox_id": cust_inbox,
-            "conversation_ids": c.conversation_ids or [],
-            "metadata_json": c.metadata_json,
-            "last_interaction": c.last_interaction.isoformat() if c.last_interaction else None
-        })
+        result.append(serialize_customer(c))
     return result
 
 @router.get("/staging")
@@ -81,26 +114,33 @@ def get_staging_customers(admin=Depends(require_admin), db: Session = Depends(ge
     """
     customers = db.query(Customer).order_by(Customer.last_interaction.desc()).all()
     result = []
+    staging_inbox_id = str(os.getenv("STAGING_INBOX_ID", "4"))
     for c in customers:
         meta = c.metadata_json or {}
-        staging_inbox_id = str(os.getenv("STAGING_INBOX_ID", "4"))
-        if str(cust_inbox) != staging_inbox_id:
+        cust_inbox = meta.get("inbox_id")
+        source = meta.get("source")
+        
+        is_staging_contact = (
+            str(cust_inbox) == staging_inbox_id
+            or meta.get("environment") == "staging"
+            or (cust_inbox is None and IS_STAGING and source not in ["chatwoot_sync", "chatwoot_startup_sync"])
+        )
+        if not is_staging_contact:
             continue
             
-        result.append({
-            "id": c.id,
-            "phone_number": c.id,
-            "contact_name": c.contact_name,
-            "email": c.email,
-            "country": c.country,
-            "intent_category": meta.get("intent_category", "general"),
-            "intention_tag": meta.get("intention_tag", "Cold"),
-            "inbox_id": cust_inbox,
-            "conversation_ids": c.conversation_ids or [],
-            "metadata_json": c.metadata_json,
-            "last_interaction": c.last_interaction.isoformat() if c.last_interaction else None
-        })
+        result.append(serialize_customer(c))
     return result
+
+@router.get("/{customer_id}")
+def get_customer(customer_id: str, db: Session = Depends(get_db)):
+    """
+    Get full customer dossier including conversational intent progression, requirements profile,
+    presented and shortlisted properties, and viewing acknowledgement status.
+    """
+    customer = db.query(Customer).filter(Customer.id == customer_id).first()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    return serialize_customer(customer)
 
 from sqlalchemy import text
 
@@ -191,13 +231,18 @@ def create_customer(customer_data: CustomerCreate, db: Session = Depends(get_db)
     if customer:
         raise HTTPException(status_code=400, detail="Customer with this phone number already exists")
     
+    meta = {"bypass_ai": customer_data.bypass_ai or False}
+    if IS_STAGING:
+        meta["inbox_id"] = int(os.getenv("STAGING_INBOX_ID", "4"))
+        meta["environment"] = "staging"
+
     new_customer = Customer(
         id=customer_data.phone_number,
         country=customer_data.country,
         contact_name=customer_data.contact_name,
         email=customer_data.email,
         last_interaction=datetime.datetime.utcnow(),
-        metadata_json={"bypass_ai": customer_data.bypass_ai or False}
+        metadata_json=meta
     )
     db.add(new_customer)
     db.commit()
