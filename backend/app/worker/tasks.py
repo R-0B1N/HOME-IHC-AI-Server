@@ -52,17 +52,33 @@ CONFIGURED_PROPERTY_TYPES = [
 DEFAULT_FALLBACK_ADMIN_NUMBERS = ["+601165144931", "+14709202239"]
 
 
-def calculate_agent_specialization_score(agent, lead_location: str = "", lead_property_type: str = "", raw_inquiry_text: str = "") -> int:
+def calculate_agent_specialization_score(agent, lead_location_or_data=None, lead_property_type: str = "", raw_inquiry_text: str = "") -> int:
     """
     Scores an agent based on how many lead criteria match their assigned_locations
     and assigned_property_types.
+    Accepts agent as dict or ORM object, and lead data as dict or individual strings.
     Returns integer hit count.
     """
     if not agent:
         return 0
 
-    assigned_locs = getattr(agent, "assigned_locations", None) or getattr(agent, "specialization_locations", None) or []
-    assigned_ptypes = getattr(agent, "assigned_property_types", None) or getattr(agent, "specialization_property_types", None) or []
+    # Support dict or ORM agent
+    if isinstance(agent, dict):
+        assigned_locs = agent.get("assigned_locations") or []
+        assigned_ptypes = agent.get("assigned_property_types") or []
+    else:
+        assigned_locs = getattr(agent, "assigned_locations", None) or getattr(agent, "specialization_locations", None) or []
+        assigned_ptypes = getattr(agent, "assigned_property_types", None) or getattr(agent, "specialization_property_types", None) or []
+
+    # Support lead_data dict as second arg (from tests) or individual strings (from production)
+    if isinstance(lead_location_or_data, dict):
+        lead_data = lead_location_or_data
+        lead_location = lead_data.get("city") or lead_data.get("location") or lead_data.get("state") or ""
+        cats = lead_data.get("property_category") or []
+        lead_property_type = cats[0] if isinstance(cats, list) and cats else (cats if isinstance(cats, str) else "")
+        raw_inquiry_text = lead_data.get("inquiry_text") or lead_data.get("raw_text") or ""
+    else:
+        lead_location = lead_location_or_data or ""
 
     score = 0
     searchable_text = f"{lead_location or ''} {lead_property_type or ''} {raw_inquiry_text or ''}".lower()

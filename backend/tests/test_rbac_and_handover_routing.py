@@ -348,7 +348,7 @@ class TestDynamicHotLeadHandoverRouting(unittest.TestCase):
 class TestRBACPromptAndDataIsolation(unittest.TestCase):
     """Test AI prompt isolation across Customer, Agent/Employee, and Admin tiers."""
 
-    @patch("app.services.agent_logic.generate_gemini_response")
+    @patch("app.services.agent_logic.generate_conversational_response")
     def test_customer_role_enforces_public_data_only(self, mock_gemini):
         mock_gemini.return_value = "Public property information only."
 
@@ -367,7 +367,7 @@ class TestRBACPromptAndDataIsolation(unittest.TestCase):
         self.assertIn("agent roster", prompt_sent)
         self.assertNotIn("ADMINISTRATOR EXECUTIVE POLICY", prompt_sent)
 
-    @patch("app.services.agent_logic.generate_gemini_response")
+    @patch("app.services.agent_logic.generate_conversational_response")
     def test_agent_role_enforces_operational_policy(self, mock_gemini):
         mock_gemini.return_value = "Here are the lead details."
 
@@ -383,7 +383,7 @@ class TestRBACPromptAndDataIsolation(unittest.TestCase):
         self.assertIn("Full property specifications", prompt_sent)
         self.assertNotIn("CUSTOMER SECURITY & ACCESS POLICY", prompt_sent)
 
-    @patch("app.services.agent_logic.generate_gemini_response")
+    @patch("app.services.agent_logic.generate_conversational_response")
     def test_admin_role_enforces_executive_policy(self, mock_gemini):
         mock_gemini.return_value = "Here is the executive report."
 
