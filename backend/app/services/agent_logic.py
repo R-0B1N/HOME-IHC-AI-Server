@@ -2,6 +2,7 @@ import logging
 import json
 import re
 import os
+import datetime
 import redis
 from app.db.models import SessionLocal, Property, Customer
 from app.services.llm import llm_client, LLM_MODEL_NAME, _parse_json_from_llm
