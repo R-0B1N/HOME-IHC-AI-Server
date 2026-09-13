@@ -25,7 +25,7 @@ from app.services.chatwoot import (
 )
 from app.services.llm import generate_response, transcribe_audio, extract_property_search_criteria, extract_valuer_data, extract_wordpress_property
 from app.services.document_parser import extract_text_from_document
-from app.services.db_services import get_or_create_customer, get_sender_role, search_properties
+from app.services.db_services import get_or_create_customer, get_sender_role, search_properties, get_active_agents_and_employees
 from app.services.session_manager import SessionManager
 from app.services.minio_service import upload_media
 from app.db.models import SessionLocal, Customer, Property, Transaction, Order, InteractionLog, User
@@ -102,7 +102,10 @@ def calculate_agent_specialization_score(agent, lead_location_or_data=None, lead
             continue
         if (lead_property_type and ptype_clean in lead_property_type.lower()) or (ptype_clean in searchable_text):
             score += 1
-        elif ptype_clean == "land / agriculture" and any(k in searchable_text for k in ["agriculture", "tanah", "kebun", "ladang", "land"]):
+        elif ptype_clean == "land / agriculture" and (
+            any(k in searchable_text for k in ["agriculture", "tanah", "kebun", "ladang", "pertanian"])
+            or ("land" in searchable_text and "durian" not in searchable_text)
+        ):
             score += 1
         elif ptype_clean == "durian land" and any(k in searchable_text for k in ["durian", "musang king", "black thorn", "d24"]):
             score += 1
@@ -111,29 +114,46 @@ def calculate_agent_specialization_score(agent, lead_location_or_data=None, lead
 
 
 def dispatch_hot_lead_handover(
-    conversation_id: int,
-    customer_name: str,
-    customer_phone: str,
-    intent: str,
-    location: str,
-    property_type: str,
-    budget: str,
-    conversation_summary: str,
-    cw_link: str,
-    inbox_id: int,
+    conversation_id_or_data=None,
+    customer_name: str = "",
+    customer_phone: str = "",
+    intent: str = "BUYER",
+    location: str = "",
+    property_type: str = "",
+    budget: str = "",
+    conversation_summary: str = "",
+    cw_link: str = "",
+    inbox_id: int = 3,
     raw_inquiry_text: str = "",
     db: SessionLocal = None
 ) -> dict:
     """
     Dynamic Hot Lead Handover routing based on agent specialization:
-    - Queries active agents and employees from crm_users.
+    - Queries active agents and employees from crm_users (or get_active_agents_and_employees).
     - Scores each candidate based on hit count matching assigned_locations and assigned_property_types.
     - Top scoring agent receives WhatsApp alert template and customer contact card.
     - Tie Handling: If multiple agents have identical highest hit count, sends to all tied agents
       with additional remark: '⚠️ Shared Case: This inquiry is also shared with Agent [Name/Phone].'
     - Fallback: If no agents have hits (score = 0) or no active agents, routes to the 2 main admin numbers.
-    - Always attaches the customer's contact card (vCard / WhatsApp contact payload).
+    - Always attaches the assigned contact card (vCard / WhatsApp contact payload) to the customer.
     """
+    if isinstance(conversation_id_or_data, dict):
+        lead_data = conversation_id_or_data
+        conversation_id = lead_data.get("conversation_id", 0)
+        customer_name = lead_data.get("customer_name") or "Valued Customer"
+        customer_phone = lead_data.get("customer_phone") or ""
+        intent = lead_data.get("intent") or "BUYER"
+        location = lead_data.get("city") or lead_data.get("location") or lead_data.get("state") or ""
+        cats = lead_data.get("property_category") or []
+        property_type = cats[0] if isinstance(cats, list) and cats else (cats if isinstance(cats, str) else "")
+        budget = lead_data.get("budget") or "Not Specified"
+        conversation_summary = lead_data.get("title") or lead_data.get("inquiry_text") or "Inquiry"
+        cw_link = lead_data.get("cw_link") or f"https://inbox.bentongland.com.my/app/accounts/1/conversations/{conversation_id}"
+        inbox_id = lead_data.get("inbox_id") or 3
+        raw_inquiry_text = lead_data.get("inquiry_text") or lead_data.get("raw_text") or ""
+    else:
+        conversation_id = conversation_id_or_data
+
     close_db = False
     if db is None:
         db = SessionLocal()
@@ -141,26 +161,32 @@ def dispatch_hot_lead_handover(
 
     try:
         # 1. Query active agents and employees with configured phone number
-        active_agents = db.query(User).filter(
-            User.is_active == True,
-            User.role.in_(["agent", "employee"]),
-            User.phone_number.isnot(None),
-            User.phone_number != ""
-        ).all()
+        raw_agents = get_active_agents_and_employees()
+        if not raw_agents and db is not None:
+            raw_agents = db.query(User).filter(
+                User.is_active == True,
+                User.role.in_(["agent", "employee"]),
+                User.phone_number.isnot(None),
+                User.phone_number != ""
+            ).all()
 
         scored_candidates = []
-        for agent in active_agents:
+        for agent in (raw_agents or []):
+            agent_phone = agent.get("phone_number") if isinstance(agent, dict) else getattr(agent, "phone_number", None)
+            if not agent_phone:
+                continue
             score = calculate_agent_specialization_score(
                 agent=agent,
-                lead_location=location,
+                lead_location_or_data=location,
                 lead_property_type=property_type,
                 raw_inquiry_text=raw_inquiry_text
             )
+            agent_name = agent.get("name") if isinstance(agent, dict) else (getattr(agent, "full_name", None) or getattr(agent, "username", "Agent"))
             scored_candidates.append({
                 "agent": agent,
                 "score": score,
-                "phone": agent.phone_number,
-                "name": agent.full_name or agent.username
+                "phone": agent_phone,
+                "name": agent_name
             })
 
         # Sort descending by score
@@ -235,7 +261,7 @@ def dispatch_hot_lead_handover(
                 cw_link
             ]
 
-            # 1. Send WhatsApp Template
+            # 1. Send WhatsApp Template to staff / admin
             send_whatsapp_template(
                 inbox_id=inbox_id,
                 to_phone=target_phone,
@@ -244,16 +270,18 @@ def dispatch_hot_lead_handover(
                 language_code="en",
                 override_phone_number_id=TEMPLATE_PHONE_NUMBER_ID
             )
+            dispatched_phones.append(target_phone)
 
-            # 2. Always attach customer's contact card (vCard / WhatsApp contact payload)
+        # 2. Attach primary contact card to customer once
+        if customer_phone and routed_targets:
+            primary_target = routed_targets[0]
             send_whatsapp_contact(
                 inbox_id=inbox_id,
-                to_phone=target_phone,
-                contact_name=customer_name,
-                contact_phone=customer_phone,
+                to_phone=customer_phone,
+                contact_name=primary_target["name"],
+                contact_phone=primary_target["phone"],
                 override_phone_number_id=TEMPLATE_PHONE_NUMBER_ID
             )
-            dispatched_phones.append(target_phone)
 
         routing_notes = []
         if is_fallback:
@@ -276,12 +304,21 @@ def dispatch_hot_lead_handover(
             f"📝 **AI Summary**: {conversation_summary}\n\n"
             f"⚡ **Status**: AI response paused (`bypass_ai=True`). Handed over to human agent."
         )
-        try:
-            send_private_note(conversation_id, private_note_text)
-        except Exception as ne:
-            logger.error(f"Failed to post internal private note on handover: {ne}")
+        if conversation_id:
+            try:
+                send_private_note(conversation_id, private_note_text)
+            except Exception as ne:
+                logger.error(f"Failed to post internal private note on handover: {ne}")
+
+        assigned_agent_list = [
+            {"name": t["name"], "phone_number": t["phone"], "score": t["score"]}
+            for t in routed_targets if not is_fallback
+        ]
 
         return {
+            "status": "fallback_to_admin" if is_fallback else "success",
+            "assigned_agents": assigned_agent_list,
+            "winning_score": max_score,
             "routed_to": dispatched_phones,
             "is_fallback": is_fallback,
             "is_tie": is_tie,

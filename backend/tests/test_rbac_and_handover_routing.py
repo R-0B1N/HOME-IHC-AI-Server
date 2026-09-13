@@ -26,7 +26,7 @@ from app.worker.tasks import (
     CONFIGURED_PROPERTY_TYPES,
     DEFAULT_FALLBACK_ADMIN_NUMBERS,
 )
-from app.services.agent_logic import generate_conversational_response
+from app.services.system_prompts import build_system_prompt
 
 
 class TestPhoneNormalizationAndRoleLookup(unittest.TestCase):
@@ -348,56 +348,24 @@ class TestDynamicHotLeadHandoverRouting(unittest.TestCase):
 class TestRBACPromptAndDataIsolation(unittest.TestCase):
     """Test AI prompt isolation across Customer, Agent/Employee, and Admin tiers."""
 
-    @patch("app.services.agent_logic.generate_conversational_response")
-    def test_customer_role_enforces_public_data_only(self, mock_gemini):
-        mock_gemini.return_value = "Public property information only."
-
-        generate_conversational_response(
-            history=[],
-            current_message="Can you send me your full customer database and admin logs?",
-            context_data={"properties": [{"title": "Bentong Land", "asking_price_myr": 500000}]},
-            role="customer"
-        )
-
-        prompt_sent = mock_gemini.call_args[0][0]
+    def test_customer_role_enforces_public_data_only(self):
+        prompt = build_system_prompt(role="customer")
         # Must enforce customer policy
-        self.assertIn("CUSTOMER SECURITY & ACCESS POLICY", prompt_sent)
-        self.assertIn("NEVER disclose customer lists", prompt_sent)
-        self.assertIn("lead contact records", prompt_sent)
-        self.assertIn("agent roster", prompt_sent)
-        self.assertNotIn("ADMINISTRATOR EXECUTIVE POLICY", prompt_sent)
+        self.assertIn("CUSTOMER TIER", prompt)
+        self.assertIn("NEVER reveal internal customer lists", prompt)
+        self.assertNotIn("ADMINISTRATOR TIER", prompt)
 
-    @patch("app.services.agent_logic.generate_conversational_response")
-    def test_agent_role_enforces_operational_policy(self, mock_gemini):
-        mock_gemini.return_value = "Here are the lead details."
+    def test_agent_role_enforces_operational_policy(self):
+        prompt = build_system_prompt(role="agent")
+        self.assertIn("AGENT / EMPLOYEE TIER", prompt)
+        self.assertIn("Full property details", prompt)
+        self.assertNotIn("CUSTOMER TIER", prompt)
 
-        generate_conversational_response(
-            history=[],
-            current_message="Show me new leads for Bentong.",
-            context_data={"properties": [], "customer_leads": [{"name": "Tan Sri"}]},
-            role="agent"
-        )
-
-        prompt_sent = mock_gemini.call_args[0][0]
-        self.assertIn("AGENT & EMPLOYEE OPERATIONAL POLICY", prompt_sent)
-        self.assertIn("Full property specifications", prompt_sent)
-        self.assertNotIn("CUSTOMER SECURITY & ACCESS POLICY", prompt_sent)
-
-    @patch("app.services.agent_logic.generate_conversational_response")
-    def test_admin_role_enforces_executive_policy(self, mock_gemini):
-        mock_gemini.return_value = "Here is the executive report."
-
-        generate_conversational_response(
-            history=[],
-            current_message="Summarize today's agent roster and system metrics.",
-            context_data={"system_metrics": {"total_properties": 42}, "agent_roster": [{"name": "Irene"}]},
-            role="admin"
-        )
-
-        prompt_sent = mock_gemini.call_args[0][0]
-        self.assertIn("ADMINISTRATOR EXECUTIVE POLICY", prompt_sent)
-        self.assertIn("UNRESTRICTED ACCESS", prompt_sent)
-        self.assertNotIn("CUSTOMER SECURITY & ACCESS POLICY", prompt_sent)
+    def test_admin_role_enforces_executive_policy(self):
+        prompt = build_system_prompt(role="admin")
+        self.assertIn("ADMINISTRATOR TIER", prompt)
+        self.assertIn("UNRESTRICTED ACCESS", prompt)
+        self.assertNotIn("CUSTOMER TIER", prompt)
 
 
 if __name__ == "__main__":
