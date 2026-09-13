@@ -156,19 +156,26 @@ def dispatch_hot_lead_handover(
 
     close_db = False
     if db is None:
-        db = SessionLocal()
-        close_db = True
+        try:
+            db = SessionLocal()
+            close_db = True
+        except Exception:
+            db = None
 
     try:
         # 1. Query active agents and employees with configured phone number
         raw_agents = get_active_agents_and_employees()
-        if not raw_agents and db is not None:
-            raw_agents = db.query(User).filter(
-                User.is_active == True,
-                User.role.in_(["agent", "employee"]),
-                User.phone_number.isnot(None),
-                User.phone_number != ""
-            ).all()
+        if raw_agents is None and db is not None:
+            try:
+                raw_agents = db.query(User).filter(
+                    User.is_active == True,
+                    User.role.in_(["agent", "employee"]),
+                    User.phone_number.isnot(None),
+                    User.phone_number != ""
+                ).all()
+            except Exception as dbe:
+                logger.warning(f"Could not query User model from DB: {dbe}")
+                raw_agents = []
 
         scored_candidates = []
         for agent in (raw_agents or []):
@@ -326,8 +333,11 @@ def dispatch_hot_lead_handover(
             "targets": routed_targets
         }
     finally:
-        if close_db:
-            db.close()
+        if close_db and db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
 
 
 @celery_app.task(bind=True, max_retries=3)
