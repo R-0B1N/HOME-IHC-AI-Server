@@ -92,6 +92,24 @@ def set_cell_checkbox(cell: docx.table._Cell, checked: bool) -> None:
     p.paragraph_format.line_spacing = Pt(11)
 
 
+def set_cell_margins(cell: docx.table._Cell, top: int = 160, bottom: int = 0, left: int = 100, right: int = 100) -> None:
+    """
+    Sets explicit internal cell margins (<w:tcMar>) in dxa (1 pt = 20 dxa).
+    Used to provide vertical breathing space for top elements (e.g. salutation honorifics)
+    without injecting empty paragraphs that disturb paragraph index mappings.
+    """
+    tcPr = cell._tc.get_or_add_tcPr()
+    existing = tcPr.find(qn('w:tcMar'))
+    if existing is not None:
+        tcPr.remove(existing)
+    tcMar = parse_xml(
+        r'<w:tcMar {}><w:top w:w="{}" w:type="dxa"/><w:bottom w:w="{}" w:type="dxa"/><w:left w:w="{}" w:type="dxa"/><w:right w:w="{}" w:type="dxa"/></w:tcMar>'.format(
+            nsdecls('w'), top, bottom, left, right
+        )
+    )
+    tcPr.append(tcMar)
+
+
 def get_sample_acknowledgement_data() -> Dict[str, Any]:
     """
     Returns a complete, realistic sample dataset matching operational reference
@@ -196,14 +214,8 @@ def populate_acknowledgement_document(
     salutation = (data.get("salutation") or "MR").upper()
     if c0_nested:
         t_sal = c0_nested[0]
-        # Insert a clean line of breathing space above t_sal so MR/MRS/MS does not stick to the top border
-        tc_children = list(c0._tc)
-        tbl_elem = t_sal._tbl
-        if tbl_elem in tc_children:
-            tbl_idx = tc_children.index(tbl_elem)
-            if tbl_idx <= 1:
-                top_spacer = parse_xml(r'<w:p {}><w:pPr><w:spacing w:before="80" w:after="40"/><w:rPr><w:sz w:val="14"/></w:rPr></w:pPr><w:r><w:t> </w:t></w:r></w:p>'.format(nsdecls('w')))
-                c0._tc.insert(tbl_idx, top_spacer)
+        # Provide vertical breathing space above t_sal so MR/MRS/MS does not stick to top border
+        set_cell_margins(c0, top=160, bottom=0, left=100, right=100)
 
         # Col 0: MR, Col 2: MRS, Col 4: MS
         set_cell_checkbox(t_sal.rows[0].cells[0], "MR" in salutation and "MRS" not in salutation)

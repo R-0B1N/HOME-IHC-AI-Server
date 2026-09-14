@@ -97,15 +97,11 @@ class TestDocumentFormatParity(unittest.TestCase):
         self.assertEqual(len(t0_gen.columns), len(t0_gold.columns))
 
         # Check Cell 0 paragraphs
-        # Check Cell 0 paragraphs (including top spacer for honorifics)
         c0_gen = t0_gen.rows[0].cells[0]
         c0_gold = t0_gold.rows[0].cells[0]
-        # Top spacer paragraph ensures MR/MRS/MS has breathing space above it
-        self.assertGreaterEqual(len(c0_gen.paragraphs), len(c0_gold.paragraphs))
-        # Verify text parity for core customer fields
-        self.assertIn("Full Name:  Nick", [p.text.strip() for p in c0_gen.paragraphs])
-        self.assertIn("No of pax: 2", [p.text.strip() for p in c0_gen.paragraphs])
-        self.assertIn("Company Name: ELPIJI (M) SDN BHD", [p.text.strip() for p in c0_gen.paragraphs])
+        self.assertEqual(len(c0_gen.paragraphs), len(c0_gold.paragraphs))
+        for p_i in range(len(c0_gold.paragraphs)):
+            self.assertEqual(c0_gen.paragraphs[p_i].text, c0_gold.paragraphs[p_i].text)
 
         # Check Cell 1 paragraphs
         c1_gen = t0_gen.rows[0].cells[1]
