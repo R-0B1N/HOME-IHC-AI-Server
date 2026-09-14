@@ -68,6 +68,12 @@ python scripts/reset_customer_session.py --phone +60123456789
 python scripts/reset_customer_session.py --all
 ```
 
+### 2.4 NVIDIA Telemetry & Driver Desynchronization Guard
+- **Kernel/Library Desynchronization:** Extended server uptime (>30–45 days) with Ubuntu `unattended-upgrades` creates a version divergence between the resident in-kernel NVIDIA modules (`nvidia.ko`, `nvidia_uvm.ko`) and updated on-disk NVML libraries (`libnvidia-ml.so`).
+- **Failure Symptom:** `nvidia-smi` outputs a single unformatted error line (`Failed to initialize NVML: Driver/library version mismatch`). Unprotected parsers querying 7 CSV attributes fail with `ValueError: not enough values to unpack (expected 7, got 1)`.
+- **Defensive Parser Requirement:** All telemetry endpoints querying `nvidia-smi` must verify exit code (`returncode == 0`) and assert `len(parts) == 7` prior to tuple unpacking.
+- **System Remediation:** System reboot (`sudo reboot`) or module reload to align the running kernel with the installed NVIDIA driver suite.
+
 ---
 
 ## 3. Test Verification Commands

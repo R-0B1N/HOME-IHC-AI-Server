@@ -569,6 +569,26 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                 try:
                     chatwoot_messages = get_conversation_messages(conversation_id)
                     chatwoot_messages.sort(key=lambda x: x.get("created_at", 0))
+
+                    # Conversation Reset Cutoff: Ensure messages prior to /reset are never passed to AI
+                    reset_cutoff_ts = 0.0
+                    try:
+                        reset_ts_raw = redis_client.get(f"convo_reset_at_{conversation_id}")
+                        if reset_ts_raw:
+                            reset_cutoff_ts = max(reset_cutoff_ts, float(reset_ts_raw.decode("utf-8") if isinstance(reset_ts_raw, bytes) else reset_ts_raw))
+                    except Exception as r_err:
+                        logger.warning(f"Could not check redis reset cutoff for conv {conversation_id}: {r_err}")
+
+                    for msg in chatwoot_messages:
+                        if msg.get("private") and "/reset" in (msg.get("content") or ""):
+                            msg_created = float(msg.get("created_at") or 0)
+                            if msg_created > reset_cutoff_ts:
+                                reset_cutoff_ts = msg_created
+
+                    if reset_cutoff_ts > 0:
+                        logger.info(f"Purging pre-reset messages for conv {conversation_id} prior to timestamp {reset_cutoff_ts}")
+                        chatwoot_messages = [msg for msg in chatwoot_messages if float(msg.get("created_at") or 0) > reset_cutoff_ts]
+
                     history_lines = []
                     # Get last 10 messages, older first (chronological order), excluding private notes
                     for msg in chatwoot_messages[-10:]:
@@ -605,6 +625,10 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
         
         with SessionManager.lock_session(phone_number):
             session = SessionManager.get_session(phone_number)
+            if not conversation_history.strip():
+                session.pop("introduced", None)
+                session.pop("current_agent", None)
+                session.pop("collected_data", None)
             
             agent_result = process_persona_state_machine(
                 phone_number, final_prompt_text, session,

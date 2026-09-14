@@ -352,38 +352,67 @@ async def chatwoot_webhook(request: Request):
                 return {"status": "command_executed", "command": "/transcript"}
 
             elif content.startswith("/reset"):
+                import time
+                from datetime import datetime, timezone
                 from app.services.session_manager import SessionManager
-                from app.services.chatwoot import send_private_note
+                from app.services.chatwoot import send_private_note, get_conversation_details
                 from app.db.models import SessionLocal, Customer
                 
-                contact_info = conversation.get("meta", {}).get("sender", {}) or payload.get("sender", {})
+                # In private notes, payload['sender'] is the agent, not the customer!
+                contact_info = conversation.get("meta", {}).get("sender", {})
                 phone = contact_info.get("phone_number") or ""
+                if not phone:
+                    try:
+                        c_details = get_conversation_details(conversation_id)
+                        if c_details:
+                            c_sender = (c_details.get("meta", {}) or {}).get("sender", {}) or {}
+                            phone = c_sender.get("phone_number") or ""
+                            if not phone and "contact" in c_details:
+                                phone = (c_details.get("contact", {}) or {}).get("phone_number") or ""
+                    except Exception as c_err:
+                        logger.warning(f"Could not fetch conversation details for conv {conversation_id}: {c_err}")
                 
-                # 1. Reset Redis Session
+                reset_now = time.time()
+                # 1. Set Conversation Reset Cutoff Timestamp in Redis (valid for 7 days)
                 try:
+                    redis_client.set(f"convo_reset_at_{conversation_id}", str(reset_now), ex=604800)
+                    redis_client.delete(f"convo_active_{conversation_id}")
+                    redis_client.delete(f"convo_queue_{conversation_id}")
                     if phone:
                         SessionManager.reset_session(phone)
                         clean_phone = phone.replace("+", "").replace(" ", "").replace("-", "")
                         SessionManager.reset_session(clean_phone)
-                    redis_client.delete(f"convo_active_{conversation_id}")
-                    redis_client.delete(f"convo_queue_{conversation_id}")
                 except Exception as rerr:
                     logger.warning(f"Could not clear Redis session (Redis may be offline): {rerr}")
                 
-                # 2. Reset Customer bypass_ai and collected state in DB
+                # 2. Reset Customer in DB (introduced=False, bypass_ai=False, clear profiles)
                 try:
                     db = SessionLocal()
                     try:
+                        cust = None
                         if phone:
                             clean_p = phone.replace("+", "").replace(" ", "").replace("-", "")
                             cust = db.query(Customer).filter((Customer.id == clean_p) | (Customer.id.like(f"%{clean_p}%"))).first()
-                            if cust:
-                                meta = dict(cust.metadata_json or {})
-                                meta["bypass_ai"] = False
-                                meta["lead_temp"] = "Warm"
-                                meta["collected_data"] = {}
-                                cust.metadata_json = meta
-                                db.commit()
+                        if not cust:
+                            cust = db.query(Customer).filter(Customer.conversation_ids.contains([conversation_id])).first()
+                        
+                        if cust:
+                            if not phone:
+                                phone = str(cust.id)
+                                SessionManager.reset_session(phone)
+                            meta = dict(cust.metadata_json or {})
+                            meta["bypass_ai"] = False
+                            meta["introduced"] = False
+                            meta["lead_temp"] = "Warm"
+                            meta["collected_data"] = {}
+                            meta["requirements_profile"] = {}
+                            meta["multi_intent_profile"] = {}
+                            meta["intent_progression"] = []
+                            meta["interested_property"] = None
+                            meta["last_reset_at"] = datetime.now(timezone.utc).isoformat()
+                            cust.metadata_json = meta
+                            db.commit()
+                            logger.info(f"Reset customer {cust.id} metadata for conversation {conversation_id}")
                     finally:
                         db.close()
                 except Exception as dbe:
@@ -392,9 +421,10 @@ async def chatwoot_webhook(request: Request):
                 send_private_note(
                     conversation_id,
                     "🔄 **Session & AI State Reset Complete**\n\n"
-                    "• Redis session state cleared.\n"
-                    "• `bypass_ai` flag reset to `False` (AI re-enabled).\n"
-                    "• Next customer message will be treated as a fresh conversation."
+                    "• Redis session & conversation queues cleared.\n"
+                    f"• Reset timestamp recorded: `{reset_now:.2f}` (all prior messages purged).\n"
+                    "• `bypass_ai` reset to `False` & `introduced` reset to `False`.\n"
+                    "• Next customer message will trigger a completely fresh greeting."
                 )
                 return {"status": "command_executed", "command": "/reset"}
 

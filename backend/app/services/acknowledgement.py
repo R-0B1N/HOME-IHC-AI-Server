@@ -63,15 +63,33 @@ def stabilize_table_borders(table: docx.table.Table) -> None:
 
 def set_cell_checkbox(cell: docx.table._Cell, checked: bool) -> None:
     """
-    Toggles native OpenXML list bullet checkbox in table cell.
-    Uses numId 999 (checked: Wingdings \uf0fe) or numId 998 (unchecked: Wingdings \uf0a8).
-    Preserves exact cell geometry, margins, and line spacing without distortion.
+    Sets a clean, deterministic Unicode square checkbox (☐ or ☑) in the cell.
+    Completely strips any OpenXML <w:numPr> list numbering to prevent Microsoft Word
+    from rendering decimal numbers (1., 2., 3.) or bullet discs.
     """
-    p = cell.paragraphs[0] if cell.paragraphs else None
-    if p is not None:
-        numId_elem = p._p.find('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}numId')
-        if numId_elem is not None:
-            numId_elem.set(qn('w:val'), '999' if checked else '998')
+    p = cell.paragraphs[0] if cell.paragraphs else cell.add_paragraph()
+    
+    # Strip any <w:numPr> from the paragraph XML
+    for np in p._p.findall('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}numPr'):
+        parent = np.getparent()
+        if parent is not None:
+            parent.remove(np)
+
+    box_char = "☑" if checked else "☐"
+    
+    # Remove existing runs
+    while p.runs:
+        p._p.remove(p.runs[-1]._r)
+        
+    r = p.add_run(box_char)
+    r.font.name = "Arial"
+    r.font.size = Pt(10.5)
+    r.bold = checked
+    
+    # Tight paragraph formatting
+    p.paragraph_format.space_before = Pt(1)
+    p.paragraph_format.space_after = Pt(1)
+    p.paragraph_format.line_spacing = Pt(11)
 
 
 def get_sample_acknowledgement_data() -> Dict[str, Any]:
@@ -178,6 +196,15 @@ def populate_acknowledgement_document(
     salutation = (data.get("salutation") or "MR").upper()
     if c0_nested:
         t_sal = c0_nested[0]
+        # Insert a clean line of breathing space above t_sal so MR/MRS/MS does not stick to the top border
+        tc_children = list(c0._tc)
+        tbl_elem = t_sal._tbl
+        if tbl_elem in tc_children:
+            tbl_idx = tc_children.index(tbl_elem)
+            if tbl_idx <= 1:
+                top_spacer = parse_xml(r'<w:p {}><w:pPr><w:spacing w:before="80" w:after="40"/><w:rPr><w:sz w:val="14"/></w:rPr></w:pPr><w:r><w:t> </w:t></w:r></w:p>'.format(nsdecls('w')))
+                c0._tc.insert(tbl_idx, top_spacer)
+
         # Col 0: MR, Col 2: MRS, Col 4: MS
         set_cell_checkbox(t_sal.rows[0].cells[0], "MR" in salutation and "MRS" not in salutation)
         set_cell_checkbox(t_sal.rows[0].cells[2], "MRS" in salutation)
@@ -354,35 +381,127 @@ def populate_acknowledgement_document(
         set_cell_checkbox(t_ass.rows[0].cells[0], is_cobroke)
         set_cell_checkbox(t_ass.rows[1].cells[0], is_direct)
 
-    # 4.7 Legal Partner Agency (Paragraph 9)
-    agency_name = data.get("partner_agency")
-    if agency_name and len(doc.paragraphs) > 9:
-        p9 = doc.paragraphs[9]
-        if "Era Realtor Sdn. Bhd. [E(1)2053/1]" in p9.text:
-            p9.text = p9.text.replace("Era Realtor Sdn. Bhd. [E(1)2053/1]", agency_name)
+    # 4.7 Compact empty spacing paragraphs in c0 and c1 to preserve Page 1 height budget
+    for cell in [c0, c1]:
+        for p in cell.paragraphs:
+            if not p.text.strip():
+                p.paragraph_format.space_before = Pt(0)
+                p.paragraph_format.space_after = Pt(2)
+                p.paragraph_format.line_spacing = Pt(3)
+                for r in p.runs:
+                    r.font.size = Pt(3)
+            else:
+                p.paragraph_format.space_before = Pt(1)
+                p.paragraph_format.space_after = Pt(2)
+                p.paragraph_format.line_spacing = Pt(11)
 
-    # 5. Signatures (Paragraph 16 & 17)
+    # 4.8 Legal Partner Agency & Disclaimer formatting
+    agency_name = data.get("partner_agency")
+    p_disclaimer = None
+    p_sig_lines = None
+    p_sig_labels = None
+    p_name = None
+    p_date = None
+
+    for p in doc.paragraphs:
+        txt = p.text.strip()
+        if "I/We acknowledge and confirm" in txt:
+            p_disclaimer = p
+            if agency_name and "Era Realtor Sdn. Bhd. [E(1)2053/1]" in txt:
+                p.text = txt.replace("Era Realtor Sdn. Bhd. [E(1)2053/1]", agency_name)
+        elif "_________" in txt:
+            if p_sig_lines is None:
+                p_sig_lines = p
+        elif "Customer" in txt and "Attended staff" in txt:
+            p_sig_labels = p
+        elif "Name:" in txt and "Customer" not in txt and p_name is None:
+            p_name = p
+        elif "Date:" in txt and "PARTICULARS" not in txt and "Property Proposed" not in txt and p_date is None:
+            p_date = p
+
+    # Format disclaimer tightly (8.0pt, single line spacing, 3pt before/after)
+    if p_disclaimer:
+        p_disclaimer.paragraph_format.space_before = Pt(3)
+        p_disclaimer.paragraph_format.space_after = Pt(4)
+        p_disclaimer.paragraph_format.line_spacing = Pt(10)
+        for r in p_disclaimer.runs:
+            r.font.size = Pt(8.0)
+
+    # Reclaim vertical space from empty paragraphs between disclaimer and signature block
+    if p_disclaimer and p_sig_lines:
+        p_disc_idx = list(doc.paragraphs).index(p_disclaimer)
+        p_sig_idx = list(doc.paragraphs).index(p_sig_lines)
+        for mid_idx in range(p_disc_idx + 1, p_sig_idx):
+            mid_p = doc.paragraphs[mid_idx]
+            if not mid_p.text.strip():
+                mid_p.paragraph_format.space_before = Pt(0)
+                mid_p.paragraph_format.space_after = Pt(1)
+                mid_p.paragraph_format.line_spacing = Pt(2)
+                for r in mid_p.runs:
+                    r.font.size = Pt(2)
+
+    # 5. Signatures (Strict Page 1 Confinement)
     signer_name = data.get("customer_signer", cust_name)
     staff_name = data.get("staff_name", "Leong Chu Ping")
     signer_date = data.get("signer_date", header_date)
     staff_date = data.get("staff_date", header_date)
 
-    p16 = doc.paragraphs[16]
-    if len(p16.runs) > 1:
-        p16.runs[1].text = f" {signer_name}"
-    if len(p16.runs) > 11:
-        p16.runs[11].text = staff_name
+    if p_sig_lines:
+        p_sig_lines.paragraph_format.space_before = Pt(2)
+        p_sig_lines.paragraph_format.space_after = Pt(1)
+        p_sig_lines.paragraph_format.line_spacing = Pt(11)
+        p_sig_lines.paragraph_format.keep_with_next = True
 
-    p17 = doc.paragraphs[17]
-    if len(p17.runs) > 2:
-        p17.runs[2].text = signer_date
-    if len(p17.runs) > 12:
-        p17.runs[12].text = staff_date
+    if p_sig_labels:
+        p_sig_labels.paragraph_format.space_before = Pt(0)
+        p_sig_labels.paragraph_format.space_after = Pt(1)
+        p_sig_labels.paragraph_format.line_spacing = Pt(11)
+        p_sig_labels.paragraph_format.keep_with_next = True
+        for r in p_sig_labels.runs:
+            r.font.size = Pt(9.0)
 
-    # 6. Page 2 Header Date (Paragraph 19)
-    p19 = doc.paragraphs[19]
-    if len(p19.runs) > 16:
-        p19.runs[16].text = header_date
+    if p_name:
+        p_name.paragraph_format.space_before = Pt(0)
+        p_name.paragraph_format.space_after = Pt(1)
+        p_name.paragraph_format.line_spacing = Pt(11)
+        p_name.paragraph_format.keep_with_next = True
+        if len(p_name.runs) > 1:
+            p_name.runs[1].text = f" {signer_name}"
+        if len(p_name.runs) > 11:
+            p_name.runs[11].text = staff_name
+        for r in p_name.runs:
+            r.font.size = Pt(9.0)
+
+    if p_date:
+        p_date.paragraph_format.space_before = Pt(0)
+        p_date.paragraph_format.space_after = Pt(2)
+        p_date.paragraph_format.line_spacing = Pt(11)
+        if len(p_date.runs) > 2:
+            p_date.runs[2].text = signer_date
+        if len(p_date.runs) > 12:
+            p_date.runs[12].text = staff_date
+        for r in p_date.runs:
+            r.font.size = Pt(9.0)
+
+        # Guarantee explicit page break after signature Date line so Page 2 starts cleanly
+        has_break = False
+        p_date_idx = list(doc.paragraphs).index(p_date)
+        if p_date_idx + 1 < len(doc.paragraphs):
+            next_p = doc.paragraphs[p_date_idx + 1]
+            if '<w:br w:type="page"/>' in next_p._p.xml:
+                has_break = True
+        if not has_break:
+            r_br = p_date.add_run()
+            r_br.add_break(docx.enum.text.WD_BREAK.PAGE)
+
+    # 6. Page 2 Header Date
+    for p in doc.paragraphs:
+        txt = p.text.strip()
+        if "Property Proposed" in txt and "Date:" in txt:
+            if len(p.runs) > 16:
+                p.runs[16].text = header_date
+            elif len(p.runs) > 1:
+                p.runs[-1].text = f" {header_date}"
 
     # 7. Table 1 (Properties Viewed)
     t1 = doc.tables[1]
@@ -422,20 +541,68 @@ def populate_acknowledgement_document(
                         else:
                             row.cells[4].add_paragraph(line)
 
-    # 8. Table 2 (Submission of Documents)
+    # 8. Table 2 (Submission of Documents & Checkboxes)
     t2 = doc.tables[2]
     docs_sub = data.get("documents_submitted", [])
-    if docs_sub and len(t2.rows) > 1:
+    if len(t2.rows) > 1:
         row = t2.rows[1]
-        doc_item = docs_sub[0]
+        doc_item = docs_sub[0] if docs_sub else {}
         if doc_item.get("qty"):
             row.cells[2].paragraphs[0].text = f"\n{doc_item['qty']}"
 
-    # 9. Page 2 Bottom Date (Paragraph 26)
-    if len(doc.paragraphs) > 26:
-        p26 = doc.paragraphs[26]
-        if len(p26.runs) > 0:
-            p26.runs[0].text = header_date
+        # Col 1: Documents Checklist (GM, GRN, HSM, HSD, Pajakan Mukim, Pajakan Negeri, Topo Plan)
+        c_doc = row.cells[1]
+        checklist_items = ["GM", "GRN", "HSM", "HSD", "Pajakan Mukim", "Pajakan Negeri", "Topo Plan"]
+        for p in c_doc.paragraphs:
+            for np in p._p.findall('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}numPr'):
+                parent = np.getparent()
+                if parent is not None:
+                    parent.remove(np)
+            txt = p.text.strip().lstrip("☐").lstrip("☑").strip()
+            for item in checklist_items:
+                if txt == item or (item in txt and "Title" not in txt):
+                    is_chk = any(item.lower() in str(d).lower() for d in [doc_item.get("title_details", ""), doc_item.get("type", "")])
+                    p.text = f"{'☑' if is_chk else '☐'}  {item}"
+                    if p.runs:
+                        p.runs[0].font.name = "Arial"
+                        p.runs[0].font.size = Pt(9.5)
+                    break
+
+        # Col 4: Remarks Checklist (Whatsapp Messenger, Handover by hardcopy)
+        c_rem = row.cells[4]
+        rem_val = (doc_item.get("remarks") or "").lower()
+        for p in c_rem.paragraphs:
+            for np in p._p.findall('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}numPr'):
+                parent = np.getparent()
+                if parent is not None:
+                    parent.remove(np)
+            txt = p.text.strip().lstrip("☐").lstrip("☑").strip()
+            if "whatsapp" in txt.lower():
+                is_chk = "whatsapp" in rem_val or "messenger" in rem_val
+                p.text = f"{'☑' if is_chk else '☐'}  Whatsapp Messenger"
+                if p.runs:
+                    p.runs[0].font.name = "Arial"
+                    p.runs[0].font.size = Pt(9.5)
+            elif "hardcopy" in txt.lower():
+                is_chk = "hardcopy" in rem_val
+                p.text = f"{'☑' if is_chk else '☐'}  Handover by hardcopy"
+                if p.runs:
+                    p.runs[0].font.name = "Arial"
+                    p.runs[0].font.size = Pt(9.5)
+
+    # 9. Page 2 Bottom Date (Paragraph with date e.g. 27.03.2025)
+    for p in doc.paragraphs:
+        txt = p.text.strip()
+        if "Page | 2" in txt or txt == "27.03.2025" or (txt.startswith("2") and len(txt) == 10 and "." in txt):
+            if "CUSTOMER" not in txt and "PARTICULARS" not in txt and "Property Proposed" not in txt:
+                if len(p.runs) > 0 and "." in p.runs[0].text:
+                    p.runs[0].text = header_date
+
+    # 10. Global XML Sanitization: Remove ALL <w:numPr> elements to eliminate numbering/bullets
+    for np in doc._element.xpath('.//w:numPr'):
+        parent = np.getparent()
+        if parent is not None:
+            parent.remove(np)
 
     return doc
 

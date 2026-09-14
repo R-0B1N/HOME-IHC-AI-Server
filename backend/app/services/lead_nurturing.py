@@ -56,7 +56,7 @@ class LeadNurturingManager:
             except Exception:
                 pass
 
-        last_active = customer.updated_at or customer.created_at
+        last_active = getattr(customer, "updated_at", None) or getattr(customer, "last_interaction", None) or getattr(customer, "created_at", None)
         if not last_active:
             return None
         if last_active.tzinfo is None:
