@@ -558,7 +558,8 @@ def populate_acknowledgement_document(
         # Col 1: Documents Checklist (GM, GRN, HSM, HSD, Pajakan Mukim, Pajakan Negeri, Topo Plan)
         c_doc = row.cells[1]
         checklist_items = ["GM", "GRN", "HSM", "HSD", "Pajakan Mukim", "Pajakan Negeri", "Topo Plan"]
-        for p in c_doc.paragraphs:
+        c_doc_paragraphs = [docx.text.paragraph.Paragraph(p_node, c_doc) for p_node in c_doc._tc.xpath('.//w:p')]
+        for p in c_doc_paragraphs:
             for np in p._p.findall('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}numPr'):
                 parent = np.getparent()
                 if parent is not None:
@@ -576,7 +577,8 @@ def populate_acknowledgement_document(
         # Col 4: Remarks Checklist (Whatsapp Messenger, Handover by hardcopy)
         c_rem = row.cells[4]
         rem_val = (doc_item.get("remarks") or "").lower()
-        for p in c_rem.paragraphs:
+        c_rem_paragraphs = [docx.text.paragraph.Paragraph(p_node, c_rem) for p_node in c_rem._tc.xpath('.//w:p')]
+        for p in c_rem_paragraphs:
             for np in p._p.findall('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}numPr'):
                 parent = np.getparent()
                 if parent is not None:

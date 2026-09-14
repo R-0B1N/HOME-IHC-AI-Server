@@ -128,11 +128,11 @@ class TestDocumentFormatParity(unittest.TestCase):
         # 6. Verify Table 2 (Submission of Documents) - Verified with Unicode Checkboxes
         t2_gen = generated_doc.tables[2]
         self.assertEqual(len(t2_gen.rows), len(self.golden_doc.tables[2].rows))
-        t2_c1_text = t2_gen.rows[1].cells[1].text
+        t2_c1_text = "".join(t2_gen.rows[1].cells[1]._tc.itertext())
         self.assertIn("☐  GM", t2_c1_text)
         self.assertIn("☐  GRN", t2_c1_text)
         self.assertIn("☐  Topo Plan", t2_c1_text)
-        t2_c4_text = t2_gen.rows[1].cells[4].text
+        t2_c4_text = "".join(t2_gen.rows[1].cells[4]._tc.itertext())
         self.assertIn("Whatsapp Messenger", t2_c4_text)
 
         # Verify zero OpenXML list numbering exists across the entire document

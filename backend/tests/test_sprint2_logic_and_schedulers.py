@@ -84,10 +84,10 @@ class TestAcknowledgementEngine(unittest.TestCase):
         # 3. Table 0 Cell 0: Salutation in nested table 0
         c0 = doc.tables[0].rows[0].cells[0]
         c0_nested = [docx.table.Table(node, c0) for node in c0._tc.findall('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tbl')]
-        mr_num = c0_nested[0].rows[0].cells[0].paragraphs[0]._p.find('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}numId').get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val')
-        mrs_num = c0_nested[0].rows[0].cells[2].paragraphs[0]._p.find('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}numId').get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val')
-        self.assertEqual(mr_num, "999")
-        self.assertEqual(mrs_num, "998")
+        mr_text = c0_nested[0].rows[0].cells[0].text.strip()
+        mrs_text = c0_nested[0].rows[0].cells[2].text.strip()
+        self.assertEqual(mr_text, "☑")
+        self.assertEqual(mrs_text, "☐")
 
         # 4. Full Name in c0.paragraphs[0]
         self.assertIn("Tan Sri Dato Robert", c0.paragraphs[0].text)
@@ -104,21 +104,21 @@ class TestAcknowledgementEngine(unittest.TestCase):
         self.assertIn("019-888 7777", c0.paragraphs[10].text)
 
         # 8. Referral Source toggling in c0 nested table 1
-        mudah_num = c0_nested[1].rows[1].cells[0].paragraphs[0]._p.find('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}numId').get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val')
-        bentong_num = c0_nested[1].rows[2].cells[0].paragraphs[0]._p.find('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}numId').get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val')
-        self.assertEqual(mudah_num, "999")
-        self.assertEqual(bentong_num, "998")
+        mudah_text = c0_nested[1].rows[1].cells[0].text.strip()
+        bentong_text = c0_nested[1].rows[2].cells[0].text.strip()
+        self.assertEqual(mudah_text, "☑")
+        self.assertEqual(bentong_text, "☐")
 
         # 9. Table 0 Cell 1: Customer request and property types
         c1 = doc.tables[0].rows[0].cells[1]
         self.assertIn("Customer’s request:", c1.paragraphs[1].text)
         c1_nested = [docx.table.Table(node, c1) for node in c1._tc.findall('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tbl')]
-        ind_num = c1_nested[0].rows[2].cells[0].paragraphs[0]._p.find('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}numId').get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val')
-        fact_num = c1_nested[0].rows[2].cells[2].paragraphs[0]._p.find('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}numId').get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val')
-        agri_num = c1_nested[0].rows[0].cells[0].paragraphs[0]._p.find('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}numId').get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val')
-        self.assertEqual(ind_num, "999")
-        self.assertEqual(fact_num, "999")
-        self.assertEqual(agri_num, "998")
+        ind_text = c1_nested[0].rows[2].cells[0].text.strip()
+        fact_text = c1_nested[0].rows[2].cells[2].text.strip()
+        agri_text = c1_nested[0].rows[0].cells[0].text.strip()
+        self.assertEqual(ind_text, "☑")
+        self.assertEqual(fact_text, "☑")
+        self.assertEqual(agri_text, "☐")
         self.assertIn("Location: Karak", c1.paragraphs[9].text)
         self.assertIn("Remarks: Requires 3-phase power 600amp", c1.paragraphs[11].text)
 
