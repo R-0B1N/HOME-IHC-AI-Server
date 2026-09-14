@@ -398,26 +398,32 @@ def populate_acknowledgement_document(
     # 4.8 Legal Partner Agency & Disclaimer formatting
     agency_name = data.get("partner_agency")
     p_disclaimer = None
+    p_disc_idx = None
     p_sig_lines = None
+    p_sig_idx = None
     p_sig_labels = None
     p_name = None
     p_date = None
+    p_date_idx = None
 
-    for p in doc.paragraphs:
+    for idx, p in enumerate(doc.paragraphs):
         txt = p.text.strip()
         if "I/We acknowledge and confirm" in txt:
             p_disclaimer = p
+            p_disc_idx = idx
             if agency_name and "Era Realtor Sdn. Bhd. [E(1)2053/1]" in txt:
                 p.text = txt.replace("Era Realtor Sdn. Bhd. [E(1)2053/1]", agency_name)
         elif "_________" in txt:
             if p_sig_lines is None:
                 p_sig_lines = p
+                p_sig_idx = idx
         elif "Customer" in txt and "Attended staff" in txt:
             p_sig_labels = p
         elif "Name:" in txt and "Customer" not in txt and p_name is None:
             p_name = p
         elif "Date:" in txt and "PARTICULARS" not in txt and "Property Proposed" not in txt and p_date is None:
             p_date = p
+            p_date_idx = idx
 
     # Format disclaimer tightly (8.0pt, single line spacing, 3pt before/after)
     if p_disclaimer:
@@ -428,11 +434,10 @@ def populate_acknowledgement_document(
             r.font.size = Pt(8.0)
 
     # Reclaim vertical space from empty paragraphs between disclaimer and signature block
-    if p_disclaimer and p_sig_lines:
-        p_disc_idx = list(doc.paragraphs).index(p_disclaimer)
-        p_sig_idx = list(doc.paragraphs).index(p_sig_lines)
+    if p_disc_idx is not None and p_sig_idx is not None and p_sig_idx > p_disc_idx:
+        all_paras = doc.paragraphs
         for mid_idx in range(p_disc_idx + 1, p_sig_idx):
-            mid_p = doc.paragraphs[mid_idx]
+            mid_p = all_paras[mid_idx]
             if not mid_p.text.strip():
                 mid_p.paragraph_format.space_before = Pt(0)
                 mid_p.paragraph_format.space_after = Pt(1)
@@ -485,9 +490,9 @@ def populate_acknowledgement_document(
 
         # Guarantee explicit page break after signature Date line so Page 2 starts cleanly
         has_break = False
-        p_date_idx = list(doc.paragraphs).index(p_date)
-        if p_date_idx + 1 < len(doc.paragraphs):
-            next_p = doc.paragraphs[p_date_idx + 1]
+        all_paras = doc.paragraphs
+        if p_date_idx is not None and p_date_idx + 1 < len(all_paras):
+            next_p = all_paras[p_date_idx + 1]
             if '<w:br w:type="page"/>' in next_p._p.xml:
                 has_break = True
         if not has_break:
