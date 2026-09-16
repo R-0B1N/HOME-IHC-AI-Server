@@ -92,6 +92,7 @@ class TestResetCommand(unittest.TestCase):
         from unittest.mock import AsyncMock, MagicMock
         from app.api.webhooks import chatwoot_webhook
         
+        mock_redis.get.return_value = b"true"
         mock_redis.setnx.return_value = True
         mock_redis.rpush.return_value = 1
         mock_redis.set.return_value = True
