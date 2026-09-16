@@ -113,7 +113,7 @@ class TestResetCommand(unittest.TestCase):
         mock_bg_tasks = MagicMock()
         
         # Must execute cleanly without raising UnboundLocalError
-        result = asyncio.run(chatwoot_webhook(mock_request, mock_bg_tasks))
+        result = asyncio.run(chatwoot_webhook(mock_request))
         self.assertEqual(result.get("status"), "queued")
         self.assertEqual(result.get("conversation_id"), 69)
         self.assertEqual(result.get("message_id"), 9999)
