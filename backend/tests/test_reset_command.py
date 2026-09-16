@@ -80,6 +80,44 @@ class TestResetCommand(unittest.TestCase):
         self.assertIsNone(meta["interested_property"])
         self.assertIn("last_reset_at", meta)
 
+    @unittest.mock.patch("app.api.webhooks.process_conversation_queue")
+    @unittest.mock.patch("app.api.webhooks.redis_client")
+    def test_chatwoot_webhook_incoming_message_no_unbound_local_error(self, mock_redis, mock_celery_task):
+        """
+        Ensures that incoming customer messages do not raise UnboundLocalError
+        for time or any other module-level variable.
+        """
+        import asyncio
+        import json
+        from unittest.mock import AsyncMock, MagicMock
+        from app.api.webhooks import chatwoot_webhook
+        
+        mock_redis.setnx.return_value = True
+        mock_redis.rpush.return_value = 1
+        mock_redis.set.return_value = True
+        mock_redis.expire.return_value = True
+        mock_celery_task.apply_async.return_value = MagicMock()
+
+        payload = {
+            "event": "message_created",
+            "message_type": "incoming",
+            "id": 9999,
+            "conversation": {"id": 69, "inbox_id": 4, "status": "open"},
+            "content": "Hi there"
+        }
+        raw_body_bytes = json.dumps(payload).encode("utf-8")
+
+        mock_request = MagicMock()
+        mock_request.body = AsyncMock(return_value=raw_body_bytes)
+        mock_request.headers = {}
+        mock_bg_tasks = MagicMock()
+        
+        # Must execute cleanly without raising UnboundLocalError
+        result = asyncio.run(chatwoot_webhook(mock_request, mock_bg_tasks))
+        self.assertEqual(result.get("status"), "queued")
+        self.assertEqual(result.get("conversation_id"), 69)
+        self.assertEqual(result.get("message_id"), 9999)
+
 
 if __name__ == "__main__":
     unittest.main()

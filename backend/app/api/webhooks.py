@@ -352,7 +352,6 @@ async def chatwoot_webhook(request: Request):
                 return {"status": "command_executed", "command": "/transcript"}
 
             elif content.startswith("/reset"):
-                import time
                 from datetime import datetime, timezone
                 from app.services.session_manager import SessionManager
                 from app.services.chatwoot import send_private_note, get_conversation_details
