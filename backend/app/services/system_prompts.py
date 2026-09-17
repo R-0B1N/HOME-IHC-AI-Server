@@ -156,6 +156,8 @@ def get_multilingual_fallback(language: str, conversation_history: str = None) -
     has_assistant_history = bool(
         conversation_history and (
             "Assistant:" in conversation_history or
+            "AI:" in conversation_history or
+            "Agent:" in conversation_history or
             "Irene Leong" in conversation_history or
             "mecard.my" in conversation_history
         )
@@ -331,7 +333,11 @@ Off-Market Sourcing Protocol (Option A):
 
     # 4. Greeting & Anti-Repetition Instruction
     # Robust multi-signal detection to prevent greeting repetition (P0 fix)
-    assistant_message_count = conversation_history.count("Assistant:") if conversation_history else 0
+    assistant_message_count = (
+        conversation_history.count("Assistant:") +
+        conversation_history.count("AI:") +
+        conversation_history.count("Agent:")
+    ) if conversation_history else 0
     has_prior_intro = (
         assistant_message_count > 0 or
         "Irene Leong" in (conversation_history or "") or

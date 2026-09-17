@@ -863,7 +863,15 @@ def generate_conversational_response(
         logger.error(f"Error calling LLM for conversational response: {e}")
         lang = kwargs.get("customer_language") or detect_customer_language(text)
         # Resilient fallback: Only treat as ongoing conversation if the assistant has actually spoken in history
-        assistant_spoke = bool(conversation_history and ("Assistant:" in conversation_history or "Irene Leong" in conversation_history))
+        assistant_spoke = bool(
+            conversation_history and (
+                "Assistant:" in conversation_history or
+                "AI:" in conversation_history or
+                "Agent:" in conversation_history or
+                "Irene Leong" in conversation_history or
+                "mecard.my" in conversation_history
+            )
+        )
         effective_history = conversation_history if assistant_spoke else None
         fallback_msg = get_multilingual_fallback(lang, effective_history)
         return {
