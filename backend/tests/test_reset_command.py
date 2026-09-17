@@ -29,12 +29,20 @@ class TestResetCommand(unittest.TestCase):
         reset_cutoff_ts = reset_time
         filtered_messages = [msg for msg in chatwoot_messages if float(msg.get("created_at") or 0) > reset_cutoff_ts]
         
-        # Only message 4 ('hi') should remain
+        # Only message 4 ('hi') should remain in post-reset messages
         self.assertEqual(len(filtered_messages), 1)
         self.assertEqual(filtered_messages[0]["content"], "hi")
         
+        # Prior history excludes the current incoming prompt
+        final_prompt_text = "hi"
+        prior_msgs = filtered_messages
+        if prior_msgs:
+            last_non_priv = next((m for m in reversed(prior_msgs) if not m.get("private")), None)
+            if last_non_priv and (last_non_priv.get("content") or "").strip() == final_prompt_text.strip():
+                prior_msgs = [m for m in prior_msgs if m is not last_non_priv]
+
         history_lines = []
-        for msg in filtered_messages:
+        for msg in prior_msgs:
             if msg.get("private"):
                 continue
             is_assistant = msg.get("message_type") in [1, "1", "outgoing", 3, "3", "template"]
@@ -43,8 +51,8 @@ class TestResetCommand(unittest.TestCase):
             if content.strip():
                 history_lines.append(f"{sender}: {content.strip()}")
         
-        # When user sends 'hi', history should ONLY contain User: hi, with zero prior shop lot inquiries
-        self.assertEqual(history_lines, ["User: hi"])
+        # Prior history for the first message after reset is strictly empty
+        self.assertEqual(history_lines, [])
         
     def test_customer_metadata_reset_payload(self):
         """
@@ -118,6 +126,69 @@ class TestResetCommand(unittest.TestCase):
         self.assertEqual(result.get("status"), "queued")
         self.assertEqual(result.get("conversation_id"), 69)
         self.assertEqual(result.get("message_id"), 9999)
+
+    def test_multilingual_fallback_fresh_convo(self):
+        """
+        Verifies that get_multilingual_fallback returns the greeting with digital name card
+        when history has no Assistant messages, and only uses off-market response for ongoing chat.
+        """
+        from app.services.system_prompts import get_multilingual_fallback
+
+        # Case 1: Empty history -> Greeting
+        fallback_empty = get_multilingual_fallback("en", "")
+        self.assertIn("I'm Irene Leong", fallback_empty)
+        self.assertIn("mecard.my", fallback_empty)
+
+        # Case 2: Only user message -> Greeting (assistant hasn't spoken yet)
+        fallback_user_only = get_multilingual_fallback("en", "User: hi")
+        self.assertIn("I'm Irene Leong", fallback_user_only)
+        self.assertIn("mecard.my", fallback_user_only)
+
+        # Case 3: Ongoing conversation with Assistant -> Off-market requirements fallback
+        fallback_ongoing = get_multilingual_fallback("en", "User: hi\nAssistant: Good day! How can I help?\nUser: Looking for house")
+        self.assertIn("Thank you for sharing your requirements", fallback_ongoing)
+        self.assertNotIn("I'm Irene Leong", fallback_ongoing)
+
+    def test_system_prompt_first_interaction_stage_on_fresh_turn(self):
+        """
+        Verifies that build_system_prompt enters FIRST_INTERACTION stage when no prior
+        assistant response exists, even if the incoming message has history text.
+        """
+        from app.services.system_prompts import build_system_prompt
+
+        prompt = build_system_prompt(conversation_history="User: hi")
+        self.assertIn("[CONVERSATION_STAGE: FIRST_INTERACTION]", prompt)
+        self.assertNotIn("[CONVERSATION_STAGE: ONGOING_DIALOGUE]", prompt)
+        self.assertNotIn("CRITICAL ANTI-REPETITION RULE", prompt)
+
+    def test_session_deep_wipe(self):
+        """
+        Verifies that session deep wipe purges all residual profile and progression keys.
+        """
+        from app.services.session_manager import SessionManager
+
+        session = {
+            "introduced": True,
+            "current_agent": "BUYER",
+            "requirements_profile": {"active_inquiry": {"location": "Raub", "category": "residential"}},
+            "multi_intent_profile": {"prior": "semi-d"},
+            "intent_progression": ["inquired semi-d in Raub"],
+            "interested_property": {"id": 10, "title": "Raub Semi-D"},
+            "presented_properties": [{"id": 10}],
+            "collected_data": {"buyer_location": "Raub"}
+        }
+
+        # Deep wipe logic executed when fresh conversation is detected
+        session.clear()
+        session.update(SessionManager._new_session())
+
+        self.assertNotIn("introduced", session)
+        self.assertNotIn("requirements_profile", session)
+        self.assertNotIn("multi_intent_profile", session)
+        self.assertNotIn("intent_progression", session)
+        self.assertNotIn("interested_property", session)
+        self.assertEqual(session.get("state"), "INIT")
+        self.assertEqual(session.get("collected_data"), {})
 
 
 if __name__ == "__main__":

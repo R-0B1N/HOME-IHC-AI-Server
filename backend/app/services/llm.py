@@ -178,7 +178,7 @@ def generate_response(prompt: str, contact_info: dict, db_context: dict = None, 
                 {"role": "user", "content": user_content}
             ],
             response_format={"type": "json_object"},
-            max_tokens=1000,
+            max_tokens=350,
             timeout=30.0
         )
         raw_text = response.choices[0].message.content

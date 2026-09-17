@@ -843,7 +843,7 @@ def generate_conversational_response(
             messages=messages,
             response_format={"type": "json_object"},
             temperature=0.0,
-            max_tokens=1000,
+            max_tokens=350,
             timeout=30.0
         )
         content = response.choices[0].message.content
@@ -862,11 +862,9 @@ def generate_conversational_response(
     except Exception as e:
         logger.error(f"Error calling LLM for conversational response: {e}")
         lang = kwargs.get("customer_language") or detect_customer_language(text)
-        # P0 fix: Always treat as ongoing conversation if introduced flag is set or any history exists
-        has_prior_history = bool(conversation_history or collected_data.get("introduced") or kwargs.get("session", {}).get("introduced"))
-        # If introduced but conversation_history is empty, synthesize a minimal history marker
-        # so get_multilingual_fallback returns the ongoing-conversation message, not the greeting
-        effective_history = conversation_history if conversation_history else ("Assistant: [prior conversation exists]" if has_prior_history else None)
+        # Resilient fallback: Only treat as ongoing conversation if the assistant has actually spoken in history
+        assistant_spoke = bool(conversation_history and ("Assistant:" in conversation_history or "Irene Leong" in conversation_history))
+        effective_history = conversation_history if assistant_spoke else None
         fallback_msg = get_multilingual_fallback(lang, effective_history)
         return {
             "intent": "general",

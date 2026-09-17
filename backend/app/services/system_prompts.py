@@ -151,10 +151,17 @@ def get_multilingual_fallback(language: str, conversation_history: str = None) -
     """
     Returns resilient fallback message matching customer language.
     Guarantees that ongoing conversations NEVER repeat greeting or name card.
+    Only treats as ongoing dialogue if the assistant has previously spoken in history.
     """
-    has_history = bool(conversation_history and len(conversation_history.strip()) > 5)
+    has_assistant_history = bool(
+        conversation_history and (
+            "Assistant:" in conversation_history or
+            "Irene Leong" in conversation_history or
+            "mecard.my" in conversation_history
+        )
+    )
 
-    if has_history:
+    if has_assistant_history:
         if language == "zh":
             return (
                 "收到您的需求！关于该区域或类型的房产，我们团队主要通过线下业主网络直接对接合适房源。请问您对附近其他区域是否也开放考虑呢？😊"
@@ -325,15 +332,11 @@ Off-Market Sourcing Protocol (Option A):
     # 4. Greeting & Anti-Repetition Instruction
     # Robust multi-signal detection to prevent greeting repetition (P0 fix)
     assistant_message_count = conversation_history.count("Assistant:") if conversation_history else 0
-    has_any_history_text = bool(conversation_history and len(conversation_history.strip()) > 10)
-    has_existing_customer_record = bool((db_context or {}).get("data", {}).get("my_orders"))
     has_prior_intro = (
         assistant_message_count > 0 or
         "Irene Leong" in (conversation_history or "") or
         "mecard.my" in (conversation_history or "") or
-        bool(collected_data.get("introduced")) or
-        has_existing_customer_record or
-        has_any_history_text  # If ANY conversation history exists, we've already spoken
+        (bool(collected_data.get("introduced")) and assistant_message_count > 0)
     )
 
     if has_prior_intro:

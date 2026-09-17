@@ -381,6 +381,7 @@ async def chatwoot_webhook(request: Request):
                         SessionManager.reset_session(phone)
                         clean_phone = phone.replace("+", "").replace(" ", "").replace("-", "")
                         SessionManager.reset_session(clean_phone)
+                        SessionManager.reset_session(f"+{clean_phone}")
                 except Exception as rerr:
                     logger.warning(f"Could not clear Redis session (Redis may be offline): {rerr}")
                 
@@ -396,9 +397,11 @@ async def chatwoot_webhook(request: Request):
                             cust = db.query(Customer).filter(Customer.conversation_ids.contains([conversation_id])).first()
                         
                         if cust:
-                            if not phone:
-                                phone = str(cust.id)
-                                SessionManager.reset_session(phone)
+                            cust_phone = str(cust.id)
+                            clean_cphone = cust_phone.replace("+", "").replace(" ", "").replace("-", "")
+                            SessionManager.reset_session(cust_phone)
+                            SessionManager.reset_session(clean_cphone)
+                            SessionManager.reset_session(f"+{clean_cphone}")
                             meta = dict(cust.metadata_json or {})
                             meta["bypass_ai"] = False
                             meta["introduced"] = False
@@ -408,6 +411,9 @@ async def chatwoot_webhook(request: Request):
                             meta["multi_intent_profile"] = {}
                             meta["intent_progression"] = []
                             meta["interested_property"] = None
+                            meta["presented_properties"] = []
+                            meta["shortlisted_properties"] = []
+                            meta["viewing_acknowledgement"] = None
                             meta["last_reset_at"] = datetime.now(timezone.utc).isoformat()
                             cust.metadata_json = meta
                             db.commit()

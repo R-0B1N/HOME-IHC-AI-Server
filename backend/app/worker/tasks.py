@@ -1,6 +1,7 @@
 import logging
 import json
 import time
+import datetime
 import os
 import redis
 import requests
@@ -579,19 +580,37 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                     except Exception as r_err:
                         logger.warning(f"Could not check redis reset cutoff for conv {conversation_id}: {r_err}")
 
+                    def _parse_msg_ts(m):
+                        raw_ts = m.get("created_at")
+                        if isinstance(raw_ts, (int, float)):
+                            return raw_ts / 1000.0 if raw_ts > 1e11 else float(raw_ts)
+                        if isinstance(raw_ts, str):
+                            try:
+                                return datetime.datetime.fromisoformat(raw_ts.replace("Z", "+00:00")).timestamp()
+                            except Exception:
+                                pass
+                        return 0.0
+
                     for msg in chatwoot_messages:
                         if msg.get("private") and "/reset" in (msg.get("content") or ""):
-                            msg_created = float(msg.get("created_at") or 0)
+                            msg_created = _parse_msg_ts(msg)
                             if msg_created > reset_cutoff_ts:
                                 reset_cutoff_ts = msg_created
 
                     if reset_cutoff_ts > 0:
                         logger.info(f"Purging pre-reset messages for conv {conversation_id} prior to timestamp {reset_cutoff_ts}")
-                        chatwoot_messages = [msg for msg in chatwoot_messages if float(msg.get("created_at") or 0) > reset_cutoff_ts]
+                        chatwoot_messages = [msg for msg in chatwoot_messages if _parse_msg_ts(msg) > reset_cutoff_ts]
+
+                    # Prior conversation history must strictly exclude the incoming message currently being processed
+                    prior_msgs = chatwoot_messages
+                    if prior_msgs:
+                        last_non_priv = next((m for m in reversed(prior_msgs) if not m.get("private")), None)
+                        if last_non_priv and (last_non_priv.get("content") or "").strip() == final_prompt_text.strip():
+                            prior_msgs = [m for m in prior_msgs if m is not last_non_priv]
 
                     history_lines = []
                     # Get last 10 messages, older first (chronological order), excluding private notes
-                    for msg in chatwoot_messages[-10:]:
+                    for msg in prior_msgs[-10:]:
                         if msg.get("private"):
                             continue
                         m_type = msg.get("message_type")
@@ -625,10 +644,11 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
         
         with SessionManager.lock_session(phone_number):
             session = SessionManager.get_session(phone_number)
-            if not conversation_history.strip():
-                session.pop("introduced", None)
-                session.pop("current_agent", None)
-                session.pop("collected_data", None)
+            # If conversation history is empty or reset cutoff occurred after session creation, perform a deep wipe
+            is_fresh_convo = not conversation_history.strip() or (reset_cutoff_ts > 0 and reset_cutoff_ts >= session.get("created_at", 0))
+            if is_fresh_convo:
+                session.clear()
+                session.update(SessionManager._new_session())
             
             agent_result = process_persona_state_machine(
                 phone_number, final_prompt_text, session,
