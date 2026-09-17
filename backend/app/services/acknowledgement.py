@@ -61,19 +61,30 @@ def stabilize_table_borders(table: docx.table.Table) -> None:
     table._tbl.tblPr.append(tbl_borders)
 
 
+def strip_list_formatting(p: docx.text.paragraph.Paragraph) -> None:
+    """
+    Purges list bullets, numbering definitions, and list paragraph styles completely.
+    Ensures Microsoft Word and LibreOffice render text without '1.', '2.', or '•' prefixes.
+    """
+    try:
+        p.style = "Normal"
+    except Exception:
+        pass
+    pPr = p._p.get_or_add_pPr()
+    for child in list(pPr):
+        tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+        if tag in ["numPr", "pStyle"]:
+            pPr.remove(child)
+
+
 def set_cell_checkbox(cell: docx.table._Cell, checked: bool) -> None:
     """
     Sets a clean, deterministic Unicode square checkbox (☐ or ☑) in the cell.
-    Completely strips any OpenXML <w:numPr> list numbering to prevent Microsoft Word
+    Completely strips any OpenXML <w:numPr> list numbering and list styles to prevent Microsoft Word
     from rendering decimal numbers (1., 2., 3.) or bullet discs.
     """
     p = cell.paragraphs[0] if cell.paragraphs else cell.add_paragraph()
-    
-    # Strip any <w:numPr> from the paragraph XML
-    for np in p._p.findall('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}numPr'):
-        parent = np.getparent()
-        if parent is not None:
-            parent.remove(np)
+    strip_list_formatting(p)
 
     box_char = "☑" if checked else "☐"
     
@@ -83,13 +94,13 @@ def set_cell_checkbox(cell: docx.table._Cell, checked: bool) -> None:
         
     r = p.add_run(box_char)
     r.font.name = "Arial"
-    r.font.size = Pt(10.5)
+    r.font.size = Pt(10.0)
     r.bold = checked
     
     # Tight paragraph formatting
     p.paragraph_format.space_before = Pt(1)
     p.paragraph_format.space_after = Pt(1)
-    p.paragraph_format.line_spacing = Pt(11)
+    p.paragraph_format.line_spacing = Pt(10.5)
 
 
 def set_cell_margins(cell: docx.table._Cell, top: int = 160, bottom: int = 0, left: int = 100, right: int = 100) -> None:
@@ -215,7 +226,14 @@ def populate_acknowledgement_document(
     if c0_nested:
         t_sal = c0_nested[0]
         # Provide vertical breathing space above t_sal so MR/MRS/MS does not stick to top border
-        set_cell_margins(c0, top=160, bottom=0, left=100, right=100)
+        set_cell_margins(c0, top=160, bottom=0, left=80, right=80)
+        for cell in t_sal.rows[0].cells:
+            set_cell_margins(cell, top=240, bottom=60, left=40, right=40)
+            for p in cell.paragraphs:
+                strip_list_formatting(p)
+                p.paragraph_format.space_before = Pt(4)
+                p.paragraph_format.space_after = Pt(2)
+                p.paragraph_format.line_spacing = Pt(10.5)
 
         # Col 0: MR, Col 2: MRS, Col 4: MS
         set_cell_checkbox(t_sal.rows[0].cells[0], "MR" in salutation and "MRS" not in salutation)
@@ -319,8 +337,16 @@ def populate_acknowledgement_document(
         source_keys = ["iproperty", "mudah", "bentongland", "banner", "whatsapp", "facebook"]
         for r_i, key in enumerate(source_keys):
             if r_i < len(t_ref.rows):
+                row = t_ref.rows[r_i]
                 is_match = key in ref_source
-                set_cell_checkbox(t_ref.rows[r_i].cells[0], is_match)
+                set_cell_checkbox(row.cells[0], is_match)
+                for p in row.cells[1].paragraphs:
+                    strip_list_formatting(p)
+                    p.paragraph_format.space_before = Pt(0)
+                    p.paragraph_format.space_after = Pt(1)
+                    p.paragraph_format.line_spacing = Pt(10.5)
+                    for r in p.runs:
+                        r.font.size = Pt(9.5)
 
     # 4. Table 0 Cell 1 (Customer Requirements)
     # 4.1 Customer Request in c1.paragraphs[1]
@@ -347,6 +373,17 @@ def populate_acknowledgement_document(
     prop_types = [pt.lower() for pt in data.get("property_types", [])]
     if c1_nested:
         t_props = c1_nested[0]
+        # Purge list formatting across all cells in t_props
+        for row in t_props.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    strip_list_formatting(p)
+                    p.paragraph_format.space_before = Pt(0)
+                    p.paragraph_format.space_after = Pt(1)
+                    p.paragraph_format.line_spacing = Pt(10.5)
+                    for r in p.runs:
+                        r.font.size = Pt(9.5)
+
         # Row 0 Col 0: Agricultural Land
         set_cell_checkbox(t_props.rows[0].cells[0], any("agri" in pt for pt in prop_types))
         # Row 1 Col 0: Commercial Land
@@ -386,6 +423,15 @@ def populate_acknowledgement_document(
     assigned = (data.get("assigned_to") or "").lower()
     if len(c1_nested) > 1:
         t_ass = c1_nested[1]
+        for row in t_ass.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    strip_list_formatting(p)
+                    p.paragraph_format.space_before = Pt(0)
+                    p.paragraph_format.space_after = Pt(1)
+                    p.paragraph_format.line_spacing = Pt(10.5)
+                    for r in p.runs:
+                        r.font.size = Pt(9.5)
         is_direct = "direct" in assigned
         is_cobroke = "co-broke" in assigned or "cobroke" in assigned
         if not is_direct and not is_cobroke:
@@ -437,13 +483,13 @@ def populate_acknowledgement_document(
             p_date = p
             p_date_idx = idx
 
-    # Format disclaimer tightly (8.0pt, single line spacing, 3pt before/after)
+    # Format disclaimer tightly (7.5pt, single line spacing, 2pt before/after)
     if p_disclaimer:
-        p_disclaimer.paragraph_format.space_before = Pt(3)
-        p_disclaimer.paragraph_format.space_after = Pt(4)
-        p_disclaimer.paragraph_format.line_spacing = Pt(10)
+        p_disclaimer.paragraph_format.space_before = Pt(2)
+        p_disclaimer.paragraph_format.space_after = Pt(2)
+        p_disclaimer.paragraph_format.line_spacing = Pt(9.0)
         for r in p_disclaimer.runs:
-            r.font.size = Pt(8.0)
+            r.font.size = Pt(7.5)
 
     # Reclaim vertical space from empty paragraphs between disclaimer and signature block
     if p_disc_idx is not None and p_sig_idx is not None and p_sig_idx > p_disc_idx:
@@ -466,39 +512,39 @@ def populate_acknowledgement_document(
     if p_sig_lines:
         p_sig_lines.paragraph_format.space_before = Pt(2)
         p_sig_lines.paragraph_format.space_after = Pt(1)
-        p_sig_lines.paragraph_format.line_spacing = Pt(11)
+        p_sig_lines.paragraph_format.line_spacing = Pt(10.0)
         p_sig_lines.paragraph_format.keep_with_next = True
 
     if p_sig_labels:
         p_sig_labels.paragraph_format.space_before = Pt(0)
         p_sig_labels.paragraph_format.space_after = Pt(1)
-        p_sig_labels.paragraph_format.line_spacing = Pt(11)
+        p_sig_labels.paragraph_format.line_spacing = Pt(10.0)
         p_sig_labels.paragraph_format.keep_with_next = True
         for r in p_sig_labels.runs:
-            r.font.size = Pt(9.0)
+            r.font.size = Pt(8.5)
 
     if p_name:
         p_name.paragraph_format.space_before = Pt(0)
         p_name.paragraph_format.space_after = Pt(1)
-        p_name.paragraph_format.line_spacing = Pt(11)
+        p_name.paragraph_format.line_spacing = Pt(10.0)
         p_name.paragraph_format.keep_with_next = True
         if len(p_name.runs) > 1:
             p_name.runs[1].text = f" {signer_name}"
         if len(p_name.runs) > 11:
             p_name.runs[11].text = staff_name
         for r in p_name.runs:
-            r.font.size = Pt(9.0)
+            r.font.size = Pt(8.5)
 
     if p_date:
         p_date.paragraph_format.space_before = Pt(0)
-        p_date.paragraph_format.space_after = Pt(2)
-        p_date.paragraph_format.line_spacing = Pt(11)
+        p_date.paragraph_format.space_after = Pt(1)
+        p_date.paragraph_format.line_spacing = Pt(10.0)
         if len(p_date.runs) > 2:
             p_date.runs[2].text = signer_date
         if len(p_date.runs) > 12:
             p_date.runs[12].text = staff_date
         for r in p_date.runs:
-            r.font.size = Pt(9.0)
+            r.font.size = Pt(8.5)
 
         # Guarantee explicit page break after signature Date line so Page 2 starts cleanly
         has_break = False
@@ -572,10 +618,7 @@ def populate_acknowledgement_document(
         checklist_items = ["GM", "GRN", "HSM", "HSD", "Pajakan Mukim", "Pajakan Negeri", "Topo Plan"]
         c_doc_paragraphs = [docx.text.paragraph.Paragraph(p_node, c_doc) for p_node in c_doc._tc.xpath('.//w:p')]
         for p in c_doc_paragraphs:
-            for np in p._p.findall('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}numPr'):
-                parent = np.getparent()
-                if parent is not None:
-                    parent.remove(np)
+            strip_list_formatting(p)
             txt = p.text.strip().lstrip("☐").lstrip("☑").strip()
             for item in checklist_items:
                 if txt == item or (item in txt and "Title" not in txt):
@@ -591,10 +634,7 @@ def populate_acknowledgement_document(
         rem_val = (doc_item.get("remarks") or "").lower()
         c_rem_paragraphs = [docx.text.paragraph.Paragraph(p_node, c_rem) for p_node in c_rem._tc.xpath('.//w:p')]
         for p in c_rem_paragraphs:
-            for np in p._p.findall('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}numPr'):
-                parent = np.getparent()
-                if parent is not None:
-                    parent.remove(np)
+            strip_list_formatting(p)
             txt = p.text.strip().lstrip("☐").lstrip("☑").strip()
             if "whatsapp" in txt.lower():
                 is_chk = "whatsapp" in rem_val or "messenger" in rem_val
@@ -622,6 +662,15 @@ def populate_acknowledgement_document(
         parent = np.getparent()
         if parent is not None:
             parent.remove(np)
+
+    # Purge list pStyles from any paragraph containing checkboxes
+    for p_elem in doc._element.xpath('.//w:p'):
+        txt = "".join(p_elem.itertext())
+        if any(c in txt for c in ["☐", "☑"]):
+            pPr = p_elem.find('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pPr')
+            if pPr is not None:
+                for pstyle in pPr.findall('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pStyle'):
+                    pPr.remove(pstyle)
 
     return doc
 

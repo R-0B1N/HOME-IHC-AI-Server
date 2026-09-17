@@ -701,6 +701,14 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
     handover = False
     response_text = llm_analysis.get("response", "How may Home IHC assist you with properties in Pahang today? 😊")
 
+    if images_to_send and not any(k in response_text.lower() for k in ["photo", "picture", "gambar", "foto", "照片", "相片"]):
+        if customer_lang == "zh":
+            response_text = f"这是为您准备的房产照片！😊\n\n{response_text}"
+        elif customer_lang == "ms":
+            response_text = f"Berikut adalah gambar hartanah untuk rujukan anda! 😊\n\n{response_text}"
+        else:
+            response_text = f"Here are the photos of the property for your reference! 😊\n\n{response_text}"
+
     user_wants_immediate_human = is_explicit_handover_request(raw_text)
     
     # 7. Autonomous Viewing Scheduling & Viewing Acknowledgement Engine Trigger
@@ -830,11 +838,26 @@ def generate_conversational_response(
         hybrid_properties=hybrid_properties
     )
 
+    # 1. Dynamic Token Management (Guarantee prompt + completion <= 2048 limit)
+    history_to_use = conversation_history or ""
+    total_chars = len(system_prompt) + len(history_to_use) + len(text or "")
+    est_input_tokens = int(total_chars / 3.0)
+
+    # If approaching limit, prune history to most recent exchanges
+    if est_input_tokens > 1500 and history_to_use:
+        hist_lines = [l for l in history_to_use.split("\n") if l.strip()]
+        history_to_use = "\n".join(hist_lines[-4:])
+        total_chars = len(system_prompt) + len(history_to_use) + len(text or "")
+        est_input_tokens = int(total_chars / 3.0)
+
+    # Bounded output token budget
+    safe_max_tokens = max(120, min(300, 2035 - est_input_tokens))
+
     messages = [
         {"role": "system", "content": system_prompt}
     ]
-    if conversation_history:
-        messages.append({"role": "system", "content": f"Recent Conversation History:\n{conversation_history}"})
+    if history_to_use:
+        messages.append({"role": "system", "content": f"Recent Conversation History:\n{history_to_use}"})
     messages.append({"role": "user", "content": text})
 
     try:
@@ -843,7 +866,7 @@ def generate_conversational_response(
             messages=messages,
             response_format={"type": "json_object"},
             temperature=0.0,
-            max_tokens=350,
+            max_tokens=safe_max_tokens,
             timeout=30.0
         )
         content = response.choices[0].message.content
@@ -861,6 +884,29 @@ def generate_conversational_response(
         raise ValueError(f"Failed to parse valid JSON response from LLM content: {content[:100] if content else 'empty'}")
     except Exception as e:
         logger.error(f"Error calling LLM for conversational response: {e}")
+        # Auto-retry with minimal prompt if 400 Bad Request or token context overflow occurs
+        if "400" in str(e) or "maximum context length" in str(e).lower():
+            logger.warning("Attempting emergency retry with minimal context...")
+            try:
+                emergency_messages = [
+                    {"role": "system", "content": system_prompt[:2000]},
+                    {"role": "user", "content": text}
+                ]
+                retry_resp = llm_client.chat.completions.create(
+                    model=LLM_MODEL_NAME,
+                    messages=emergency_messages,
+                    response_format={"type": "json_object"},
+                    temperature=0.0,
+                    max_tokens=150,
+                    timeout=20.0
+                )
+                retry_content = retry_resp.choices[0].message.content
+                retry_parsed = _parse_json_from_llm(retry_content)
+                if retry_parsed and isinstance(retry_parsed, dict) and retry_parsed.get("response"):
+                    return retry_parsed
+            except Exception as retry_err:
+                logger.error(f"Emergency retry also failed: {retry_err}")
+
         lang = kwargs.get("customer_language") or detect_customer_language(text)
         # Resilient fallback: Only treat as ongoing conversation if the assistant has actually spoken in history
         assistant_spoke = bool(
