@@ -166,15 +166,15 @@ def get_multilingual_fallback(language: str, conversation_history: str = None) -
     if has_assistant_history:
         if language == "zh":
             return (
-                "收到您的需求！请问您预计的预算大约在什么范围，或者对具体要求有更详细的想法吗？我来为您配对最合适的心水房源。😊"
+                "收到您的需求！请问您预计的预算大约在什么范围，或者对具体要求有更详细的想法吗？我会尽快跟进并为您配对最合适的心水房源。😊"
             )
         elif language == "ms":
             return (
-                "Terima kasih atas maklumat keperluan anda! Boleh saya tahu anggaran bajet anda atau sebarang kriteria khusus untuk saya carikan pilihan yang paling sesuai? 😊"
+                "Terima kasih atas maklumat keperluan anda! Boleh saya tahu anggaran bajet anda atau sebarang kriteria khusus? Saya akan buat tindakan susulan dan carikan pilihan yang paling sesuai untuk anda! 😊"
             )
         else:
             return (
-                "Thank you for sharing your requirements! Could you also let me know your preferred budget range or any specific preferences so I can find the best match for you? 😊"
+                "Thank you for sharing your requirements! Could you also let me know your preferred budget range or any specific preferences? I'll follow up and find the best match for you! 😊"
             )
     else:
         return get_multilingual_greeting(language)
