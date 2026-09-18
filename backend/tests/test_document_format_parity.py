@@ -194,7 +194,7 @@ class TestDocumentFormatParity(unittest.TestCase):
         self.assertEqual(re.sub(r'(?i)car\s*plate\s*no:?', '', p_car.text).strip(), "")
         c1 = t0.rows[0].cells[1]
         p_req = c1.paragraphs[1]
-        self.assertEqual(re.sub(r'(?i)customer(\'?s)?\s*request:?', '', p_req.text).strip(), "")
+        self.assertEqual(re.sub(r'(?i)customer[^\w\s]*s?\s*request:?', '', p_req.text).strip(), "")
 
         # Item g: Signatures aligned with tab stops at 3.5 in
         p_sig_lines = doc.paragraphs[14]
