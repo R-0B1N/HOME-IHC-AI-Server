@@ -422,7 +422,8 @@ def populate_acknowledgement_document(
     while len(p_req.runs) > 1:
         p_req._p.remove(p_req.runs[-1]._r)
     if cust_req:
-        r = p_req.add_run(f" {cust_req}")
+        prefix_space = "" if p_req.text.endswith(" ") or p_req.text.endswith("\t") else " "
+        r = p_req.add_run(f"{prefix_space}{cust_req}")
         r.bold = True
         r.font.size = Pt(10.0)
 
@@ -432,7 +433,8 @@ def populate_acknowledgement_document(
     while len(p_sum.runs) > 2:
         p_sum._p.remove(p_sum.runs[-1]._r)
     if req_summary:
-        p_sum.add_run(f" {req_summary}")
+        prefix_space = "" if p_sum.text.endswith(" ") or p_sum.text.endswith("\t") else " "
+        p_sum.add_run(f"{prefix_space}{req_summary}")
 
     # 4.3 Property Types in c1 nested table 0 (4 rows x 4 cols)
     c1_nested = [docx.table.Table(node, c1) for node in c1._tc.findall('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tbl')]
@@ -471,7 +473,8 @@ def populate_acknowledgement_document(
     while len(p_loc.runs) > 2:
         p_loc._p.remove(p_loc.runs[-1]._r)
     if loc:
-        p_loc.add_run(f" {loc}")
+        prefix_space = "" if p_loc.text.endswith(" ") or p_loc.text.endswith("\t") else " "
+        p_loc.add_run(f"{prefix_space}{loc}")
 
     # 4.5 Remarks in c1.paragraphs[11]
     remarks = data.get("remarks", "")
@@ -479,7 +482,8 @@ def populate_acknowledgement_document(
     while len(p_rem.runs) > 2:
         p_rem._p.remove(p_rem.runs[-1]._r)
     if remarks:
-        p_rem.add_run(f" {remarks}")
+        prefix_space = "" if p_rem.text.endswith(" ") or p_rem.text.endswith("\t") else " "
+        p_rem.add_run(f"{prefix_space}{remarks}")
 
     # 4.6 Assigned To in c1 nested table 1 (2 rows x 2 cols)
     assigned = (data.get("assigned_to") or "").lower()

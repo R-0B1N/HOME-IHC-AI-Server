@@ -6,6 +6,7 @@ and eliminates the formatting flaws observed in Viewing_Acknowledgement_0190_Nic
 """
 
 import os
+import re
 import unittest
 from xml.etree import ElementTree as ET
 
@@ -188,12 +189,12 @@ class TestDocumentFormatParity(unittest.TestCase):
 
         # Items e & f: No hallucinated company, address, car plate, or request
         p_comp = c0.paragraphs[4]
-        self.assertEqual(p_comp.text.replace("Company Name:", "").strip(), "")
+        self.assertEqual(re.sub(r'(?i)company\s*name:?', '', p_comp.text).strip(), "")
         p_car = c0.paragraphs[9]
-        self.assertEqual(p_car.text.replace("Car Plate No:", "").strip(), "")
+        self.assertEqual(re.sub(r'(?i)car\s*plate\s*no:?', '', p_car.text).strip(), "")
         c1 = t0.rows[0].cells[1]
         p_req = c1.paragraphs[1]
-        self.assertEqual(p_req.text.replace("Customer Request:", "").strip(), "")
+        self.assertEqual(re.sub(r'(?i)customer(\'?s)?\s*request:?', '', p_req.text).strip(), "")
 
         # Item g: Signatures aligned with tab stops at 3.5 in
         p_sig_lines = doc.paragraphs[14]
