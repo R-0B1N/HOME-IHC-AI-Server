@@ -730,7 +730,7 @@ def populate_acknowledgement_document(
                 tblPr.remove(tblInd)
 
             doc_checklist = [
-                ("GM", ["gm"]),
+                ("GM", ["gm", "title"]),
                 ("GRN", ["grn"]),
                 ("HSM", ["hsm"]),
                 ("HSD", ["hsd"]),
