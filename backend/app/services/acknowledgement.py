@@ -82,6 +82,7 @@ def set_cell_checkbox(cell: docx.table._Cell, checked: bool) -> None:
     Sets a clean, deterministic Unicode square checkbox (☐ or ☑) in the cell.
     Completely strips any OpenXML <w:numPr> list numbering and list styles to prevent Microsoft Word
     from rendering decimal numbers (1., 2., 3.) or bullet discs.
+    Uses 16.0pt bold font to ensure checkboxes are prominent and easily legible (~4x visual size of 10pt).
     """
     p = cell.paragraphs[0] if cell.paragraphs else cell.add_paragraph()
     strip_list_formatting(p)
@@ -94,13 +95,13 @@ def set_cell_checkbox(cell: docx.table._Cell, checked: bool) -> None:
         
     r = p.add_run(box_char)
     r.font.name = "Arial"
-    r.font.size = Pt(10.0)
-    r.bold = checked
+    r.font.size = Pt(16.0)
+    r.bold = True
     
     # Tight paragraph formatting
-    p.paragraph_format.space_before = Pt(1)
-    p.paragraph_format.space_after = Pt(1)
-    p.paragraph_format.line_spacing = Pt(10.5)
+    p.paragraph_format.space_before = Pt(0)
+    p.paragraph_format.space_after = Pt(0)
+    p.paragraph_format.line_spacing = Pt(14.0)
 
 
 def set_cell_margins(cell: docx.table._Cell, top: int = 160, bottom: int = 0, left: int = 100, right: int = 100) -> None:
@@ -119,6 +120,40 @@ def set_cell_margins(cell: docx.table._Cell, top: int = 160, bottom: int = 0, le
         )
     )
     tcPr.append(tcMar)
+
+
+def get_blank_acknowledgement_data(form_no: str = "0191") -> Dict[str, Any]:
+    """
+    Returns an unpopulated, clean base acknowledgement data dictionary.
+    All customer request, company, and property fields are left empty/blank,
+    preventing any sample data or hallucinated particulars from bleeding into generated documents.
+    """
+    now = datetime.now()
+    return {
+        "form_no": form_no,
+        "date": now.strftime("%d.%m.%Y"),
+        "salutation": "MR",
+        "customer_name": "",
+        "no_of_pax": "1",
+        "company_name": "",
+        "company_reg_no": "",
+        "company_address": "",
+        "car_plate": "",
+        "phone": "",
+        "called_in_date": now.strftime("%d-%m-%Y"),
+        "referral_source": "",
+        "customer_request": "",
+        "requirement_summary": "",
+        "property_types": [],
+        "target_location": "",
+        "remarks": "",
+        "assigned_to": "Direct Seller",
+        "partner_agency": "Era Realtor Sdn. Bhd. [E(1)2053/1]",
+        "customer_signer": "",
+        "staff_name": "Leong Chu Ping",
+        "properties_viewed": [],
+        "documents_submitted": []
+    }
 
 
 def get_sample_acknowledgement_data() -> Dict[str, Any]:
@@ -181,36 +216,61 @@ def populate_acknowledgement_document(
 
     doc = docx.Document(template_path)
 
-    # 1. Update Form No (Paragraph 5)
-    form_no = str(data.get("form_no", "0190"))
+    # 1. Update Form No (Paragraph 5) - Right-aligned (Item b)
+    form_no = str(data.get("form_no", "0191"))
     p5 = doc.paragraphs[5]
-    no_run_idx = -1
-    for idx, r in enumerate(p5.runs):
-        if "No:" in r.text:
-            no_run_idx = idx
-            break
-    if no_run_idx != -1:
-        while len(p5.runs) > no_run_idx + 1:
-            p5._p.remove(p5.runs[-1]._r)
-        for digit in form_no:
-            r = p5.add_run(digit)
-            r.bold = True
-            r.font.size = Pt(14.0)
-            r.font.color.rgb = RGBColor(255, 0, 0)
+    strip_list_formatting(p5)
+    while p5.runs:
+        p5._p.remove(p5.runs[-1]._r)
+    p5.paragraph_format.tab_stops.clear_all()
+    p5.paragraph_format.tab_stops.add_tab_stop(docx.shared.Inches(6.5), docx.enum.text.WD_TAB_ALIGNMENT.RIGHT)
+    r_ack = p5.add_run("CUSTOMER PROPERTY VIEWING ACKNOWLEDGEMENT")
+    r_ack.bold = True
+    r_ack.font.name = "Arial"
+    r_ack.font.size = Pt(10.0)
+    
+    p5.add_run("\t")
+    
+    r_no = p5.add_run("No: ")
+    r_no.bold = True
+    r_no.font.name = "Arial"
+    r_no.font.size = Pt(14.0)
+    
+    for digit in form_no:
+        r_d = p5.add_run(digit)
+        r_d.bold = True
+        r_d.font.name = "Arial"
+        r_d.font.size = Pt(14.0)
+        r_d.font.color.rgb = RGBColor(255, 0, 0)
+    p5.paragraph_format.space_before = Pt(4)
+    p5.paragraph_format.space_after = Pt(2)
 
-    # 2. Update Header Date (Paragraph 7)
+    # 2. Update Header Date (Paragraph 7) - Right-aligned (Item b)
     header_date = str(data.get("date", datetime.now().strftime("%d.%m.%Y")))
     p7 = doc.paragraphs[7]
-    date_updated = False
-    for r in p7.runs:
-        if r.text.strip() == "27.03.2025" or (r.text.strip() and r.text.strip()[0].isdigit() and "." in r.text):
-            r.text = header_date
-            r.bold = True
-            date_updated = True
-            break
-    if not date_updated and len(p7.runs) > 12:
-        p7.runs[12].text = header_date
-        p7.runs[12].bold = True
+    strip_list_formatting(p7)
+    while p7.runs:
+        p7._p.remove(p7.runs[-1]._r)
+    p7.paragraph_format.tab_stops.clear_all()
+    p7.paragraph_format.tab_stops.add_tab_stop(docx.shared.Inches(6.5), docx.enum.text.WD_TAB_ALIGNMENT.RIGHT)
+    r_cust = p7.add_run("PARTICULARS OF CUSTOMER(S)")
+    r_cust.bold = True
+    r_cust.font.name = "Arial"
+    r_cust.font.size = Pt(10.0)
+    
+    p7.add_run("\t")
+    
+    r_dt_lbl = p7.add_run("Date: ")
+    r_dt_lbl.bold = True
+    r_dt_lbl.font.name = "Arial"
+    r_dt_lbl.font.size = Pt(10.0)
+    
+    r_dt_val = p7.add_run(header_date)
+    r_dt_val.bold = True
+    r_dt_val.font.name = "Arial"
+    r_dt_val.font.size = Pt(10.0)
+    p7.paragraph_format.space_before = Pt(2)
+    p7.paragraph_format.space_after = Pt(4)
 
     # 3. Table 0 (Customer Particulars & Customer Requirements)
     t0 = doc.tables[0]
@@ -225,15 +285,23 @@ def populate_acknowledgement_document(
     salutation = (data.get("salutation") or "MR").upper()
     if c0_nested:
         t_sal = c0_nested[0]
-        # Provide vertical breathing space above t_sal so MR/MRS/MS does not stick to top border
-        set_cell_margins(c0, top=160, bottom=0, left=80, right=80)
-        for cell in t_sal.rows[0].cells:
-            set_cell_margins(cell, top=240, bottom=60, left=40, right=40)
+        # Provide vertical breathing space above t_sal so MR/MRS/MS does not stick to top border (Item 1a)
+        set_cell_margins(c0, top=180, bottom=0, left=80, right=80)
+        
+        # Expand width of MRS cell to prevent wrapping (Item d)
+        cell_mrs = t_sal.rows[0].cells[3]
+        cell_mrs.width = docx.shared.Inches(0.6)
+
+        for idx, cell in enumerate(t_sal.rows[0].cells):
+            set_cell_margins(cell, top=200, bottom=40, left=20, right=20)
+            tcPr = cell._tc.get_or_add_tcPr()
+            if tcPr.find(qn('w:noWrap')) is None:
+                tcPr.append(parse_xml(f'<w:noWrap {nsdecls("w")}/>'))
             for p in cell.paragraphs:
                 strip_list_formatting(p)
-                p.paragraph_format.space_before = Pt(4)
+                p.paragraph_format.space_before = Pt(2)
                 p.paragraph_format.space_after = Pt(2)
-                p.paragraph_format.line_spacing = Pt(10.5)
+                p.paragraph_format.line_spacing = Pt(11)
 
         # Col 0: MR, Col 2: MRS, Col 4: MS
         set_cell_checkbox(t_sal.rows[0].cells[0], "MR" in salutation and "MRS" not in salutation)
@@ -307,13 +375,12 @@ def populate_acknowledgement_document(
     # 3.6 Car Plate No in c0.paragraphs[9]
     car_plate = data.get("car_plate", "")
     p_car = c0.paragraphs[9]
+    while len(p_car.runs) > 1:
+        p_car._p.remove(p_car.runs[-1]._r)
     if car_plate:
-        if len(p_car.runs) > 1:
-            p_car.runs[1].text = car_plate
-        else:
-            r = p_car.add_run(car_plate)
-            r.bold = True
-            r.font.size = Pt(10.0)
+        r = p_car.add_run(f" {car_plate}")
+        r.bold = True
+        r.font.size = Pt(10.0)
 
     # 3.7 Tel (Hp) in c0.paragraphs[10]
     phone = data.get("phone", "")
@@ -338,7 +405,7 @@ def populate_acknowledgement_document(
         for r_i, key in enumerate(source_keys):
             if r_i < len(t_ref.rows):
                 row = t_ref.rows[r_i]
-                is_match = key in ref_source
+                is_match = key in ref_source if ref_source else False
                 set_cell_checkbox(row.cells[0], is_match)
                 for p in row.cells[1].paragraphs:
                     strip_list_formatting(p)
@@ -352,21 +419,20 @@ def populate_acknowledgement_document(
     # 4.1 Customer Request in c1.paragraphs[1]
     cust_req = data.get("customer_request", "")
     p_req = c1.paragraphs[1]
+    while len(p_req.runs) > 1:
+        p_req._p.remove(p_req.runs[-1]._r)
     if cust_req:
-        while len(p_req.runs) > 1:
-            p_req._p.remove(p_req.runs[-1]._r)
-        r = p_req.add_run(cust_req)
+        r = p_req.add_run(f" {cust_req}")
         r.bold = True
         r.font.size = Pt(10.0)
 
     # 4.2 Requirement summary in c1.paragraphs[5]
     req_summary = data.get("requirement_summary", "")
     p_sum = c1.paragraphs[5]
+    while len(p_sum.runs) > 2:
+        p_sum._p.remove(p_sum.runs[-1]._r)
     if req_summary:
-        if len(p_sum.runs) > 2:
-            p_sum.runs[2].text = req_summary
-        elif len(p_sum.runs) == 2:
-            p_sum.add_run(req_summary)
+        p_sum.add_run(f" {req_summary}")
 
     # 4.3 Property Types in c1 nested table 0 (4 rows x 4 cols)
     c1_nested = [docx.table.Table(node, c1) for node in c1._tc.findall('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tbl')]
@@ -385,39 +451,35 @@ def populate_acknowledgement_document(
                         r.font.size = Pt(9.5)
 
         # Row 0 Col 0: Agricultural Land
-        set_cell_checkbox(t_props.rows[0].cells[0], any("agri" in pt for pt in prop_types))
+        set_cell_checkbox(t_props.rows[0].cells[0], any("agri" in pt for pt in prop_types) if prop_types else False)
         # Row 1 Col 0: Commercial Land
-        set_cell_checkbox(t_props.rows[1].cells[0], any("comm" in pt for pt in prop_types))
+        set_cell_checkbox(t_props.rows[1].cells[0], any("comm" in pt for pt in prop_types) if prop_types else False)
         # Row 1 Col 2: Hotel / Resort
-        set_cell_checkbox(t_props.rows[1].cells[2], any("hotel" in pt or "resort" in pt for pt in prop_types))
+        set_cell_checkbox(t_props.rows[1].cells[2], any("hotel" in pt or "resort" in pt for pt in prop_types) if prop_types else False)
         # Row 2 Col 0: Industrial Land
-        set_cell_checkbox(t_props.rows[2].cells[0], any("ind" in pt for pt in prop_types))
+        set_cell_checkbox(t_props.rows[2].cells[0], any("ind" in pt for pt in prop_types) if prop_types else False)
         # Row 2 Col 2: Factory
-        set_cell_checkbox(t_props.rows[2].cells[2], any("factory" in pt for pt in prop_types))
+        set_cell_checkbox(t_props.rows[2].cells[2], any("factory" in pt for pt in prop_types) if prop_types else False)
         # Row 3 Col 0: Residential Land
-        set_cell_checkbox(t_props.rows[3].cells[0], any("res" in pt for pt in prop_types))
+        set_cell_checkbox(t_props.rows[3].cells[0], any("res" in pt for pt in prop_types) if prop_types else False)
         # Row 3 Col 2: Condominium
-        set_cell_checkbox(t_props.rows[3].cells[2], any("condo" in pt for pt in prop_types))
+        set_cell_checkbox(t_props.rows[3].cells[2], any("condo" in pt for pt in prop_types) if prop_types else False)
 
     # 4.4 Target Location in c1.paragraphs[9]
     loc = data.get("target_location", "")
     p_loc = c1.paragraphs[9]
+    while len(p_loc.runs) > 2:
+        p_loc._p.remove(p_loc.runs[-1]._r)
     if loc:
-        if len(p_loc.runs) > 2:
-            p_loc.runs[2].text = loc
-        elif len(p_loc.runs) == 2:
-            p_loc.add_run(loc)
+        p_loc.add_run(f" {loc}")
 
     # 4.5 Remarks in c1.paragraphs[11]
     remarks = data.get("remarks", "")
     p_rem = c1.paragraphs[11]
+    while len(p_rem.runs) > 2:
+        p_rem._p.remove(p_rem.runs[-1]._r)
     if remarks:
-        while len(p_rem.runs) > 2:
-            p_rem._p.remove(p_rem.runs[-1]._r)
-        if len(p_rem.runs) == 2:
-            p_rem.add_run(remarks)
-        elif len(p_rem.runs) > 2:
-            p_rem.runs[2].text = remarks
+        p_rem.add_run(f" {remarks}")
 
     # 4.6 Assigned To in c1 nested table 1 (2 rows x 2 cols)
     assigned = (data.get("assigned_to") or "").lower()
@@ -503,48 +565,67 @@ def populate_acknowledgement_document(
                 for r in mid_p.runs:
                     r.font.size = Pt(2)
 
-    # 5. Signatures (Strict Page 1 Confinement)
+    # 5. Signatures (Item g - Strict Page 1 Confinement with exact column alignment)
     signer_name = data.get("customer_signer", cust_name)
     staff_name = data.get("staff_name", "Leong Chu Ping")
     signer_date = data.get("signer_date", header_date)
     staff_date = data.get("staff_date", header_date)
 
+    tab_stop_pos = docx.shared.Inches(3.5)
+    for p in [p_sig_lines, p_sig_labels, p_name, p_date]:
+        if p:
+            strip_list_formatting(p)
+            p.paragraph_format.tab_stops.clear_all()
+            p.paragraph_format.tab_stops.add_tab_stop(tab_stop_pos, docx.enum.text.WD_TAB_ALIGNMENT.LEFT)
+            p.paragraph_format.space_before = Pt(0)
+            p.paragraph_format.space_after = Pt(1)
+            p.paragraph_format.line_spacing = Pt(10.0)
+            p.paragraph_format.keep_with_next = True
+
     if p_sig_lines:
         p_sig_lines.paragraph_format.space_before = Pt(2)
-        p_sig_lines.paragraph_format.space_after = Pt(1)
-        p_sig_lines.paragraph_format.line_spacing = Pt(10.0)
-        p_sig_lines.paragraph_format.keep_with_next = True
+        while p_sig_lines.runs:
+            p_sig_lines._p.remove(p_sig_lines.runs[-1]._r)
+        r_l1 = p_sig_lines.add_run("_______________________________")
+        r_l1.font.size = Pt(8.5)
+        p_sig_lines.add_run("\t")
+        r_l2 = p_sig_lines.add_run("_______________________________")
+        r_l2.font.size = Pt(8.5)
 
     if p_sig_labels:
-        p_sig_labels.paragraph_format.space_before = Pt(0)
-        p_sig_labels.paragraph_format.space_after = Pt(1)
-        p_sig_labels.paragraph_format.line_spacing = Pt(10.0)
-        p_sig_labels.paragraph_format.keep_with_next = True
-        for r in p_sig_labels.runs:
-            r.font.size = Pt(8.5)
+        while p_sig_labels.runs:
+            p_sig_labels._p.remove(p_sig_labels.runs[-1]._r)
+        r_lbl1 = p_sig_labels.add_run("Customer")
+        r_lbl1.font.size = Pt(8.5)
+        p_sig_labels.add_run("\t")
+        r_lbl2 = p_sig_labels.add_run("Attended staff/representative")
+        r_lbl2.font.size = Pt(8.5)
 
     if p_name:
-        p_name.paragraph_format.space_before = Pt(0)
-        p_name.paragraph_format.space_after = Pt(1)
-        p_name.paragraph_format.line_spacing = Pt(10.0)
-        p_name.paragraph_format.keep_with_next = True
-        if len(p_name.runs) > 1:
-            p_name.runs[1].text = f" {signer_name}"
-        if len(p_name.runs) > 11:
-            p_name.runs[11].text = staff_name
-        for r in p_name.runs:
-            r.font.size = Pt(8.5)
+        while p_name.runs:
+            p_name._p.remove(p_name.runs[-1]._r)
+        r_n1_lbl = p_name.add_run("Name: ")
+        r_n1_lbl.font.size = Pt(8.5)
+        r_n1 = p_name.add_run(signer_name)
+        r_n1.font.size = Pt(8.5)
+        p_name.add_run("\t")
+        r_n2_lbl = p_name.add_run("Name: ")
+        r_n2_lbl.font.size = Pt(8.5)
+        r_n2 = p_name.add_run(staff_name)
+        r_n2.font.size = Pt(8.5)
 
     if p_date:
-        p_date.paragraph_format.space_before = Pt(0)
-        p_date.paragraph_format.space_after = Pt(1)
-        p_date.paragraph_format.line_spacing = Pt(10.0)
-        if len(p_date.runs) > 2:
-            p_date.runs[2].text = signer_date
-        if len(p_date.runs) > 12:
-            p_date.runs[12].text = staff_date
-        for r in p_date.runs:
-            r.font.size = Pt(8.5)
+        while p_date.runs:
+            p_date._p.remove(p_date.runs[-1]._r)
+        r_d1_lbl = p_date.add_run("Date: ")
+        r_d1_lbl.font.size = Pt(8.5)
+        r_d1 = p_date.add_run(signer_date)
+        r_d1.font.size = Pt(8.5)
+        p_date.add_run("\t")
+        r_d2_lbl = p_date.add_run("Date: ")
+        r_d2_lbl.font.size = Pt(8.5)
+        r_d2 = p_date.add_run(staff_date)
+        r_d2.font.size = Pt(8.5)
 
         # Guarantee explicit page break after signature Date line so Page 2 starts cleanly
         has_break = False
@@ -557,14 +638,34 @@ def populate_acknowledgement_document(
             r_br = p_date.add_run()
             r_br.add_break(docx.enum.text.WD_BREAK.PAGE)
 
-    # 6. Page 2 Header Date
+    # 6. Page 2 Header Date (Item h - Lock Date onto same line)
     for p in doc.paragraphs:
         txt = p.text.strip()
-        if "Property Proposed" in txt and "Date:" in txt:
-            if len(p.runs) > 16:
-                p.runs[16].text = header_date
-            elif len(p.runs) > 1:
-                p.runs[-1].text = f" {header_date}"
+        if "Property Proposed" in txt:
+            strip_list_formatting(p)
+            while p.runs:
+                p._p.remove(p.runs[-1]._r)
+            p.paragraph_format.tab_stops.clear_all()
+            p.paragraph_format.tab_stops.add_tab_stop(docx.shared.Inches(6.5), docx.enum.text.WD_TAB_ALIGNMENT.RIGHT)
+            r_prop = p.add_run("Property Proposed/ Viewed")
+            r_prop.bold = True
+            r_prop.font.name = "Arial"
+            r_prop.font.size = Pt(10.0)
+            
+            p.add_run("\t")
+            
+            r_dt_lbl = p.add_run("Date: ")
+            r_dt_lbl.bold = True
+            r_dt_lbl.font.name = "Arial"
+            r_dt_lbl.font.size = Pt(10.0)
+            
+            r_dt_val = p.add_run(header_date)
+            r_dt_val.bold = True
+            r_dt_val.font.name = "Arial"
+            r_dt_val.font.size = Pt(10.0)
+            p.paragraph_format.space_before = Pt(4)
+            p.paragraph_format.space_after = Pt(2)
+            break
 
     # 7. Table 1 (Properties Viewed)
     t1 = doc.tables[1]
@@ -604,7 +705,7 @@ def populate_acknowledgement_document(
                         else:
                             row.cells[4].add_paragraph(line)
 
-    # 8. Table 2 (Submission of Documents & Checkboxes)
+    # 8. Table 2 (Submission of Documents & Checkboxes - Items i & j)
     t2 = doc.tables[2]
     docs_sub = data.get("documents_submitted", [])
     if len(t2.rows) > 1:
@@ -615,47 +716,79 @@ def populate_acknowledgement_document(
 
         # Col 1: Documents Checklist (GM, GRN, HSM, HSD, Pajakan Mukim, Pajakan Negeri, Topo Plan)
         c_doc = row.cells[1]
-        checklist_items = ["GM", "GRN", "HSM", "HSD", "Pajakan Mukim", "Pajakan Negeri", "Topo Plan"]
-        c_doc_paragraphs = [docx.text.paragraph.Paragraph(p_node, c_doc) for p_node in c_doc._tc.xpath('.//w:p')]
-        for p in c_doc_paragraphs:
-            strip_list_formatting(p)
-            txt = p.text.strip().lstrip("☐").lstrip("☑").strip()
-            for item in checklist_items:
-                if txt == item or (item in txt and "Title" not in txt):
-                    is_chk = any(item.lower() in str(d).lower() for d in [doc_item.get("title_details", ""), doc_item.get("type", "")])
-                    p.text = f"{'☑' if is_chk else '☐'}  {item}"
-                    if p.runs:
-                        p.runs[0].font.name = "Arial"
-                        p.runs[0].font.size = Pt(9.5)
-                    break
+        c_doc_nested = [docx.table.Table(node, c_doc) for node in c_doc._tc.findall('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tbl')]
+        if c_doc_nested:
+            t_doc = c_doc_nested[0]
+            # Remove any table indent to ensure left-alignment with Title (Item i)
+            tblPr = t_doc._tbl.tblPr
+            tblInd = tblPr.find(qn('w:tblInd'))
+            if tblInd is not None:
+                tblPr.remove(tblInd)
 
-        # Col 4: Remarks Checklist (Whatsapp Messenger, Handover by hardcopy)
+            doc_checklist = [
+                ("GM", ["gm"]),
+                ("GRN", ["grn"]),
+                ("HSM", ["hsm"]),
+                ("HSD", ["hsd"]),
+                ("Pajakan Mukim", ["pajakan mukim", "mukim"]),
+                ("Pajakan Negeri", ["pajakan negeri", "negeri"]),
+                ("", []),
+                ("Topo Plan", ["topo", "topo plan"])
+            ]
+            sub_title = str(doc_item.get("title_details") or doc_item.get("type") or "").lower()
+
+            for r_i, (label, aliases) in enumerate(doc_checklist):
+                if r_i < len(t_doc.rows):
+                    row_cells = t_doc.rows[r_i].cells
+                    if label:
+                        is_chk = any(a in sub_title for a in aliases) if sub_title else False
+                        set_cell_checkbox(row_cells[0], is_chk)
+                        p_lbl = row_cells[1].paragraphs[0] if row_cells[1].paragraphs else row_cells[1].add_paragraph()
+                        strip_list_formatting(p_lbl)
+                        p_lbl.text = label
+                        if p_lbl.runs:
+                            p_lbl.runs[0].font.name = "Arial"
+                            p_lbl.runs[0].font.size = Pt(9.5)
+                        p_lbl.paragraph_format.space_before = Pt(0)
+                        p_lbl.paragraph_format.space_after = Pt(1)
+                        p_lbl.paragraph_format.line_spacing = Pt(10.5)
+
+        # Col 4: Remarks Checklist (Whatsapp Messenger, Handover by hardcopy - Item j single line)
         c_rem = row.cells[4]
-        rem_val = (doc_item.get("remarks") or "").lower()
-        c_rem_paragraphs = [docx.text.paragraph.Paragraph(p_node, c_rem) for p_node in c_rem._tc.xpath('.//w:p')]
-        for p in c_rem_paragraphs:
-            strip_list_formatting(p)
-            txt = p.text.strip().lstrip("☐").lstrip("☑").strip()
-            if "whatsapp" in txt.lower():
-                is_chk = "whatsapp" in rem_val or "messenger" in rem_val
-                p.text = f"{'☑' if is_chk else '☐'}  Whatsapp Messenger"
-                if p.runs:
-                    p.runs[0].font.name = "Arial"
-                    p.runs[0].font.size = Pt(9.5)
-            elif "hardcopy" in txt.lower():
-                is_chk = "hardcopy" in rem_val
-                p.text = f"{'☑' if is_chk else '☐'}  Handover by hardcopy"
-                if p.runs:
-                    p.runs[0].font.name = "Arial"
-                    p.runs[0].font.size = Pt(9.5)
+        c_rem_nested = [docx.table.Table(node, c_rem) for node in c_rem._tc.findall('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tbl')]
+        if c_rem_nested:
+            t_rem = c_rem_nested[0]
+            rem_val = (doc_item.get("remarks") or "").lower()
+            rem_items = [
+                ("Whatsapp Messenger", ["whatsapp", "messenger"]),
+                ("Handover by hardcopy", ["hardcopy", "handover"])
+            ]
+            for r_i, (label, aliases) in enumerate(rem_items):
+                if r_i < len(t_rem.rows):
+                    row_cells = t_rem.rows[r_i].cells
+                    is_chk = any(a in rem_val for a in aliases) if rem_val else False
+                    set_cell_checkbox(row_cells[0], is_chk)
+                    p_lbl = row_cells[1].paragraphs[0] if row_cells[1].paragraphs else row_cells[1].add_paragraph()
+                    strip_list_formatting(p_lbl)
+                    p_lbl.text = label
+                    if p_lbl.runs:
+                        p_lbl.runs[0].font.name = "Arial"
+                        p_lbl.runs[0].font.size = Pt(8.5)
+                    tcPr = row_cells[1]._tc.get_or_add_tcPr()
+                    if tcPr.find(qn('w:noWrap')) is None:
+                        tcPr.append(parse_xml(f'<w:noWrap {nsdecls("w")}/>'))
+                    p_lbl.paragraph_format.space_before = Pt(0)
+                    p_lbl.paragraph_format.space_after = Pt(1)
+                    p_lbl.paragraph_format.line_spacing = Pt(10.5)
 
-    # 9. Page 2 Bottom Date (Paragraph with date e.g. 27.03.2025)
-    for p in doc.paragraphs:
+    # 9. Remove stray accidental date at bottom of Page 2 (Item k)
+    for p in list(doc.paragraphs):
         txt = p.text.strip()
-        if "Page | 2" in txt or txt == "27.03.2025" or (txt.startswith("2") and len(txt) == 10 and "." in txt):
-            if "CUSTOMER" not in txt and "PARTICULARS" not in txt and "Property Proposed" not in txt:
-                if len(p.runs) > 0 and "." in p.runs[0].text:
-                    p.runs[0].text = header_date
+        if txt == "27.03.2025" or (txt.startswith("2") and len(txt) == 10 and "." in txt and "CUSTOMER" not in txt and "PARTICULARS" not in txt and "Property Proposed" not in txt and "Date:" not in txt):
+            p_elem = p._p
+            parent = p_elem.getparent()
+            if parent is not None:
+                parent.remove(p_elem)
 
     # 10. Global XML Sanitization: Remove ALL <w:numPr> elements to eliminate numbering/bullets
     for np in doc._element.xpath('.//w:numPr'):

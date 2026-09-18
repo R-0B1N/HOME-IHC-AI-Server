@@ -364,7 +364,8 @@ class MultiIntentMemoryTracker:
         # Map criteria for primary and hybrid searches
         primary_criteria = {
             "location": active_inq.get("location"),
-            "property_type": active_inq.get("category"),
+            "property_type": active_inq.get("property_type_label") or active_inq.get("property_type") or active_inq.get("category"),
+            "category": active_inq.get("category"),
             "max_price": active_inq.get("budget"),
             "min_power_amp": active_inq.get("power_amp")
         }
@@ -850,8 +851,8 @@ def generate_conversational_response(
         total_chars = len(system_prompt) + len(history_to_use) + len(text or "")
         est_input_tokens = int(total_chars / 3.0)
 
-    # Bounded output token budget
-    safe_max_tokens = max(120, min(300, 2035 - est_input_tokens))
+    # Bounded output token budget (Ample completion room for complete response)
+    safe_max_tokens = max(250, min(450, 2035 - est_input_tokens))
 
     messages = [
         {"role": "system", "content": system_prompt}
@@ -875,11 +876,28 @@ def generate_conversational_response(
             try:
                 parsed = json.loads(content, strict=False)
             except Exception:
-                match = re.search(r'"response"\s*:\s*"([^"]*)', content, re.DOTALL)
+                match = re.search(r'"response"\s*:\s*"((?:[^"\\]|\\.)*)', content, re.DOTALL)
                 if match:
-                    parsed = {"response": match.group(1).strip()}
+                    raw_str = match.group(1)
+                    try:
+                        decoded_resp = json.loads(f'"{raw_str}"')
+                    except Exception:
+                        decoded_resp = raw_str.replace('\\n', '\n').replace('\\"', '"').replace('\\\\', '\\')
+                    parsed = {"response": decoded_resp.strip()}
         
         if parsed and isinstance(parsed, dict) and parsed.get("response"):
+            # Unescape raw newlines if somehow present in string
+            if isinstance(parsed["response"], str) and "\\n" in parsed["response"] and "\n" not in parsed["response"]:
+                parsed["response"] = parsed["response"].replace("\\n", "\n").replace('\\"', '"')
+            # Normalize sparse keys with safe defaults
+            parsed.setdefault("intent", "general")
+            parsed.setdefault("asked_photos", False)
+            parsed.setdefault("asked_specs", False)
+            parsed.setdefault("asked_meeting", False)
+            parsed.setdefault("asked_alternatives", False)
+            parsed.setdefault("is_out_of_context", False)
+            parsed.setdefault("new_constraints", {})
+            parsed.setdefault("extracted_data", parsed.get("extracted", {}))
             return parsed
         raise ValueError(f"Failed to parse valid JSON response from LLM content: {content[:100] if content else 'empty'}")
     except Exception as e:
@@ -897,12 +915,22 @@ def generate_conversational_response(
                     messages=emergency_messages,
                     response_format={"type": "json_object"},
                     temperature=0.0,
-                    max_tokens=150,
+                    max_tokens=250,
                     timeout=20.0
                 )
                 retry_content = retry_resp.choices[0].message.content
                 retry_parsed = _parse_json_from_llm(retry_content)
                 if retry_parsed and isinstance(retry_parsed, dict) and retry_parsed.get("response"):
+                    if isinstance(retry_parsed["response"], str) and "\\n" in retry_parsed["response"] and "\n" not in retry_parsed["response"]:
+                        retry_parsed["response"] = retry_parsed["response"].replace("\\n", "\n").replace('\\"', '"')
+                    retry_parsed.setdefault("intent", "general")
+                    retry_parsed.setdefault("asked_photos", False)
+                    retry_parsed.setdefault("asked_specs", False)
+                    retry_parsed.setdefault("asked_meeting", False)
+                    retry_parsed.setdefault("asked_alternatives", False)
+                    retry_parsed.setdefault("is_out_of_context", False)
+                    retry_parsed.setdefault("new_constraints", {})
+                    retry_parsed.setdefault("extracted_data", retry_parsed.get("extracted", {}))
                     return retry_parsed
             except Exception as retry_err:
                 logger.error(f"Emergency retry also failed: {retry_err}")

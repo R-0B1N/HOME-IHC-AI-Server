@@ -17,6 +17,7 @@ from app.db.models import SessionLocal, AcknowledgementForm, ViewingAppointment,
 from app.services.acknowledgement import (
     ViewingAcknowledgementEngine,
     get_sample_acknowledgement_data,
+    get_blank_acknowledgement_data,
     DEFAULT_OUTPUT_DIR
 )
 from app.services.chatwoot import send_message_with_attachment, send_private_note
@@ -75,7 +76,7 @@ def build_acknowledgement_payload(
     """
     Populates standard 22-field payload for ViewingAcknowledgementEngine.
     """
-    base_data = get_sample_acknowledgement_data()
+    base_data = get_blank_acknowledgement_data(form_no=form_no)
     now = datetime.datetime.utcnow()
     
     # 1. Core Header
@@ -134,7 +135,7 @@ def build_acknowledgement_payload(
             }
         ]
         if property_obj.property_category:
-            base_data["property_types"] = property_obj.property_category
+            base_data["property_types"] = [property_obj.property_category] if isinstance(property_obj.property_category, str) else list(property_obj.property_category)
     else:
         # Fallback to provided remarks
         if base_data.get("properties_viewed"):

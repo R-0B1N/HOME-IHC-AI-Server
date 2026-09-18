@@ -270,6 +270,18 @@ def search_properties(criteria: dict, limit: int = 10) -> list:
             ))
             
         property_type = criteria.get("property_type")
+        category = criteria.get("category") or criteria.get("property_category")
+        if not category and property_type:
+            pt_lower = str(property_type).lower()
+            if any(k in pt_lower for k in ["semi d", "semi-d", "house", "terrace", "bungalow", "condo", "apartment", "residential", "home"]):
+                category = "residential"
+            elif any(k in pt_lower for k in ["shop", "commercial", "office", "retail"]):
+                category = "commercial"
+            elif any(k in pt_lower for k in ["factory", "warehouse", "industrial", "kilang"]):
+                category = "industrial"
+            elif any(k in pt_lower for k in ["land", "durian", "orchard", "agricultural"]):
+                category = "agricultural"
+
         is_hybrid = criteria.get("is_hybrid", False)
 
         if is_hybrid:
@@ -293,6 +305,46 @@ def search_properties(criteria: dict, limit: int = 10) -> list:
                 Property.search_corpus_markdown.ilike(search_type),
                 Property.property_type_sub.ilike(search_type)
             ))
+
+        # Strict category isolation: Never match commercial/industrial properties for residential searches
+        if category and str(category).lower() not in ["none", "null", "all"]:
+            cat_lower = str(category).lower()
+            if cat_lower == "residential":
+                query = query.filter(
+                    ~Property.property_type_sub.ilike("%commercial%"),
+                    ~Property.property_type_sub.ilike("%shop%"),
+                    ~Property.property_type_sub.ilike("%factory%"),
+                    ~Property.property_type_sub.ilike("%warehouse%"),
+                    ~Property.property_type_sub.ilike("%industrial%"),
+                    ~Property.title.ilike("%commercial%"),
+                    ~Property.title.ilike("%shop%"),
+                    ~Property.title.ilike("%factory%"),
+                    ~Property.title.ilike("%warehouse%")
+                )
+            elif cat_lower == "commercial":
+                query = query.filter(
+                    ~Property.property_type_sub.ilike("%residential%"),
+                    ~Property.property_type_sub.ilike("%house%"),
+                    ~Property.title.ilike("%house%")
+                )
+            elif cat_lower == "industrial":
+                query = query.filter(or_(
+                    Property.property_type_sub.ilike("%industrial%"),
+                    Property.property_type_sub.ilike("%factory%"),
+                    Property.property_type_sub.ilike("%warehouse%"),
+                    Property.title.ilike("%industrial%"),
+                    Property.title.ilike("%factory%"),
+                    Property.title.ilike("%warehouse%")
+                ))
+            elif cat_lower == "agricultural":
+                query = query.filter(or_(
+                    Property.property_type_sub.ilike("%land%"),
+                    Property.property_type_sub.ilike("%orchard%"),
+                    Property.property_type_sub.ilike("%agricultural%"),
+                    Property.title.ilike("%land%"),
+                    Property.title.ilike("%durian%"),
+                    Property.title.ilike("%orchard%")
+                ))
 
         min_power_amp = criteria.get("min_power_amp")
         if min_power_amp:

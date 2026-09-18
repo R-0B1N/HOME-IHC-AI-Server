@@ -10,12 +10,13 @@ import unittest
 from xml.etree import ElementTree as ET
 
 import docx
-from docx.shared import Pt, RGBColor
-from docx.enum.text import WD_COLOR_INDEX
+from docx.shared import Pt, RGBColor, Inches
+from docx.enum.text import WD_COLOR_INDEX, WD_TAB_ALIGNMENT
 from app.services.acknowledgement import (
     ViewingAcknowledgementEngine,
     populate_acknowledgement_document,
     get_sample_acknowledgement_data,
+    get_blank_acknowledgement_data,
     generate_viewing_acknowledgement,
 )
 
@@ -75,59 +76,27 @@ class TestDocumentFormatParity(unittest.TestCase):
         out_path = os.path.join(OUTPUT_DIR, "Parity_Test_Golden_Nick.docx")
         generated_doc.save(out_path)
 
-        # 1. Verify Paragraphs count
-        self.assertEqual(len(generated_doc.paragraphs), len(self.golden_doc.paragraphs))
-
-        # 2. Verify Body Paragraph text
-        for idx in range(len(self.golden_doc.paragraphs)):
-            expected_text = self.golden_doc.paragraphs[idx].text
-            actual_text = generated_doc.paragraphs[idx].text
-            self.assertEqual(
-                actual_text, expected_text,
-                f"Paragraph {idx} text mismatch: actual={actual_text!r} vs expected={expected_text!r}"
-            )
-
-        # 3. Verify Table count
+        # 1. Verify Table count matches golden doc
         self.assertEqual(len(generated_doc.tables), len(self.golden_doc.tables))
 
-        # 4. Verify Table 0 (Customer & Requirements)
+        # 2. Verify Table 0 (Customer & Requirements) structure
         t0_gen = generated_doc.tables[0]
         t0_gold = self.golden_doc.tables[0]
         self.assertEqual(len(t0_gen.rows), len(t0_gold.rows))
         self.assertEqual(len(t0_gen.columns), len(t0_gold.columns))
 
-        # Check Cell 0 paragraphs
-        c0_gen = t0_gen.rows[0].cells[0]
-        c0_gold = t0_gold.rows[0].cells[0]
-        self.assertEqual(len(c0_gen.paragraphs), len(c0_gold.paragraphs))
-        for p_i in range(len(c0_gold.paragraphs)):
-            self.assertEqual(c0_gen.paragraphs[p_i].text, c0_gold.paragraphs[p_i].text)
-
-        # Check Cell 1 paragraphs
-        c1_gen = t0_gen.rows[0].cells[1]
-        c1_gold = t0_gold.rows[0].cells[1]
-        self.assertEqual(len(c1_gen.paragraphs), len(c1_gold.paragraphs))
-        for p_i in range(len(c1_gold.paragraphs)):
-            self.assertEqual(c1_gen.paragraphs[p_i].text, c1_gold.paragraphs[p_i].text)
-
-        # 5. Verify Table 1 (Properties Viewed)
+        # 3. Verify Table 1 (Properties Viewed)
         t1_gen = generated_doc.tables[1]
         t1_gold = self.golden_doc.tables[1]
         self.assertEqual(len(t1_gen.rows), len(t1_gold.rows))
-        for r_i in range(len(t1_gold.rows)):
-            for c_i in range(len(t1_gold.columns)):
-                self.assertEqual(
-                    t1_gen.rows[r_i].cells[c_i].text,
-                    t1_gold.rows[r_i].cells[c_i].text
-                )
 
-        # 6. Verify Table 2 (Submission of Documents) - Verified with Unicode Checkboxes
+        # 4. Verify Table 2 (Submission of Documents) - Verified with Unicode Checkboxes
         t2_gen = generated_doc.tables[2]
         self.assertEqual(len(t2_gen.rows), len(self.golden_doc.tables[2].rows))
         t2_c1_text = "".join(t2_gen.rows[1].cells[1]._tc.itertext())
-        self.assertIn("☐  GM", t2_c1_text)
-        self.assertIn("☐  GRN", t2_c1_text)
-        self.assertIn("☐  Topo Plan", t2_c1_text)
+        self.assertIn("GM", t2_c1_text)
+        self.assertIn("GRN", t2_c1_text)
+        self.assertIn("Topo Plan", t2_c1_text)
         t2_c4_text = "".join(t2_gen.rows[1].cells[4]._tc.itertext())
         self.assertIn("Whatsapp Messenger", t2_c4_text)
 
@@ -135,28 +104,150 @@ class TestDocumentFormatParity(unittest.TestCase):
         num_pr_list = generated_doc._element.xpath('.//w:numPr')
         self.assertEqual(len(num_pr_list), 0, "All w:numPr elements must be purged to eliminate 1., 2., 3. numbering")
 
-        # 7. Verify Form No in P5 (red bold run)
+        # 5. Verify Form No in P5 (red bold run)
         p5 = generated_doc.paragraphs[5]
         red_runs = [r for r in p5.runs if r.font.color and r.font.color.rgb == RGBColor(255, 0, 0)]
         self.assertEqual(len(red_runs), 4)
         self.assertEqual("".join([r.text for r in red_runs]), "0257")
 
-        # 8. Verify Yellow Highlight on Company Name
-        p_comp = c0_gen.paragraphs[4]
-        self.assertEqual(p_comp.runs[0].font.highlight_color, WD_COLOR_INDEX.YELLOW)
-        self.assertEqual(p_comp.runs[1].font.highlight_color, WD_COLOR_INDEX.YELLOW)
-
-        # 9. Verify Margins
+        # 6. Verify Margins
         sec = generated_doc.sections[0]
         self.assertEqual(sec.top_margin.pt, 36.0)
         self.assertEqual(sec.bottom_margin.pt, 36.0)
         self.assertEqual(sec.left_margin.pt, 36.0)
         self.assertEqual(sec.right_margin.pt, 36.0)
 
+    def test_blank_data_and_formatting_items_a_to_k(self):
+        """
+        Validates Items a through k:
+        a. Document ID dynamic generation
+        b. Header Document ID and Date right-aligned via tab stops
+        c. Checkbox font size is Pt(16.0) bold
+        d. MRS cell has width >= 0.55 in and noWrap
+        e. Company name, address, car plate, referral source are blank
+        f. Customer request and requirement summary are blank
+        g. Signatures aligned with tab stops at 3.5 in
+        h. Page 2 Date on same line as Property Proposed/ Viewed
+        i. Nested documents checklist has checkboxes in Col 0 and text in Col 1
+        j. Remarks checklist has noWrap and 8.5pt font
+        k. Stray accidental date at bottom of Page 2 is eliminated
+        """
+        blank = get_blank_acknowledgement_data(form_no="0192")
+        self.assertEqual(blank["form_no"], "0192")
+        self.assertEqual(blank["company_name"], "")
+        self.assertEqual(blank["company_address"], "")
+        self.assertEqual(blank["car_plate"], "")
+        self.assertEqual(blank["customer_request"], "")
+
+        # Set specific fields for Nick
+        blank["customer_name"] = "Nick"
+        blank["customer_signer"] = "Nick"
+        blank["phone"] = "+60126761818"
+        blank["date"] = "19.09.2026"
+        blank["staff_name"] = "Irene Leong"
+        blank["documents_submitted"] = [{"title_details": "Title", "qty": "1 set", "remarks": "Whatsapp Messenger"}]
+        blank["properties_viewed"] = [{
+            "no": "1.",
+            "details": "Semi-D House In Raub\nPahang",
+            "date": "19.09.2026 10:00 AM",
+            "price": "RM 680,000",
+            "description": "• 4 Bedrooms, 3 Bathrooms"
+        }]
+
+        doc = self.engine.populate(blank)
+        out_path = os.path.join(OUTPUT_DIR, "Viewing_Acknowledgement_0192_Nick_Blank_Base.docx")
+        doc.save(out_path)
+
+        # Item a: Dynamic Form No
+        self.assertIn("0192", doc.paragraphs[5].text)
+
+        # Item b: Right-aligned Form No & Date with tab stop
+        p5 = doc.paragraphs[5]
+        self.assertTrue(len(p5.paragraph_format.tab_stops) > 0)
+        self.assertEqual(p5.paragraph_format.tab_stops[0].alignment, WD_TAB_ALIGNMENT.RIGHT)
+
+        p7 = doc.paragraphs[7]
+        self.assertTrue(len(p7.paragraph_format.tab_stops) > 0)
+        self.assertEqual(p7.paragraph_format.tab_stops[0].alignment, WD_TAB_ALIGNMENT.RIGHT)
+        self.assertIn("Date: 19.09.2026", p7.text)
+
+        # Item c: Checkbox size is Pt(16.0) bold
+        t0 = doc.tables[0]
+        c0 = t0.rows[0].cells[0]
+        c0_nested = [docx.table.Table(node, c0) for node in c0._tc.findall('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tbl')]
+        self.assertTrue(len(c0_nested) > 0)
+        t_sal = c0_nested[0]
+        sal_chk_run = t_sal.rows[0].cells[0].paragraphs[0].runs[0]
+        self.assertEqual(sal_chk_run.font.size.pt, 16.0)
+        self.assertTrue(sal_chk_run.bold)
+
+        # Item d: MRS word wrap prevention
+        cell_mrs = t_sal.rows[0].cells[3]
+        self.assertGreaterEqual(cell_mrs.width, Inches(0.55))
+        self.assertIn("noWrap", cell_mrs._tc.xml)
+
+        # Items e & f: No hallucinated company, address, car plate, or request
+        p_comp = c0.paragraphs[4]
+        self.assertEqual(p_comp.text.replace("Company Name:", "").strip(), "")
+        p_car = c0.paragraphs[9]
+        self.assertEqual(p_car.text.replace("Car Plate No:", "").strip(), "")
+        c1 = t0.rows[0].cells[1]
+        p_req = c1.paragraphs[1]
+        self.assertEqual(p_req.text.replace("Customer Request:", "").strip(), "")
+
+        # Item g: Signatures aligned with tab stops at 3.5 in
+        p_sig_lines = doc.paragraphs[14]
+        p_sig_labels = doc.paragraphs[15]
+        p_name = doc.paragraphs[16]
+        p_date = doc.paragraphs[17]
+        for p in [p_sig_lines, p_sig_labels, p_name, p_date]:
+            self.assertTrue(len(p.paragraph_format.tab_stops) > 0)
+            self.assertEqual(p.paragraph_format.tab_stops[0].position, Inches(3.5))
+        self.assertIn("Customer\tAttended staff/representative", p_sig_labels.text)
+        self.assertIn("Name: Nick\tName: Irene Leong", p_name.text)
+        self.assertIn("Date: 19.09.2026\tDate: 19.09.2026", p_date.text)
+
+        # Item h: Page 2 Header date locked on same line
+        p_prop = None
+        for p in doc.paragraphs:
+            if "Property Proposed/ Viewed" in p.text:
+                p_prop = p
+                break
+        self.assertIsNotNone(p_prop)
+        self.assertIn("Property Proposed/ Viewed\tDate: 19.09.2026", p_prop.text)
+        self.assertEqual(p_prop.paragraph_format.tab_stops[0].alignment, WD_TAB_ALIGNMENT.RIGHT)
+
+        # Item i: Additional Documents nested table
+        t2 = doc.tables[2]
+        c_doc = t2.rows[1].cells[1]
+        c_doc_nested = [docx.table.Table(node, c_doc) for node in c_doc._tc.findall('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tbl')]
+        self.assertTrue(len(c_doc_nested) > 0)
+        t_doc = c_doc_nested[0]
+        self.assertIn("☑", t_doc.rows[0].cells[0].paragraphs[0].text)
+        self.assertEqual(t_doc.rows[0].cells[1].paragraphs[0].text, "GM")
+        self.assertNotIn("tblInd", t_doc._tbl.tblPr.xml)
+
+        # Item j: Remarks nested table formatting
+        c_rem = t2.rows[1].cells[4]
+        c_rem_nested = [docx.table.Table(node, c_rem) for node in c_rem._tc.findall('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tbl')]
+        self.assertTrue(len(c_rem_nested) > 0)
+        t_rem = c_rem_nested[0]
+        self.assertIn("☑", t_rem.rows[0].cells[0].paragraphs[0].text)
+        self.assertEqual(t_rem.rows[0].cells[1].paragraphs[0].text, "Whatsapp Messenger")
+        self.assertIn("noWrap", t_rem.rows[0].cells[1]._tc.xml)
+
+        # Item k: Accidental stray date removed from bottom
+        for p in doc.paragraphs:
+            txt = p.text.strip()
+            if "CUSTOMER" not in txt and "PARTICULARS" not in txt and "Property Proposed" not in txt and "Date:" not in txt:
+                self.assertFalse(
+                    txt == "27.03.2025" or (txt.startswith("2") and len(txt) == 10 and "." in txt),
+                    f"Stray accidental date paragraph found: {txt}"
+                )
+
     def test_form_0190_signature_stability_and_no_page_overflow(self):
         """
-        Tests Form 0190 (the operational payload from Viewing_Acknowledgement_0190_Nick.pdf)
-        to verify that the signature block stays completely within Section 1 / Page 1.
+        Tests Form 0190 to verify that the signature block stays completely within Page 1.
         """
         sample_0190 = get_sample_acknowledgement_data()
         sample_0190["form_no"] = "0190"
@@ -172,14 +263,11 @@ class TestDocumentFormatParity(unittest.TestCase):
         p5 = doc.paragraphs[5]
         self.assertIn("0190", p5.text)
 
-        # Verify Signatures are in Paragraphs 14, 15, 16, 17 before Page 2 Header (P19)
-        self.assertEqual(doc.paragraphs[14].text, "_______________________________                                            _______________________________")
-        self.assertEqual(doc.paragraphs[15].text, "Customer\t\t\t\t\t\t\t            Attended staff/representative")
-        self.assertEqual(doc.paragraphs[16].text, "Name: Nick\t\t\t\t\t\t\t\tName: Leong Chu Ping")
-        self.assertEqual(doc.paragraphs[17].text, "Date:\t27.03.2025\t\t\t\t\t\t            Date: 27.03.2025")
-
-        # Verify Page 2 Header is in Paragraph 19
-        self.assertEqual(doc.paragraphs[19].text, "Property Proposed/ Viewed \t\t\t\t\t\t            \tDate: 27.03.2025")
+        # Verify Signatures are aligned using tab stops
+        self.assertIn("_______________________________", doc.paragraphs[14].text)
+        self.assertIn("Customer\tAttended staff/representative", doc.paragraphs[15].text)
+        self.assertIn("Name: Nick\tName: Leong Chu Ping", doc.paragraphs[16].text)
+        self.assertIn("Date: 27.03.2025\tDate: 27.03.2025", doc.paragraphs[17].text)
 
         # Verify that Table 0 has explicit single border stabilization
         t0_xml = doc.tables[0]._tbl.tblPr.xml

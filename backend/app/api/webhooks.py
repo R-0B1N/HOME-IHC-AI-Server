@@ -221,9 +221,10 @@ async def chatwoot_webhook(request: Request):
         logger.info(f"Agent command detected in private note for conv {conversation_id}: {content}")
         try:
             if content.startswith("/acknowledgement"):
-                from app.services.acknowledgement import generate_viewing_acknowledgement, get_sample_acknowledgement_data
+                from app.services.acknowledgement import generate_viewing_acknowledgement, get_blank_acknowledgement_data
+                from app.services.viewing_service import get_next_form_number, compute_file_sha256
                 from app.services.chatwoot import send_private_note, send_message_with_attachment
-                from app.db.models import SessionLocal, Customer
+                from app.db.models import SessionLocal, Customer, AcknowledgementForm
                 
                 args = content.split()
                 should_send_customer = "send" in args
@@ -232,28 +233,41 @@ async def chatwoot_webhook(request: Request):
                 phone = contact_info.get("phone_number") or ""
                 cust_name = contact_info.get("name") or "Customer"
                 
-                ack_data = get_sample_acknowledgement_data()
+                # Fetch next sequential form number from database (Item a)
+                form_no = "0191"
+                cust = None
+                try:
+                    db = SessionLocal()
+                    try:
+                        form_no = get_next_form_number(db)
+                        if phone:
+                            clean_phone = phone.replace("+", "").replace(" ", "").replace("-", "")
+                            cust = db.query(Customer).filter((Customer.id == clean_phone) | (Customer.id.like(f"%{clean_phone}%"))).first()
+                    finally:
+                        db.close()
+                except Exception as dbe:
+                    logger.warning(f"Could not calculate form_no or load customer from DB for acknowledgement: {dbe}")
+                
+                # Start with pure blank data (Items e & f - no hallucinated sample data)
+                ack_data = get_blank_acknowledgement_data(form_no=form_no)
+                if cust and cust.contact_name:
+                    cust_name = cust.contact_name
                 if cust_name:
                     ack_data["customer_name"] = cust_name
                     ack_data["customer_signer"] = cust_name
                 if phone:
                     ack_data["phone"] = phone
                 
-                if phone:
-                    clean_phone = phone.replace("+", "").replace(" ", "").replace("-", "")
-                    try:
-                        db = SessionLocal()
-                        try:
-                            cust = db.query(Customer).filter((Customer.id == clean_phone) | (Customer.id.like(f"%{clean_phone}%"))).first()
-                            if cust and cust.metadata_json:
-                                meta = cust.metadata_json
-                                if meta.get("location"): ack_data["target_location"] = meta["location"]
-                                if meta.get("budget"): ack_data["remarks"] = f"Budget: {meta['budget']}"
-                                if meta.get("property_type"): ack_data["property_types"] = [meta["property_type"]]
-                        finally:
-                            db.close()
-                    except Exception as dbe:
-                        logger.warning(f"Could not load customer from DB for acknowledgement: {dbe}")
+                if cust and cust.metadata_json:
+                    meta = cust.metadata_json
+                    if meta.get("company_name"): ack_data["company_name"] = meta["company_name"]
+                    if meta.get("company_reg_no"): ack_data["company_reg_no"] = meta["company_reg_no"]
+                    if meta.get("company_address"): ack_data["company_address"] = meta["company_address"]
+                    if meta.get("car_plate"): ack_data["car_plate"] = meta["car_plate"]
+                    if meta.get("location"): ack_data["target_location"] = meta["location"]
+                    if meta.get("budget"): ack_data["remarks"] = f"Budget: {meta['budget']}"
+                    if meta.get("property_type"): ack_data["property_types"] = [meta["property_type"]]
+                    if meta.get("customer_request"): ack_data["customer_request"] = meta["customer_request"]
                 
                 res = generate_viewing_acknowledgement(ack_data)
                 docx_path = res["docx_path"]
@@ -261,8 +275,6 @@ async def chatwoot_webhook(request: Request):
                 form_no = res["form_no"]
                 
                 dispatch_path = pdf_path if pdf_path and os.path.exists(pdf_path) else docx_path
-                from app.services.viewing_service import compute_file_sha256
-                from app.db.models import AcknowledgementForm
                 doc_hash = compute_file_sha256(dispatch_path)
 
                 # Persist generated form record into database

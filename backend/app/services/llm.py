@@ -222,7 +222,8 @@ def extract_property_search_criteria(prompt: str, conversation_history: str = ""
     
     Output strictly as a JSON object with these fields:
     - "location": The specific city, state, or area explicitly mentioned by the user. If the user does NOT explicitly mention a location, you MUST output null.
-    - "property_type": The type of property explicitly mentioned (e.g., "land", "orchard", "house"). Output null if not specified.
+    - "property_type": The type of property explicitly mentioned (e.g., "semi d", "land", "orchard", "house", "shop"). Output null if not specified.
+    - "category": High-level category: "residential", "commercial", "industrial", "agricultural", or null. Note: "semi d", "terrace", "bungalow", "house", "home", "condo" MUST be classified as "residential".
     - "max_price": The maximum budget as an integer. Output null if not specified.
     """
     
@@ -240,9 +241,22 @@ def extract_property_search_criteria(prompt: str, conversation_history: str = ""
         raw_text = response.choices[0].message.content
         parsed = _parse_json_from_llm(raw_text)
         if parsed:
+            prop_t = parsed.get("property_type")
+            cat = parsed.get("category")
+            if not cat and prop_t:
+                pt_lower = str(prop_t).lower()
+                if any(k in pt_lower for k in ["semi d", "semi-d", "house", "terrace", "bungalow", "home", "condo", "apartment", "residential"]):
+                    cat = "residential"
+                elif any(k in pt_lower for k in ["shop", "commercial", "office", "retail"]):
+                    cat = "commercial"
+                elif any(k in pt_lower for k in ["factory", "warehouse", "industrial", "kilang"]):
+                    cat = "industrial"
+                elif any(k in pt_lower for k in ["land", "durian", "orchard", "agricultural"]):
+                    cat = "agricultural"
             return {
                 "location": parsed.get("location"),
-                "property_type": parsed.get("property_type"),
+                "property_type": prop_t,
+                "category": cat,
                 "max_price": parsed.get("max_price")
             }
         return {}
