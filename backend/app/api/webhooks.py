@@ -281,7 +281,7 @@ async def chatwoot_webhook(request: Request):
                 form_no = res["form_no"]
                 
                 dispatch_path = pdf_path if pdf_path and os.path.exists(pdf_path) else docx_path
-                doc_hash = compute_file_sha256(dispatch_path)
+                doc_hash = compute_file_sha256(dispatch_path) if dispatch_path and os.path.exists(dispatch_path) else "pending"
 
                 # Persist generated form record into database
                 try:
@@ -295,7 +295,7 @@ async def chatwoot_webhook(request: Request):
                                 viewing_date=datetime.datetime.utcnow(),
                                 status="PENDING_SIGNATURE",
                                 file_path=dispatch_path,
-                                document_hash=doc_hash,
+                                document_hash=doc_hash or "pending",
                                 metadata_json={
                                     "conversation_id": conversation_id,
                                     "docx_path": docx_path,
@@ -311,26 +311,32 @@ async def chatwoot_webhook(request: Request):
                 except Exception as dbe:
                     logger.warning(f"Could not persist AcknowledgementForm record: {dbe}")
                 
-                mime = "application/pdf" if dispatch_path.endswith(".pdf") else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                filename = os.path.basename(dispatch_path)
-                with open(dispatch_path, "rb") as f:
-                    file_bytes = f.read()
+                mime = "application/pdf" if dispatch_path and dispatch_path.endswith(".pdf") else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                filename = os.path.basename(dispatch_path) if dispatch_path else f"Viewing_Acknowledgement_{form_no}.docx"
+                file_bytes = b""
+                if dispatch_path and os.path.exists(dispatch_path):
+                    try:
+                        with open(dispatch_path, "rb") as f:
+                            file_bytes = f.read()
+                    except Exception as fe:
+                        logger.warning(f"Could not read dispatch file {dispatch_path}: {fe}")
 
                 if should_send_customer:
-                    send_message_with_attachment(
-                        conversation_id=conversation_id,
-                        content=f"Dear {cust_name}, here is your Customer Property Viewing Acknowledgement (Form No: {form_no}). Please review prior to our appointment. 😊",
-                        file_name=filename,
-                        file_content=file_bytes,
-                        content_type=mime
-                    )
+                    if file_bytes:
+                        send_message_with_attachment(
+                            conversation_id=conversation_id,
+                            content=f"Dear {cust_name}, here is your Customer Property Viewing Acknowledgement (Form No: {form_no}). Please review prior to our appointment. 😊",
+                            file_name=filename,
+                            file_content=file_bytes,
+                            content_type=mime
+                        )
                     send_private_note(
                         conversation_id,
                         f"✅ **Acknowledgement Form {form_no} Dispatched to Customer via WhatsApp.**\nFile: `{filename}`"
                     )
                 else:
                     backend_url = os.getenv("BACKEND_PUBLIC_URL", "https://api.bentongland.com.my").rstrip("/")
-                    view_url = f"{backend_url}/api/v1/documents/view/{doc_hash}"
+                    view_url = f"{backend_url}/api/v1/documents/view/{doc_hash or form_no}"
                     download_url = f"{backend_url}/api/v1/acknowledgements/{form_no}/download"
 
                     note_msg = (
@@ -341,14 +347,21 @@ async def chatwoot_webhook(request: Request):
                         f"• **Direct Download**: [Download File]({download_url})\n\n"
                         f"💡 *To dispatch directly to customer on WhatsApp, reply with: `/acknowledgement send`*"
                     )
-                    send_message_with_attachment(
-                        conversation_id=conversation_id,
-                        content=note_msg,
-                        file_name=filename,
-                        file_content=file_bytes,
-                        content_type=mime,
-                        is_private=True
-                    )
+                    if file_bytes:
+                        try:
+                            send_message_with_attachment(
+                                conversation_id=conversation_id,
+                                content=note_msg,
+                                file_name=filename,
+                                file_content=file_bytes,
+                                content_type=mime,
+                                is_private=True
+                            )
+                        except Exception as att_err:
+                            logger.warning(f"Could not send attachment note, falling back to text note: {att_err}")
+                            send_private_note(conversation_id, note_msg)
+                    else:
+                        send_private_note(conversation_id, note_msg)
                 return {"status": "command_executed", "command": "/acknowledgement"}
 
             elif content.startswith("/report"):

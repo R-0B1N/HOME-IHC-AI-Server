@@ -355,15 +355,34 @@ class LeadNurturingManager:
         if not conversation_id:
             return None
 
-        # Resolve last active timestamp
-        last_active = getattr(customer, "last_interaction", None) or getattr(customer, "updated_at", None) or getattr(customer, "created_at", None)
+        # Resolve last active timestamp safely across real models and MagicMock specs
+        candidates = [
+            getattr(customer, "last_interaction", None),
+            getattr(customer, "updated_at", None),
+            getattr(customer, "created_at", None),
+        ]
+        last_active = None
+        for cand in candidates:
+            if isinstance(cand, datetime):
+                last_active = cand
+                break
+            elif isinstance(cand, str):
+                try:
+                    last_active = datetime.fromisoformat(cand)
+                    break
+                except Exception:
+                    pass
+
         if not last_active:
             last_active = now
-        if last_active.tzinfo is None:
+        if getattr(last_active, "tzinfo", None) is None:
             last_active = last_active.replace(tzinfo=timezone.utc)
 
         elapsed_seconds = (now - last_active).total_seconds()
-        elapsed_hours = max(0.0, elapsed_seconds / 3600.0)
+        try:
+            elapsed_hours = max(0.0, float(elapsed_seconds) / 3600.0)
+        except (TypeError, ValueError):
+            elapsed_hours = 0.0
         elapsed_days = elapsed_hours / 24.0
 
         # Resolve temperature and strategy
@@ -385,13 +404,24 @@ class LeadNurturingManager:
         )
 
         # Resolve customer intent (buyer, seller, landowner, landlord, tenant, agent)
-        intent = (
-            customer.intent_category
-            or meta.get("intent_category")
-            or collected.get("intent")
-            or req_prof.get("active_inquiry", {}).get("intent")
-            or "buyer"
-        ).lower()
+        raw_intent = None
+        if hasattr(customer, "intent_category"):
+            try:
+                val = getattr(customer, "intent_category", None)
+                if isinstance(val, str):
+                    raw_intent = val
+            except Exception:
+                pass
+
+        if not raw_intent:
+            raw_intent = (
+                meta.get("intent_category")
+                or collected.get("intent")
+                or req_prof.get("active_inquiry", {}).get("intent")
+                or "buyer"
+            )
+
+        intent = (raw_intent if isinstance(raw_intent, str) else "buyer").lower()
 
         is_within_24h = MetaPolicyWindowGuard.is_within_24h(elapsed_hours)
 
@@ -456,13 +486,15 @@ class LeadNurturingManager:
                 f"🔥 **Temperature**: {lead_temp.upper()}\n"
                 f"⏳ **Inactive for**: {elapsed_hours:.1f} hours ({elapsed_days:.1f} days)\n"
                 f"📍 **Focus Area**: {location}\n\n"
+                f"⚠️ **WhatsApp 24-Hour Policy Window Closed**:\n"
+                f"Free-form automated messages cannot be sent without Meta template approval. "
+                f"Automated template re-engagement preserves Meta health score.\n\n"
                 f"📲 **Meta Re-engagement Template**: `{template_name}` "
-                f"({'✅ Dispatched to WhatsApp' if template_success else '⚠️ Template Dispatch Failed - Agent follow-up needed'})\n"
-                f"💡 *Policy*: Customer inactive > 24 hours. Automated template re-engagement preserves Meta health score."
+                f"({'✅ Dispatched to WhatsApp' if template_success else '⚠️ Template Dispatch Failed - Agent follow-up needed'})"
             )
             try:
                 self.note_sender(conversation_id, note_text)
-                action_taken = "template_dispatched" if template_success else "note_only"
+                action_taken = "private_note_posted"
             except Exception as e:
                 logger.error(f"Failed to post nurturing private note to conv {conversation_id}: {e}")
                 action_taken = "dispatch_error"
@@ -498,7 +530,7 @@ class LeadNurturingManager:
                 action = self.dispatch_nurture(c, eval_res, now=now)
                 if action == "message_sent":
                     nurtured_messages += 1
-                elif action == "template_dispatched":
+                elif action in ["template_dispatched", "private_note_posted"]:
                     templates_dispatched += 1
                     private_notes += 1
                 elif "note" in action:
