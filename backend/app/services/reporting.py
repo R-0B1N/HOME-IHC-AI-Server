@@ -161,13 +161,16 @@ def export_buyer_database_xlsx(output_path: Optional[str] = None, db_session=Non
             bypass = "Yes" if meta.get("bypass_ai") else "No"
             agent = meta.get("assigned_agent", "Irene Leong")
 
-            created_str = c.created_at.strftime("%Y-%m-%d %H:%M") if c.created_at else ""
-            updated_str = c.updated_at.strftime("%Y-%m-%d %H:%M") if c.updated_at else ""
+            created_at_dt = getattr(c, "created_at", None) or getattr(c, "last_interaction", None)
+            created_str = created_at_dt.strftime("%Y-%m-%d %H:%M") if created_at_dt else ""
+            last_int_dt = getattr(c, "last_interaction", None) or getattr(c, "updated_at", None)
+            updated_str = last_int_dt.strftime("%Y-%m-%d %H:%M") if last_int_dt else ""
+            phone = getattr(c, "phone_number", None) or getattr(c, "id", "")
 
             rows.append([
                 str(c.id),
                 c.contact_name or "Unknown",
-                c.phone_number or "",
+                phone,
                 c.email or "",
                 intent.title(),
                 str(temp).title(),
@@ -368,13 +371,16 @@ class BuyerReportGenerator(BaseExcelReportGenerator):
             bypass = "Yes" if meta.get("bypass_ai") else "No"
             agent = meta.get("assigned_agent", "Irene Leong")
 
-            created_str = c.created_at.strftime("%Y-%m-%d %H:%M") if c.created_at else ""
-            updated_str = c.updated_at.strftime("%Y-%m-%d %H:%M") if c.updated_at else ""
+            created_at_dt = getattr(c, "created_at", None) or getattr(c, "last_interaction", None)
+            created_str = created_at_dt.strftime("%Y-%m-%d %H:%M") if created_at_dt else ""
+            last_int_dt = getattr(c, "last_interaction", None) or getattr(c, "updated_at", None)
+            updated_str = last_int_dt.strftime("%Y-%m-%d %H:%M") if last_int_dt else ""
+            phone = getattr(c, "phone_number", None) or getattr(c, "id", "")
 
             rows.append([
                 str(c.id),
                 c.contact_name or "Unknown",
-                c.phone_number or "",
+                phone,
                 c.email or "",
                 intent.title(),
                 str(temp).title(),
@@ -445,10 +451,24 @@ class AdminWhatsAppDispatcher:
     """Dispatches generated database reports directly to administrator WhatsApp numbers."""
 
     def __init__(self, admin_phones: List[str] = None, inbox_id: int = None):
-        self.admin_phones = admin_phones or [
-            os.getenv("PRIMARY_ADMIN_PHONE", "+601165144931"),
-            os.getenv("SECONDARY_ADMIN_PHONE", "+14709202239")
-        ]
+        if admin_phones:
+            self.admin_phones = admin_phones
+        else:
+            # Check Redis configured admin numbers first
+            stored_phones = []
+            try:
+                from app.api.settings import redis_client
+                import json
+                raw = redis_client.get("weekly_reporting_config")
+                if raw:
+                    stored = json.loads(raw.decode("utf-8"))
+                    stored_phones = stored.get("admin_numbers", [])
+            except Exception:
+                pass
+            self.admin_phones = stored_phones or [
+                os.getenv("PRIMARY_ADMIN_PHONE", "+601165144931"),
+                os.getenv("SECONDARY_ADMIN_PHONE", "+14709202239")
+            ]
         is_staging = os.getenv("ENVIRONMENT", "").lower() == "staging"
         self.inbox_id = inbox_id or int(os.getenv("STAGING_INBOX_ID" if is_staging else "WHATSAPP_INBOX_ID", "3" if not is_staging else "4"))
 
@@ -498,8 +518,27 @@ class WeeklyDatabaseReportManager:
         if send_to_admins:
             dispatcher = AdminWhatsAppDispatcher()
             dispatch_results = dispatcher.dispatch_reports(reports)
+
+        # Count live records for instant feedback
+        buyer_count = 0
+        owner_count = 0
+        db = db_session or SessionLocal()
+        should_close = db_session is None
+        try:
+            buyer_count = db.query(Customer).count()
+            owner_count = db.query(Property).count()
+        except Exception as e:
+            logger.warning(f"Could not count customers/properties: {e}")
+        finally:
+            if should_close:
+                db.close()
+
         return {
             "reports": reports,
-            "dispatch_results": dispatch_results
+            "dispatch_results": dispatch_results,
+            "buyers_count": buyer_count,
+            "owners_count": owner_count,
+            "buyer_file": reports.get("buyer_report"),
+            "owner_file": reports.get("owner_report")
         }
 

@@ -312,7 +312,7 @@ def send_whatsapp_contact(inbox_id: int, to_phone: str, contact_name: str, conta
             logger.error(f"Response: {e.response.text}")
         return None
 
-def send_whatsapp_template(inbox_id: int, to_phone: str, template_name: str, parameters: list, language_code: str = "en", override_phone_number_id: str = None):
+def send_whatsapp_template(inbox_id: int, to_phone: str, template_name: str, parameters: list, language_code: str = "en_US", override_phone_number_id: str = None):
     """
     Sends a WhatsApp Template Message via the Graph API.
     parameters should be a list of strings mapping to {{1}}, {{2}}, etc.
@@ -322,9 +322,9 @@ def send_whatsapp_template(inbox_id: int, to_phone: str, template_name: str, par
     than the inbox's phone number.
     """
     inbox = get_inbox_details(inbox_id)
-    provider_config = inbox.get("provider_config", {})
-    api_key = provider_config.get("api_key")
-    phone_number_id = override_phone_number_id or provider_config.get("phone_number_id")
+    provider_config = inbox.get("provider_config", {}) if inbox else {}
+    api_key = provider_config.get("api_key") or os.getenv("WHATSAPP_API_TOKEN") or os.getenv("WHATSAPP_APP_SECRET")
+    phone_number_id = override_phone_number_id or provider_config.get("phone_number_id") or os.getenv("WHATSAPP_TEMPLATE_PHONE_NUMBER_ID", "1039310802596891")
     
     if not api_key or not phone_number_id:
         logger.error(f"Missing API key or phone number ID in inbox {inbox_id} for sending template")
@@ -336,7 +336,7 @@ def send_whatsapp_template(inbox_id: int, to_phone: str, template_name: str, par
         "Content-Type": "application/json"
     }
     
-    clean_to_phone = to_phone.replace("+", "")
+    clean_to_phone = to_phone.replace("+", "").replace(" ", "").replace("-", "")
     
     # Construct template components
     body_parameters = []
@@ -365,14 +365,31 @@ def send_whatsapp_template(inbox_id: int, to_phone: str, template_name: str, par
     }
     
     try:
-        response = requests.post(url, headers=headers, json=payload)
+        response = requests.post(url, headers=headers, json=payload, timeout=15)
         response.raise_for_status()
-        logger.info(f"Successfully sent WhatsApp template '{template_name}' to {clean_to_phone}")
+        logger.info(f"Successfully sent WhatsApp template '{template_name}' ({language_code}) to {clean_to_phone}")
         return response.json()
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to send template message: {e}")
+        resp_text = ""
         if hasattr(e, 'response') and e.response is not None:
-            logger.error(f"Response: {e.response.text}")
+            resp_text = e.response.text
+            logger.error(f"Response: {resp_text}")
+            
+        # Automatic fallback for common English translation mismatch (error 132001)
+        if "132001" in resp_text:
+            alt_lang = "en" if language_code == "en_US" else "en_US"
+            logger.info(f"Retrying template '{template_name}' with alternative language code '{alt_lang}'...")
+            payload["template"]["language"]["code"] = alt_lang
+            try:
+                retry_resp = requests.post(url, headers=headers, json=payload, timeout=15)
+                retry_resp.raise_for_status()
+                logger.info(f"Successfully sent WhatsApp template '{template_name}' with fallback language '{alt_lang}' to {clean_to_phone}")
+                return retry_resp.json()
+            except Exception as retry_err:
+                logger.error(f"Fallback retry with '{alt_lang}' also failed: {retry_err}")
+                if hasattr(retry_err, 'response') and retry_err.response is not None:
+                    logger.error(f"Fallback response: {retry_err.response.text}")
         return None
 
 def get_conversation_details(conversation_id: int) -> dict:

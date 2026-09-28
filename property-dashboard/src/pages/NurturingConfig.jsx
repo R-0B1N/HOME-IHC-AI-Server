@@ -45,6 +45,7 @@ export default function NurturingConfig() {
         enabled: config.enabled,
         staging_acceleration: config.staging_acceleration,
         meta_template_name: config.meta_template_name,
+        meta_template_language: config.meta_template_language || 'en_US',
         hot_cadence_hours: parseFloat(config.hot_cadence_hours) || 24.0,
         warm_cadence_days: parseFloat(config.warm_cadence_days) || 5.0,
         cold_cadence_days: parseFloat(config.cold_cadence_days) || 14.0,
@@ -233,20 +234,59 @@ export default function NurturingConfig() {
               </div>
             </div>
 
-            {/* Meta Template Name */}
+            {/* Meta Template Name & Language */}
             <div style={{ marginBottom: '1.25rem' }}>
-              <label style={{ display: 'block', color: '#cbd5e1', fontSize: '0.82rem', fontWeight: 600, marginBottom: '6px' }}>
-                Meta WhatsApp Re-engagement Template Name
-              </label>
-              <input
-                type="text"
-                value={config?.meta_template_name || 'lead_reengagement_utility'}
-                onChange={(e) => setConfig({ ...config, meta_template_name: e.target.value })}
-                style={{ width: '100%', background: '#1e293b', border: '1px solid #334155', borderRadius: '6px', padding: '7px 10px', color: '#f8fafc', fontSize: '0.85rem' }}
-              />
+              <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '10px' }}>
+                <div>
+                  <label style={{ display: 'block', color: '#cbd5e1', fontSize: '0.82rem', fontWeight: 600, marginBottom: '6px' }}>
+                    Meta Template Name
+                  </label>
+                  <input
+                    type="text"
+                    value={config?.meta_template_name || 'lead_reengagement_utility'}
+                    onChange={(e) => setConfig({ ...config, meta_template_name: e.target.value })}
+                    style={{ width: '100%', background: '#1e293b', border: '1px solid #334155', borderRadius: '6px', padding: '7px 10px', color: '#f8fafc', fontSize: '0.85rem' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', color: '#cbd5e1', fontSize: '0.82rem', fontWeight: 600, marginBottom: '6px' }}>
+                    Language Code
+                  </label>
+                  <select
+                    value={config?.meta_template_language || 'en_US'}
+                    onChange={(e) => setConfig({ ...config, meta_template_language: e.target.value })}
+                    style={{ width: '100%', background: '#1e293b', border: '1px solid #334155', borderRadius: '6px', padding: '7px 10px', color: '#f8fafc', fontSize: '0.85rem' }}
+                  >
+                    <option value="en_US">en_US (US English - Recommended)</option>
+                    <option value="en">en (Generic English)</option>
+                    <option value="en_GB">en_GB (UK English)</option>
+                    <option value="ms">ms (Malay)</option>
+                    <option value="zh_CN">zh_CN (Chinese Simplified)</option>
+                  </select>
+                </div>
+              </div>
               <p style={{ color: '#64748b', fontSize: '0.75rem', marginTop: '4px' }}>
-                Required for contacts inactive &gt; 24 hours. Must be approved in Meta Business Manager.
+                Required for contacts inactive &gt; 24 hours. Must be approved in Meta Business Suite.
               </p>
+
+              {/* Meta Utility vs Marketing Explanation Box */}
+              <div style={{
+                marginTop: '10px',
+                background: 'rgba(56, 189, 248, 0.08)',
+                border: '1px solid rgba(56, 189, 248, 0.25)',
+                borderRadius: '6px',
+                padding: '10px 12px',
+                fontSize: '0.78rem',
+                color: '#cbd5e1',
+                lineHeight: '1.45'
+              }}>
+                <strong style={{ color: '#38bdf8', display: 'block', marginBottom: '3px' }}>
+                  ℹ️ Meta Category Guideline (Utility vs Marketing):
+                </strong>
+                Meta classifies proactive follow-ups and property inquiries as <strong>MARKETING</strong> under 2024–2026 guidelines.
+                Even if Meta updated your template to Marketing, <strong>it is fully functional and supported</strong> for automated 24h+ re-engagement.
+                Ensure the language code above matches what was selected in Meta Business Suite (usually <code>en_US</code>).
+              </div>
             </div>
 
             <button 

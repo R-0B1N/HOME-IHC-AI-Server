@@ -57,6 +57,8 @@ export default function ReportingConfig() {
     }
   };
 
+  const [downloading, setDownloading] = useState({ buyer: false, owner: false });
+
   const handleTriggerReport = async (sendWhatsApp) => {
     setTriggering(true);
     setStatusMsg('');
@@ -64,8 +66,8 @@ export default function ReportingConfig() {
       const res = await axios.post(`${API_BASE_URL}/settings/reporting-trigger?send_whatsapp=${sendWhatsApp}`);
       const r = res.data.result;
       setStatusMsg(
-        `Reports generated! Buyers: ${r.buyers_count}, Owners: ${r.owners_count}. ${
-          sendWhatsApp ? 'Dispatched to Admin WhatsApp numbers.' : 'Available for download.'
+        `Reports generated successfully! Buyers: ${r.buyers_count || 0}, Properties: ${r.owners_count || 0}. ${
+          sendWhatsApp ? 'Dispatched to Admin WhatsApp numbers.' : 'Available for immediate download.'
         }`
       );
       fetchConfig();
@@ -77,29 +79,79 @@ export default function ReportingConfig() {
     }
   };
 
-  const handleAddNumber = () => {
+  const handleAddNumber = async () => {
     const clean = newAdminPhone.trim();
     if (!clean) return;
-    if (config.admin_numbers.includes(clean)) {
+    if (config?.admin_numbers?.includes(clean)) {
       alert('Number already added.');
       return;
     }
-    setConfig({
+    const updatedNumbers = [...(config?.admin_numbers || []), clean];
+    const updatedConfig = {
       ...config,
-      admin_numbers: [...config.admin_numbers, clean]
-    });
+      admin_numbers: updatedNumbers
+    };
+    setConfig(updatedConfig);
     setNewAdminPhone('');
+    try {
+      await axios.post(`${API_BASE_URL}/settings/reporting-config`, {
+        enabled: updatedConfig.enabled,
+        cron_schedule: updatedConfig.cron_schedule,
+        admin_numbers: updatedNumbers,
+        auto_dispatch_whatsapp: updatedConfig.auto_dispatch_whatsapp
+      });
+      setStatusMsg(`Added ${clean} and saved configuration.`);
+      setTimeout(() => setStatusMsg(''), 3000);
+    } catch (err) {
+      console.error('Failed to auto-save after adding number:', err);
+    }
   };
 
-  const handleRemoveNumber = (phoneToRemove) => {
-    setConfig({
+  const handleRemoveNumber = async (phoneToRemove) => {
+    const updatedNumbers = (config?.admin_numbers || []).filter(p => p !== phoneToRemove);
+    const updatedConfig = {
       ...config,
-      admin_numbers: config.admin_numbers.filter(p => p !== phoneToRemove)
-    });
+      admin_numbers: updatedNumbers
+    };
+    setConfig(updatedConfig);
+    try {
+      await axios.post(`${API_BASE_URL}/settings/reporting-config`, {
+        enabled: updatedConfig.enabled,
+        cron_schedule: updatedConfig.cron_schedule,
+        admin_numbers: updatedNumbers,
+        auto_dispatch_whatsapp: updatedConfig.auto_dispatch_whatsapp
+      });
+      setStatusMsg(`Removed ${phoneToRemove} and saved configuration.`);
+      setTimeout(() => setStatusMsg(''), 3000);
+    } catch (err) {
+      console.error('Failed to auto-save after removing number:', err);
+    }
   };
 
-  const handleDownload = (type) => {
-    window.open(`${API_BASE_URL}/settings/reporting-download/${type}`, '_blank');
+  const handleDownload = async (type) => {
+    setDownloading(prev => ({ ...prev, [type]: true }));
+    try {
+      const res = await axios.get(`${API_BASE_URL}/settings/reporting-download/${type}`, {
+        responseType: 'blob'
+      });
+      const blob = new Blob([res.data], { 
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' 
+      });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `${type === 'buyer' ? 'Buyer_Database' : 'Owner_Database'}.xlsx`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      fetchConfig();
+    } catch (err) {
+      console.error('Download failed:', err);
+      alert('Failed to download report.');
+    } finally {
+      setDownloading(prev => ({ ...prev, [type]: false }));
+    }
   };
 
   if (loading && !config) {
@@ -323,11 +375,11 @@ export default function ReportingConfig() {
               </div>
               <button
                 onClick={() => handleDownload('buyer')}
-                disabled={!config?.latest_buyer_report}
+                disabled={downloading.buyer}
                 className="lux-btn-secondary"
                 style={{ fontSize: '0.8rem', padding: '6px 12px', display: 'flex', alignItems: 'center', gap: '6px' }}
               >
-                <Download size={14} /> Download
+                <Download size={14} /> {downloading.buyer ? 'Downloading...' : 'Download'}
               </button>
             </div>
 
@@ -347,16 +399,16 @@ export default function ReportingConfig() {
                   📑 Owner & Seller Database.xlsx
                 </strong>
                 <span style={{ color: '#64748b', fontSize: '0.78rem' }}>
-                  {config?.latest_owner_report || 'No file generated yet.'}
+                  {config?.latest_owner_report || 'Available for on-demand generation.'}
                 </span>
               </div>
               <button
                 onClick={() => handleDownload('owner')}
-                disabled={!config?.latest_owner_report}
+                disabled={downloading.owner}
                 className="lux-btn-secondary"
                 style={{ fontSize: '0.8rem', padding: '6px 12px', display: 'flex', alignItems: 'center', gap: '6px' }}
               >
-                <Download size={14} /> Download
+                <Download size={14} /> {downloading.owner ? 'Downloading...' : 'Download'}
               </button>
             </div>
 

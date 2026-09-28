@@ -161,17 +161,31 @@ def trigger_reporting_generation(send_whatsapp: bool = True, admin=Depends(requi
 def download_weekly_report(report_type: str, admin=Depends(require_admin)):
     """Admin-only endpoint to download latest generated Excel report ('buyer' or 'owner')."""
     from fastapi.responses import FileResponse
-    reports_dir = "/app/data/output/reports"
-    if not os.path.exists(reports_dir):
-        raise HTTPException(status_code=404, detail="Reports directory does not exist yet.")
+    from app.services.reporting import DEFAULT_REPORTS_DIR, WeeklyDatabaseReportManager
+    
+    reports_dir = DEFAULT_REPORTS_DIR
+    os.makedirs(reports_dir, exist_ok=True)
 
     keyword = "Buyer_Database" if report_type.lower() == "buyer" else "Owner_Database"
     matching = [
         f for f in sorted(os.listdir(reports_dir), reverse=True)
         if keyword in f and f.endswith(".xlsx")
     ]
+    # If no report has been generated yet, automatically generate it on-the-fly!
     if not matching:
-        raise HTTPException(status_code=404, detail=f"No {report_type} report found. Trigger generation first.")
+        logger.info(f"Report for {report_type} not found in {reports_dir}. Triggering on-demand generation...")
+        try:
+            mgr = WeeklyDatabaseReportManager(output_dir=reports_dir)
+            mgr.generate_all()
+            matching = [
+                f for f in sorted(os.listdir(reports_dir), reverse=True)
+                if keyword in f and f.endswith(".xlsx")
+            ]
+        except Exception as gen_err:
+            logger.error(f"Failed to generate report on the fly: {gen_err}")
+
+    if not matching:
+        raise HTTPException(status_code=404, detail=f"No {report_type} report could be generated.")
 
     target_file = os.path.join(reports_dir, matching[0])
     return FileResponse(
@@ -189,6 +203,7 @@ class NurturingConfigPayload(BaseModel):
     enabled: bool = True
     staging_acceleration: bool = False
     meta_template_name: str = "lead_reengagement_utility"
+    meta_template_language: str = "en_US"
     hot_cadence_hours: float = 24.0
     warm_cadence_days: float = 5.0
     cold_cadence_days: float = 14.0
@@ -204,6 +219,7 @@ def get_nurturing_config(admin=Depends(require_admin)):
         "enabled": True,
         "staging_acceleration": is_staging,
         "meta_template_name": os.getenv("WHATSAPP_REENGAGEMENT_TEMPLATE", "lead_reengagement_utility"),
+        "meta_template_language": os.getenv("WHATSAPP_TEMPLATE_LANGUAGE", "en_US"),
         "hot_cadence_hours": 24.0,
         "warm_cadence_days": 5.0,
         "cold_cadence_days": 14.0,
@@ -221,12 +237,13 @@ def get_nurturing_config(admin=Depends(require_admin)):
 
 @router.post("/nurturing-config")
 def update_nurturing_config(payload: NurturingConfigPayload, admin=Depends(require_admin)):
-    """Admin-only endpoint to update Lead Nurturing engine cadences."""
+    """Admin-only endpoint to update Lead Nurturing engine cadences and template settings."""
     import json
     data = {
         "enabled": payload.enabled,
         "staging_acceleration": payload.staging_acceleration,
         "meta_template_name": payload.meta_template_name,
+        "meta_template_language": payload.meta_template_language,
         "hot_cadence_hours": payload.hot_cadence_hours,
         "warm_cadence_days": payload.warm_cadence_days,
         "cold_cadence_days": payload.cold_cadence_days,

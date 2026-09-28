@@ -235,9 +235,28 @@ class ReengagementTemplateDispatcher:
         },
     }
 
-    def __init__(self, inbox_id: int = 3, phone_number_id: str = None):
-        self.inbox_id = inbox_id
+    def __init__(self, inbox_id: int = None, phone_number_id: str = None, language_code: str = None):
+        is_staging = (
+            os.getenv("ENVIRONMENT", "").lower() == "staging"
+            or os.getenv("APP_ENV") == "staging"
+            or "staging" in os.getenv("REDIS_HOST", "")
+        )
+        self.inbox_id = inbox_id or int(os.getenv("STAGING_INBOX_ID" if is_staging else "WHATSAPP_INBOX_ID", "4" if is_staging else "3"))
         self.phone_number_id = phone_number_id or os.getenv("WHATSAPP_TEMPLATE_PHONE_NUMBER_ID", "1039310802596891")
+        
+        # Check Redis configuration for template language
+        stored_language = None
+        try:
+            from app.api.settings import redis_client
+            import json
+            raw = redis_client.get("lead_nurturing_config")
+            if raw:
+                stored = json.loads(raw.decode("utf-8"))
+                stored_language = stored.get("meta_template_language")
+        except Exception:
+            pass
+
+        self.language_code = language_code or stored_language or os.getenv("WHATSAPP_TEMPLATE_LANGUAGE", "en_US")
 
     def resolve_context_phrase(self, intent: str, location: str) -> str:
         """Constructs natural context phrase for variable {{2}} based on customer intent."""
@@ -255,7 +274,7 @@ class ReengagementTemplateDispatcher:
         intent: str = "buyer"
     ) -> dict:
         """
-        Sends the 2-parameter Meta utility re-engagement template:
+        Sends the 2-parameter Meta utility/marketing re-engagement template:
         {{1}}: Customer Name
         {{2}}: Intent & Location Context (e.g. 'property search in Bentong', 'land listing & valuation in Raub')
         """
@@ -267,10 +286,16 @@ class ReengagementTemplateDispatcher:
                 to_phone=to_phone,
                 template_name=template_name,
                 parameters=params,
-                language_code="en",
+                language_code=self.language_code,
                 override_phone_number_id=self.phone_number_id
             )
-            logger.info(f"Dispatched Meta re-engagement template '{template_name}' (intent={intent}) to {to_phone}")
+            if not res:
+                return {
+                    "status": "error",
+                    "error": f"Meta Cloud API rejected template '{template_name}' ({self.language_code}). Verify template approval and language code in Meta Business Suite.",
+                    "parameters": params
+                }
+            logger.info(f"Dispatched Meta re-engagement template '{template_name}' ({self.language_code}, intent={intent}) to {to_phone}")
             return {"status": "success", "result": res, "parameters": params}
         except Exception as e:
             logger.error(f"Failed to dispatch Meta re-engagement template to {to_phone}: {e}")
@@ -477,7 +502,15 @@ class LeadNurturingManager:
                 template_name=template_name,
                 intent=intent
             )
-            template_success = t_res.get("status") == "success"
+            template_success = t_res.get("status") == "success" and bool(t_res.get("result"))
+
+            dispatch_status = "✅ Dispatched to WhatsApp" if template_success else f"❌ Template Dispatch Failed ({t_res.get('error', 'Translation/Language mismatch')})"
+            diagnostic_tip = "" if template_success else (
+                f"\n\n💡 **Troubleshooting Tip**:\n"
+                f"- In Meta Business Suite, check if the template `{template_name}` is approved.\n"
+                f"- If Meta updated it to **MARKETING**, it is still valid and operational.\n"
+                f"- Ensure the template language code matches. Current configured code: `{getattr(self.template_dispatcher, 'language_code', 'en_US')}`."
+            )
 
             note_text = (
                 f"⏰ **Automated Lead Nurturing Executed ({cadence_label})**\n\n"
@@ -489,8 +522,8 @@ class LeadNurturingManager:
                 f"⚠️ **WhatsApp 24-Hour Policy Window Closed**:\n"
                 f"Free-form automated messages cannot be sent without Meta template approval. "
                 f"Automated template re-engagement preserves Meta health score.\n\n"
-                f"📲 **Meta Re-engagement Template**: `{template_name}` "
-                f"({'✅ Dispatched to WhatsApp' if template_success else '⚠️ Template Dispatch Failed - Agent follow-up needed'})"
+                f"📲 **Meta Re-engagement Template**: `{template_name}` ({dispatch_status})"
+                f"{diagnostic_tip}"
             )
             try:
                 self.note_sender(conversation_id, note_text)

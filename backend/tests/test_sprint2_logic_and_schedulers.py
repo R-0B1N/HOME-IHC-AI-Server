@@ -284,6 +284,74 @@ class TestReportingEngine(unittest.TestCase):
         self.assertTrue(os.path.exists(reports["canonical_buyer"]))
         self.assertTrue(os.path.exists(reports["canonical_owner"]))
 
+    def test_buyer_database_with_actual_customer_model_schema(self):
+        """Verifies reporting works without AttributeError when Customer has no created_at/phone_number."""
+        from app.db.models import Customer
+        c_real = Customer(
+            id="60128767882",
+            contact_name="Shukri Ahmad",
+            email="shukri@example.com",
+            last_interaction=datetime.now(timezone.utc),
+            metadata_json={
+                "intent": "buyer",
+                "lead_temp": "hot",
+                "buyer_location": "Raub",
+                "buyer_property_type": "Agricultural Land",
+                "buyer_budget": "RM 800,000",
+                "bypass_ai": False
+            }
+        )
+        mock_session = MagicMock()
+        q = MagicMock()
+        q.all.return_value = [c_real]
+        mock_session.query.return_value = q
+
+        out_dir = "data/output/test_reports_suite"
+        os.makedirs(out_dir, exist_ok=True)
+        buyer_file = export_buyer_database_xlsx(db_session=mock_session)
+        self.assertTrue(os.path.exists(buyer_file))
+
+    @patch("app.services.chatwoot.requests.post")
+    @patch("app.services.chatwoot.get_inbox_details")
+    def test_send_whatsapp_template_translation_fallback(self, mock_get_inbox, mock_post):
+        """Verifies automatic fallback to en_US when Meta returns error 132001 (language mismatch)."""
+        from app.services.chatwoot import send_whatsapp_template
+        import requests
+
+        mock_get_inbox.return_value = {
+            "provider_config": {
+                "api_key": "fake_token",
+                "phone_number_id": "1039310802596891"
+            }
+        }
+
+        # First response: 404 with error code 132001
+        err_resp = MagicMock()
+        err_resp.status_code = 404
+        err_resp.text = '{"error":{"message":"Template name does not exist in the translation","code":132001}}'
+        first_err = requests.exceptions.HTTPError(response=err_resp)
+
+        # Second response: 200 OK with success
+        ok_resp = MagicMock()
+        ok_resp.status_code = 200
+        ok_resp.json.return_value = {"messages": [{"id": "wamid.123"}]}
+
+        mock_post.side_effect = [first_err, ok_resp]
+
+        res = send_whatsapp_template(
+            inbox_id=4,
+            to_phone="+60128767882",
+            template_name="lead_reengagement_utility",
+            parameters=["Shukri", "property search in Raub"],
+            language_code="en"
+        )
+        self.assertIsNotNone(res)
+        self.assertEqual(res["messages"][0]["id"], "wamid.123")
+        self.assertEqual(mock_post.call_count, 2)
+        # Verify fallback payload used en_US
+        second_call_payload = mock_post.call_args_list[1][1]["json"]
+        self.assertEqual(second_call_payload["template"]["language"]["code"], "en_US")
+
 
 class TestLeadNurturingDaemon(unittest.TestCase):
     """Tests the lead nurturing daemon and WhatsApp 24-hour customer care policy guard."""
