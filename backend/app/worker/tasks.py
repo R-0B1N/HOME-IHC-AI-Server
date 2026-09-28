@@ -273,7 +273,7 @@ def dispatch_hot_lead_handover(
             send_whatsapp_template(
                 inbox_id=inbox_id,
                 to_phone=target_phone,
-                template_name="new_lead_alert_utility",
+                template_name=os.getenv("WHATSAPP_HANDOVER_TEMPLATE", "hot_lead_alert_utility"),
                 parameters=template_params,
                 language_code="en",
                 override_phone_number_id=TEMPLATE_PHONE_NUMBER_ID
@@ -460,8 +460,12 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
         final_prompt_text = "\n".join(combined_text).strip()
             
         if not final_prompt_text:
-            logger.info("No text or audio to process. Skipping.")
-            return {"status": "skipped", "reason": "empty aggregated input"}
+            if combined_images:
+                final_prompt_text = "[Customer shared land grant / document photo(s). Please analyze the document and extract property particulars.]"
+                logger.info(f"Synthesized prompt for {len(combined_images)} image attachment(s).")
+            else:
+                logger.info("No text, audio, or images to process. Skipping.")
+                return {"status": "skipped", "reason": "empty aggregated input"}
             
         # 2. LLM Intent Classification & Response Generation
         logger.info(f"Generating LLM response for aggregated text:\n{final_prompt_text}")
@@ -624,18 +628,34 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                     logger.error(f"Failed to fetch history: {e}")
                     conversation_history = ""
                     
-                # Perform RAG search for properties
-                logger.info(f"Extracting search criteria from prompt: {final_prompt_text}")
-                criteria = extract_property_search_criteria(final_prompt_text, conversation_history)
-                logger.info(f"Extracted criteria: {criteria}")
-                
-                if criteria and any(criteria.values()):
-                    matched_properties = search_properties(criteria, limit=15)
-                    logger.info(f"Found {len(matched_properties)} matching properties.")
-                    db_context["data"]["properties"] = matched_properties
+                # Perform RAG search for properties (Intent-gated)
+                is_seller_intent = (
+                    role in ["seller", "landlord"]
+                    or any(k in (final_prompt_text + " " + conversation_history).lower() for k in [
+                        "jual", "nak jual", "owner", "geran", "borang 11bk", "pelan tanah", "hakmilik", 
+                        "let go", "sell my land", "sell land", "tuan tanah", "valuation", "nilai tanah"
+                    ])
+                )
+                if is_seller_intent:
+                    logger.info("Seller/landowner intent detected: suppressing buyer property recommendations.")
+                    db_context["data"]["properties"] = []
+                    db_context["data"]["seller_market_context"] = {
+                        "district": "Bentong",
+                        "agriculture_rate_benchmark": "RM 150,000 - RM 280,000 per acre for agricultural land depending on road access, terrain, and water source.",
+                        "service_note": "Home IHC provides direct off-market listing and marketing services directly to serious qualified buyers."
+                    }
                 else:
-                    # Fallback to general available properties if no criteria
-                    db_context["data"]["properties"] = [{"id": str(p.id), "name": p.title, "price": p.asking_price_myr, "status": p.listing_status} for p in db.query(Property).filter(Property.listing_status == "Available").limit(10).all()]
+                    logger.info(f"Extracting search criteria from prompt: {final_prompt_text}")
+                    criteria = extract_property_search_criteria(final_prompt_text, conversation_history)
+                    logger.info(f"Extracted criteria: {criteria}")
+                    
+                    if criteria and any(criteria.values()):
+                        matched_properties = search_properties(criteria, limit=15)
+                        logger.info(f"Found {len(matched_properties)} matching properties.")
+                        db_context["data"]["properties"] = matched_properties
+                    else:
+                        # Fallback to general available properties if no criteria
+                        db_context["data"]["properties"] = [{"id": str(p.id), "name": p.title, "price": p.asking_price_myr, "status": p.listing_status} for p in db.query(Property).filter(Property.listing_status == "Available").limit(10).all()]
         finally:
             db.close()
         
@@ -655,7 +675,8 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                 conversation_history=conversation_history,
                 contact_name=contact_name,
                 role=role,
-                db_context=db_context
+                db_context=db_context,
+                images=combined_images
             )
             session = agent_result.get("updated_session", session)
             
@@ -887,18 +908,21 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
         except Exception as e:
             logger.warning(f"Failed to turn typing status off: {e}")
             
-        # Update customer with bypass_ai ONLY after response is sent
-        if customer and handover_initiated:
+        # Update customer with lead_temp, last_interaction, and bypass_ai if handover
+        if customer:
             db = SessionLocal()
             try:
                 db_cust = db.query(Customer).filter(Customer.id == customer.id).first()
                 if db_cust:
                     meta = db_cust.metadata_json.copy() if db_cust.metadata_json else {}
-                    meta["bypass_ai"] = True
+                    meta["lead_temp"] = lead_temp
+                    if handover_initiated:
+                        meta["bypass_ai"] = True
                     db_cust.metadata_json = meta
+                    db_cust.last_interaction = datetime.utcnow()
                     db.commit()
             except Exception as e:
-                logger.error(f"Failed to update customer bypass_ai flag: {e}")
+                logger.error(f"Failed to update customer metadata/lead_temp: {e}")
                 db.rollback()
             finally:
                 db.close()
@@ -1249,21 +1273,24 @@ def run_lead_nurturing_daemon(self):
 
 
 @celery_app.task(bind=True, max_retries=2)
-def generate_and_send_weekly_reports(self, output_dir: str = None):
+def generate_and_send_weekly_reports(self, output_dir: str = None, send_to_admins: bool = True):
     """
-    Weekly Celery Beat task to compile and archive Buyer Database.xlsx and Owner Database.xlsx.
+    Weekly Celery Beat task to compile and archive Buyer Database.xlsx and Owner Database.xlsx,
+    and dispatch directly to Administrator WhatsApp lines.
     """
     logger.info("Executing weekly database reporting task...")
     try:
-        from app.services.reporting import generate_weekly_database_reports, DEFAULT_REPORTS_DIR
+        from app.services.reporting import WeeklyDatabaseReportManager, DEFAULT_REPORTS_DIR
         target_dir = output_dir or DEFAULT_REPORTS_DIR
-        reports = generate_weekly_database_reports(output_dir=target_dir)
-        logger.info(f"Successfully generated weekly reports: {reports}")
+        manager = WeeklyDatabaseReportManager(output_dir=target_dir)
+        outcome = manager.generate_and_dispatch(send_to_admins=send_to_admins)
+        logger.info(f"Successfully generated and dispatched weekly reports: {outcome}")
         return {
             "status": "success",
-            "reports": reports
+            "reports": outcome.get("reports"),
+            "dispatch_results": outcome.get("dispatch_results")
         }
     except Exception as exc:
-        logger.error(f"Failed to generate weekly reports: {exc}")
+        logger.error(f"Failed to generate/dispatch weekly reports: {exc}")
         raise self.retry(exc=exc, countdown=120)
 

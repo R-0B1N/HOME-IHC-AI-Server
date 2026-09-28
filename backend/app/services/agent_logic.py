@@ -481,7 +481,7 @@ def parse_viewing_schedule_datetime(text: str) -> datetime.datetime:
     return target_dt.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
 
-def process_persona_state_machine(phone_number: str, text: str = "", session: dict = None, conversation_history: str = "", contact_name: str = None, raw_text: str = None, **kwargs) -> dict:
+def process_persona_state_machine(phone_number: str, text: str = "", session: dict = None, conversation_history: str = "", contact_name: str = None, raw_text: str = None, images: list = None, **kwargs) -> dict:
     """
     Enterprise-standard Conversational AI Engine for Home IHC.
     Engages naturally, provides on-demand property specs, dispatches native WhatsApp photos,
@@ -609,6 +609,8 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
     # 4. LLM Intent & Conversational Generation
     llm_kwargs = dict(kwargs)
     llm_kwargs["customer_language"] = customer_lang
+    if images:
+        llm_kwargs["images"] = images
     llm_analysis = generate_conversational_response(
         text=raw_text,
         cached_property=cached_prop,
@@ -851,15 +853,31 @@ def generate_conversational_response(
         total_chars = len(system_prompt) + len(history_to_use) + len(text or "")
         est_input_tokens = int(total_chars / 3.0)
 
+    images = kwargs.get("images") or []
     # Bounded output token budget (Ample completion room for complete response)
-    safe_max_tokens = max(250, min(450, 2035 - est_input_tokens))
+    safe_max_tokens = max(350, min(550, 2035 - est_input_tokens)) if images else max(250, min(450, 2035 - est_input_tokens))
 
     messages = [
         {"role": "system", "content": system_prompt}
     ]
     if history_to_use:
         messages.append({"role": "system", "content": f"Recent Conversation History:\n{history_to_use}"})
-    messages.append({"role": "user", "content": text})
+    
+    if images:
+        user_content = []
+        user_prompt_text = (text or "").strip() or "Please analyze the attached property document / land title / image and advise."
+        user_content.append({"type": "text", "text": user_prompt_text})
+        for img in images:
+            if isinstance(img, str):
+                if img.startswith("http://") or img.startswith("https://") or img.startswith("data:"):
+                    user_content.append({"type": "image_url", "image_url": {"url": img}})
+                else:
+                    user_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img}"}})
+            elif isinstance(img, dict) and img.get("url"):
+                user_content.append({"type": "image_url", "image_url": {"url": img["url"]}})
+        messages.append({"role": "user", "content": user_content})
+    else:
+        messages.append({"role": "user", "content": text or ""})
 
     try:
         response = llm_client.chat.completions.create(

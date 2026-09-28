@@ -55,9 +55,10 @@ def send_private_note(conversation_id: int, content: str):
         logger.error(f"Failed to post private note to Chatwoot: {e}")
         return None
 
-def send_message_with_attachment(conversation_id: int, content: str, file_name: str, file_content: bytes, content_type: str):
+def send_message_with_attachment(conversation_id: int, content: str, file_name: str, file_content: bytes, content_type: str, is_private: bool = False):
     """
     Sends a message back to the Chatwoot conversation with an attachment.
+    Can be sent as a public message (to WhatsApp customer) or as an internal private note.
     """
     url = f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages"
     headers = {
@@ -66,7 +67,7 @@ def send_message_with_attachment(conversation_id: int, content: str, file_name: 
     data = {
         "content": content,
         "message_type": "outgoing",
-        "private": "false"
+        "private": "true" if is_private else "false"
     }
     files = {
         "attachments[]": (file_name, file_content, content_type)
@@ -75,7 +76,7 @@ def send_message_with_attachment(conversation_id: int, content: str, file_name: 
     try:
         response = requests.post(url, headers=headers, data=data, files=files)
         response.raise_for_status()
-        logger.info(f"Successfully sent message with attachment to Chatwoot conversation {conversation_id}")
+        logger.info(f"Successfully sent message with attachment to Chatwoot conversation {conversation_id} (private={is_private})")
         return response.json()
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to send message with attachment to Chatwoot: {e}")
@@ -130,6 +131,68 @@ def send_whatsapp_image(inbox_id: int, to_phone: str, image_url: str, caption: s
         if hasattr(e, 'response') and e.response is not None:
             logger.error(f"Response: {e.response.text}")
         return None
+
+
+def send_whatsapp_document(inbox_id: int, to_phone: str, document_url: str = None, file_content: bytes = None, file_name: str = "Document.xlsx", caption: str = None, override_phone_number_id: str = None):
+    """
+    Sends a native WhatsApp Document directly via WhatsApp Cloud API or Chatwoot attachment.
+    """
+    if not to_phone:
+        return None
+        
+    inbox = get_inbox_details(inbox_id)
+    provider_config = inbox.get("provider_config", {}) if inbox else {}
+    api_key = provider_config.get("api_key") or os.getenv("WHATSAPP_API_TOKEN") or os.getenv("WHATSAPP_APP_SECRET")
+    phone_number_id = override_phone_number_id or provider_config.get("phone_number_id") or os.getenv("WHATSAPP_TEMPLATE_PHONE_NUMBER_ID", "1039310802596891")
+    
+    clean_to_phone = to_phone.replace("+", "").replace(" ", "").replace("-", "")
+
+    # If document_url is provided, use WhatsApp Cloud API direct link
+    if document_url and api_key and phone_number_id:
+        url = f"https://graph.facebook.com/v21.0/{phone_number_id}/messages"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": clean_to_phone,
+            "type": "document",
+            "document": {
+                "link": document_url,
+                "filename": file_name
+            }
+        }
+        if caption:
+            payload["document"]["caption"] = caption
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=15)
+            response.raise_for_status()
+            logger.info(f"Successfully sent native WhatsApp document to {clean_to_phone} via URL")
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to send native whatsapp document via URL to {clean_to_phone}: {e}")
+
+    # Fallback / file_content dispatch via Chatwoot conversation
+    if file_content:
+        try:
+            contact_id = get_or_create_contact(clean_to_phone, f"Staff/Admin ({clean_to_phone})")
+            if contact_id:
+                conv_id = create_conversation(contact_id, inbox_id)
+                if conv_id:
+                    mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if file_name.endswith(".xlsx") else "application/pdf"
+                    return send_message_with_attachment(
+                        conversation_id=conv_id,
+                        content=caption or f"📄 {file_name}",
+                        file_name=file_name,
+                        file_content=file_content,
+                        content_type=mime,
+                        is_private=False
+                    )
+        except Exception as ce:
+            logger.error(f"Failed to dispatch document via Chatwoot to {clean_to_phone}: {ce}")
+            
+    return None
 
 
 def send_chatwoot_image_attachment(conversation_id: int, image_url: str, caption: str = None):

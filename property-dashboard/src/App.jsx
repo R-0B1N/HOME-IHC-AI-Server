@@ -5,11 +5,13 @@ import {
   LayoutGrid, MessageCircle, X, GitBranch, LogOut, ShieldCheck, Shield, User,
   Sparkles, Table, Grid, Eye, Search, Layers, Activity, TrendingUp, Droplets, Zap,
   Compass, ExternalLink, CheckCircle2, ArrowRight, TreePine, Building2,
-  Phone, Mail, Calendar, Clock, Flame, Sun, Snowflake, FileText
+  Phone, Mail, Calendar, Clock, Flame, Sun, Snowflake, FileText, FileSpreadsheet
 } from 'lucide-react';
 import { useAuth } from './context/AuthContext';
 import WorkflowViewer from './pages/WorkflowViewer';
 import UsersManagement from './pages/UsersManagement';
+import ReportingConfig from './pages/ReportingConfig';
+import NurturingConfig from './pages/NurturingConfig';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import './App.css';
@@ -837,6 +839,22 @@ function App() {
                   {pendingUsers.length}
                 </span>
               )}
+            </button>
+          )}
+          {isAdmin && (
+            <button 
+              className={`lux-tab-btn ${activeTab === 'reporting' ? 'active' : ''}`}
+              onClick={() => setActiveTab('reporting')}
+            >
+              <FileSpreadsheet size={17} color="#10b981" /> Weekly Reporting
+            </button>
+          )}
+          {isAdmin && (
+            <button 
+              className={`lux-tab-btn ${activeTab === 'nurturing' ? 'active' : ''}`}
+              onClick={() => setActiveTab('nurturing')}
+            >
+              <Zap size={17} color="#f59e0b" /> Follow-Up Engine
             </button>
           )}
         </div>
@@ -1668,6 +1686,10 @@ function App() {
           isAdmin ? <WorkflowViewer /> : null
         ) : activeTab === 'users' ? (
           isAdmin ? <UsersManagement onUserApproved={fetchPendingUsers} /> : null
+        ) : activeTab === 'reporting' ? (
+          isAdmin ? <ReportingConfig /> : null
+        ) : activeTab === 'nurturing' ? (
+          isAdmin ? <NurturingConfig /> : null
         ) : null}
 
       </main>

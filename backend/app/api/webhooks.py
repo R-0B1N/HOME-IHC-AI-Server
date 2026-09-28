@@ -217,7 +217,13 @@ async def chatwoot_webhook(request: Request):
     conversation = payload.get("conversation", {})
     conversation_id = conversation.get("id")
 
-    if is_private and conversation_id and (content.startswith("/acknowledgement") or content.startswith("/transcript") or content.startswith("/reset")):
+    if is_private and conversation_id and (
+        content.startswith("/acknowledgement") or 
+        content.startswith("/transcript") or 
+        content.startswith("/reset") or
+        content.startswith("/report") or
+        content.startswith("/nurture")
+    ):
         logger.info(f"Agent command detected in private note for conv {conversation_id}: {content}")
         try:
             if content.startswith("/acknowledgement"):
@@ -305,12 +311,12 @@ async def chatwoot_webhook(request: Request):
                 except Exception as dbe:
                     logger.warning(f"Could not persist AcknowledgementForm record: {dbe}")
                 
+                mime = "application/pdf" if dispatch_path.endswith(".pdf") else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                filename = os.path.basename(dispatch_path)
+                with open(dispatch_path, "rb") as f:
+                    file_bytes = f.read()
+
                 if should_send_customer:
-                    mime = "application/pdf" if dispatch_path.endswith(".pdf") else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                    filename = os.path.basename(dispatch_path)
-                    with open(dispatch_path, "rb") as f:
-                        file_bytes = f.read()
-                    
                     send_message_with_attachment(
                         conversation_id=conversation_id,
                         content=f"Dear {cust_name}, here is your Customer Property Viewing Acknowledgement (Form No: {form_no}). Please review prior to our appointment. 😊",
@@ -323,16 +329,107 @@ async def chatwoot_webhook(request: Request):
                         f"✅ **Acknowledgement Form {form_no} Dispatched to Customer via WhatsApp.**\nFile: `{filename}`"
                     )
                 else:
+                    backend_url = os.getenv("BACKEND_PUBLIC_URL", "https://api.bentongland.com.my").rstrip("/")
+                    view_url = f"{backend_url}/api/v1/documents/view/{doc_hash}"
+                    download_url = f"{backend_url}/api/v1/acknowledgements/{form_no}/download"
+
                     note_msg = (
                         f"📄 **Customer Property Viewing Acknowledgement Generated**\n\n"
                         f"• **Form No**: {form_no}\n"
                         f"• **Customer**: {cust_name} ({phone})\n"
-                        f"• **DOCX**: `{docx_path}`\n"
-                        f"• **PDF**: `{pdf_path or 'Server-side headless converter'}`\n\n"
+                        f"• **View Inline**: [Open PDF Preview]({view_url})\n"
+                        f"• **Direct Download**: [Download File]({download_url})\n\n"
                         f"💡 *To dispatch directly to customer on WhatsApp, reply with: `/acknowledgement send`*"
                     )
-                    send_private_note(conversation_id, note_msg)
+                    send_message_with_attachment(
+                        conversation_id=conversation_id,
+                        content=note_msg,
+                        file_name=filename,
+                        file_content=file_bytes,
+                        content_type=mime,
+                        is_private=True
+                    )
                 return {"status": "command_executed", "command": "/acknowledgement"}
+
+            elif content.startswith("/report"):
+                from app.services.reporting import WeeklyDatabaseReportManager
+                from app.services.chatwoot import send_private_note, send_message_with_attachment
+                args = content.split()
+                should_send_admins = "send" in args
+                
+                send_private_note(conversation_id, "⏳ **Generating Weekly Database Reports (Buyer & Owner spreadsheets)...**")
+                report_mgr = WeeklyDatabaseReportManager()
+                result = report_mgr.generate_and_dispatch(send_to_admins=should_send_admins)
+                
+                buyer_file = result.get("buyer_file")
+                owner_file = result.get("owner_file")
+                
+                if buyer_file and os.path.exists(buyer_file):
+                    with open(buyer_file, "rb") as bf:
+                        send_message_with_attachment(
+                            conversation_id=conversation_id,
+                            content=f"📊 **Weekly Buyer Database Report** ({result.get('buyers_count', 0)} leads indexed)",
+                            file_name=os.path.basename(buyer_file),
+                            file_content=bf.read(),
+                            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            is_private=True
+                        )
+                if owner_file and os.path.exists(owner_file):
+                    with open(owner_file, "rb") as of:
+                        send_message_with_attachment(
+                            conversation_id=conversation_id,
+                            content=f"📑 **Weekly Owner / Seller Database Report** ({result.get('owners_count', 0)} listings indexed)",
+                            file_name=os.path.basename(owner_file),
+                            file_content=of.read(),
+                            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            is_private=True
+                        )
+                
+                status_summary = (
+                    f"✅ **Weekly Reports Generated Successfully**\n\n"
+                    f"• **Buyer Database**: `{os.path.basename(buyer_file) if buyer_file else 'N/A'}` ({result.get('buyers_count', 0)} records)\n"
+                    f"• **Owner Database**: `{os.path.basename(owner_file) if owner_file else 'N/A'}` ({result.get('owners_count', 0)} records)\n"
+                    f"• **WhatsApp Admin Dispatch**: {'✅ Dispatched directly to admin WhatsApp numbers (+601165144931, +14709202239)' if should_send_admins else 'ℹ️ Private note view only (Use `/report send` to dispatch to WhatsApp)'}\n"
+                )
+                send_private_note(conversation_id, status_summary)
+                return {"status": "command_executed", "command": "/report"}
+
+            elif content.startswith("/nurture"):
+                from app.services.lead_nurturing import LeadNurturingService
+                from app.services.chatwoot import send_private_note
+                from app.db.models import SessionLocal, Customer
+                
+                args = content.split()
+                forced_temp = args[1].lower() if len(args) > 1 and args[1].lower() in ["hot", "warm", "cold"] else None
+                
+                db = SessionLocal()
+                try:
+                    cust = db.query(Customer).filter(Customer.conversation_ids.contains([conversation_id])).first()
+                    if not cust:
+                        contact_info = conversation.get("meta", {}).get("sender", {}) or payload.get("sender", {})
+                        phone = (contact_info.get("phone_number") or "").replace("+", "").strip()
+                        if phone:
+                            cust = db.query(Customer).filter((Customer.id == phone) | (Customer.id.like(f"%{phone}%"))).first()
+                    
+                    if not cust:
+                        send_private_note(conversation_id, f"⚠️ Cannot execute `/nurture`: Customer not found for conversation {conversation_id}.")
+                        return {"status": "command_executed", "command": "/nurture"}
+                    
+                    nurture_service = LeadNurturingService()
+                    cadence = forced_temp or (cust.metadata_json or {}).get("lead_temp") or "warm"
+                    eval_res = nurture_service.evaluate_single_lead(cust, forced_cadence=cadence, db=db)
+                    
+                    summary_msg = (
+                        f"🌱 **Lead Nurturing Follow-up Evaluated**\n\n"
+                        f"• **Customer**: {cust.contact_name} ({cust.id})\n"
+                        f"• **Cadence Strategy**: {cadence.upper()} (Forced: {bool(forced_temp)})\n"
+                        f"• **Action Taken**: `{eval_res.get('action', 'none')}`\n"
+                        f"• **Details**: {eval_res.get('details')}"
+                    )
+                    send_private_note(conversation_id, summary_msg)
+                finally:
+                    db.close()
+                return {"status": "command_executed", "command": "/nurture"}
 
             elif content.startswith("/transcript"):
                 from app.services.transcript import generate_conversation_transcript_pdf

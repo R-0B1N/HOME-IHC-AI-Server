@@ -25,10 +25,10 @@ body {
 }
 
 .dashboard-container {
-  width: 100%;
-  max-width: 1400px;
-  margin: 0 auto;
-  padding: 2rem;
+  width: 100% !important;
+  max-width: 100% !important;
+  margin: 0 !important;
+  padding: 1.25rem 2rem !important;
   box-sizing: border-box;
 }
 

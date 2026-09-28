@@ -441,6 +441,46 @@ class OwnerReportGenerator(BaseExcelReportGenerator):
         return rows
 
 
+class AdminWhatsAppDispatcher:
+    """Dispatches generated database reports directly to administrator WhatsApp numbers."""
+
+    def __init__(self, admin_phones: List[str] = None, inbox_id: int = None):
+        self.admin_phones = admin_phones or [
+            os.getenv("PRIMARY_ADMIN_PHONE", "+601165144931"),
+            os.getenv("SECONDARY_ADMIN_PHONE", "+14709202239")
+        ]
+        is_staging = os.getenv("ENVIRONMENT", "").lower() == "staging"
+        self.inbox_id = inbox_id or int(os.getenv("STAGING_INBOX_ID" if is_staging else "WHATSAPP_INBOX_ID", "3" if not is_staging else "4"))
+
+    def dispatch_reports(self, reports: Dict[str, str]) -> Dict[str, Any]:
+        from app.services.chatwoot import send_whatsapp_document
+        results = {}
+        for name, file_path in reports.items():
+            if not os.path.exists(file_path):
+                continue
+            filename = os.path.basename(file_path)
+            with open(file_path, "rb") as f:
+                file_bytes = f.read()
+
+            for phone in self.admin_phones:
+                clean_phone = phone.strip()
+                if not clean_phone:
+                    continue
+                try:
+                    res = send_whatsapp_document(
+                        inbox_id=self.inbox_id,
+                        to_phone=clean_phone,
+                        file_content=file_bytes,
+                        file_name=filename,
+                        caption=f"📊 Home IHC Official Database: {name} (Generated {datetime.now().strftime('%d %b %Y')})"
+                    )
+                    results.setdefault(clean_phone, []).append({"file": filename, "status": "sent" if res else "dispatched"})
+                except Exception as e:
+                    logger.error(f"Failed to send report {filename} to {clean_phone}: {e}")
+                    results.setdefault(clean_phone, []).append({"file": filename, "status": "failed", "error": str(e)})
+        return results
+
+
 class WeeklyDatabaseReportManager:
     """Orchestrates generation of all scheduled database reports."""
 
@@ -451,4 +491,15 @@ class WeeklyDatabaseReportManager:
 
     def generate_all(self, db_session=None) -> Dict[str, str]:
         return generate_weekly_database_reports(output_dir=self.output_dir, db_session=db_session)
+
+    def generate_and_dispatch(self, db_session=None, send_to_admins: bool = True) -> Dict[str, Any]:
+        reports = self.generate_all(db_session=db_session)
+        dispatch_results = {}
+        if send_to_admins:
+            dispatcher = AdminWhatsAppDispatcher()
+            dispatch_results = dispatcher.dispatch_reports(reports)
+        return {
+            "reports": reports,
+            "dispatch_results": dispatch_results
+        }
 
