@@ -275,7 +275,7 @@ def dispatch_hot_lead_handover(
                 to_phone=target_phone,
                 template_name=os.getenv("WHATSAPP_HANDOVER_TEMPLATE", "hot_lead_alert_utility"),
                 parameters=template_params,
-                language_code="en",
+                language_code=os.getenv("WHATSAPP_HANDOVER_TEMPLATE_LANGUAGE", "en"),
                 override_phone_number_id=TEMPLATE_PHONE_NUMBER_ID
             )
             dispatched_phones.append(target_phone)
