@@ -352,6 +352,60 @@ class TestReportingEngine(unittest.TestCase):
         second_call_payload = mock_post.call_args_list[1][1]["json"]
         self.assertEqual(second_call_payload["template"]["language"]["code"], "en_US")
 
+    @patch.dict(os.environ, {"ENVIRONMENT": "staging", "STAGING_INBOX_ID": "4"})
+    @patch("app.services.chatwoot.get_inbox_details")
+    def test_staging_isolation_enforces_test_number_and_blocks_production_number(self, mock_get_inbox):
+        """Verifies that in staging, resolve_whatsapp_phone_number_id rejects the production phone number."""
+        from app.services.chatwoot import resolve_whatsapp_phone_number_id
+        
+        mock_get_inbox.return_value = {
+            "provider_config": {
+                "api_key": "test_token",
+                "phone_number_id": "1033113423218081"
+            }
+        }
+        
+        # Even if a caller attempts to override with the production phone number ID:
+        _, phone_id = resolve_whatsapp_phone_number_id(4, override_phone_number_id="1039310802596891")
+        self.assertEqual(phone_id, "1033113423218081", "Staging safety guard must reject production phone ID!")
+
+    @patch.dict(os.environ, {"ENVIRONMENT": "production", "WHATSAPP_INBOX_ID": "3"})
+    @patch("app.services.chatwoot.get_inbox_details")
+    def test_production_resolves_production_phone_number(self, mock_get_inbox):
+        """Verifies that in production, resolve_whatsapp_phone_number_id uses the main line."""
+        from app.services.chatwoot import resolve_whatsapp_phone_number_id
+        
+        mock_get_inbox.return_value = {
+            "provider_config": {
+                "api_key": "prod_token",
+                "phone_number_id": "1039310802596891"
+            }
+        }
+        
+        _, phone_id = resolve_whatsapp_phone_number_id(3)
+        self.assertEqual(phone_id, "1039310802596891")
+
+    @patch.dict(os.environ, {"ENVIRONMENT": "staging", "STAGING_INBOX_ID": "4"})
+    @patch("app.services.chatwoot.get_conversation_details")
+    @patch("app.services.chatwoot.send_private_note")
+    @patch("requests.post")
+    def test_send_message_staging_suppresses_production_inbox(self, mock_post, mock_note, mock_get_conv):
+        """Verifies that in staging, send_message intercepts conversations belonging to production inboxes."""
+        from app.services.chatwoot import send_message
+        
+        # Conversation belongs to Inbox 3 (production)
+        mock_get_conv.return_value = {"id": 999, "inbox_id": 3}
+        
+        send_message(999, "Hello customer from staging")
+        
+        # Must NOT send public outgoing HTTP message
+        mock_post.assert_not_called()
+        # Must divert to internal private note
+        mock_note.assert_called_once()
+        args, kwargs = mock_note.call_args
+        self.assertEqual(args[0], 999)
+        self.assertIn("STAGING SAFETY", args[1])
+
 
 class TestLeadNurturingDaemon(unittest.TestCase):
     """Tests the lead nurturing daemon and WhatsApp 24-hour customer care policy guard."""

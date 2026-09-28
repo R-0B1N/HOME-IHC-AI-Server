@@ -201,10 +201,20 @@ def dispatch_hot_lead_handover(
         scored_candidates.sort(key=lambda x: x["score"], reverse=True)
         max_score = scored_candidates[0]["score"] if scored_candidates else 0
 
+        is_staging_env = (
+            os.getenv("DB_HOST") == "whatsapp_ai_db_staging"
+            or "staging" in os.getenv("REDIS_HOST", "")
+            or os.getenv("APP_ENV") == "staging"
+            or os.getenv("ENVIRONMENT", "").lower() == "staging"
+        )
+        staging_default_phone = "1033113423218081"
+        prod_default_phone = "1039310802596891"
         TEMPLATE_PHONE_NUMBER_ID = os.getenv(
             "WHATSAPP_TEMPLATE_PHONE_NUMBER_ID",
-            "1039310802596891"
+            staging_default_phone if is_staging_env else prod_default_phone
         )
+        if is_staging_env and str(TEMPLATE_PHONE_NUMBER_ID) == prod_default_phone:
+            TEMPLATE_PHONE_NUMBER_ID = staging_default_phone
 
         routed_targets = []
         is_fallback = False

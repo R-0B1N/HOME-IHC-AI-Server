@@ -240,9 +240,18 @@ class ReengagementTemplateDispatcher:
             os.getenv("ENVIRONMENT", "").lower() == "staging"
             or os.getenv("APP_ENV") == "staging"
             or "staging" in os.getenv("REDIS_HOST", "")
+            or os.getenv("DB_HOST") == "whatsapp_ai_db_staging"
         )
+        self.is_staging = is_staging
         self.inbox_id = inbox_id or int(os.getenv("STAGING_INBOX_ID" if is_staging else "WHATSAPP_INBOX_ID", "4" if is_staging else "3"))
-        self.phone_number_id = phone_number_id or os.getenv("WHATSAPP_TEMPLATE_PHONE_NUMBER_ID", "1039310802596891")
+        
+        staging_default_phone = "1033113423218081"
+        prod_default_phone = "1039310802596891"
+        default_phone = staging_default_phone if is_staging else prod_default_phone
+
+        self.phone_number_id = phone_number_id or os.getenv("WHATSAPP_TEMPLATE_PHONE_NUMBER_ID", default_phone)
+        if is_staging and str(self.phone_number_id) == prod_default_phone:
+            self.phone_number_id = staging_default_phone
         
         # Check Redis configuration for template language
         stored_language = None
@@ -319,7 +328,6 @@ class LeadNurturingManager:
         self.db_session = db_session
         self.message_sender = message_sender or send_message
         self.note_sender = note_sender or send_private_note
-        self.template_dispatcher = template_dispatcher or ReengagementTemplateDispatcher()
         
         # Detect environment
         if is_staging is None:
@@ -327,9 +335,22 @@ class LeadNurturingManager:
                 os.getenv("ENVIRONMENT", "").lower() == "staging"
                 or os.getenv("APP_ENV") == "staging"
                 or "staging" in os.getenv("REDIS_HOST", "")
+                or os.getenv("DB_HOST") == "whatsapp_ai_db_staging"
             )
         else:
             self.is_staging = is_staging
+
+        target_inbox_id = int(os.getenv("STAGING_INBOX_ID" if self.is_staging else "WHATSAPP_INBOX_ID", "4" if self.is_staging else "3"))
+        staging_default_phone = "1033113423218081"
+        prod_default_phone = "1039310802596891"
+        target_phone_id = os.getenv("WHATSAPP_TEMPLATE_PHONE_NUMBER_ID", staging_default_phone if self.is_staging else prod_default_phone)
+        if self.is_staging and str(target_phone_id) == prod_default_phone:
+            target_phone_id = staging_default_phone
+
+        self.template_dispatcher = template_dispatcher or ReengagementTemplateDispatcher(
+            inbox_id=target_inbox_id,
+            phone_number_id=target_phone_id
+        )
 
         # Strategy registry
         self.strategies: Dict[str, LeadCadenceStrategy] = {
@@ -376,6 +397,26 @@ class LeadNurturingManager:
                 conversation_id = customer.conversation_ids[-1]
             elif isinstance(customer.conversation_ids, (int, str)):
                 conversation_id = customer.conversation_ids
+
+        # In staging, guarantee conversation routes through Staging Inbox (Inbox 4)
+        if self.is_staging:
+            staging_inbox_id = int(os.getenv("STAGING_INBOX_ID", "4"))
+            if meta.get("staging_conversation_id"):
+                conversation_id = meta.get("staging_conversation_id")
+            elif meta.get("inbox_id") != staging_inbox_id:
+                try:
+                    from app.services.chatwoot import get_or_create_contact, create_conversation
+                    clean_p = customer.id or getattr(customer, "phone_number", "")
+                    cust_name = customer.contact_name or "Staging Customer"
+                    contact_id = get_or_create_contact(clean_p, cust_name)
+                    if contact_id:
+                        s_conv = create_conversation(contact_id, staging_inbox_id)
+                        if s_conv:
+                            conversation_id = s_conv
+                            meta["staging_conversation_id"] = s_conv
+                            customer.metadata_json = meta
+                except Exception as ce:
+                    logger.error(f"Failed to resolve staging conversation in Inbox {staging_inbox_id}: {ce}")
 
         if not conversation_id:
             return None

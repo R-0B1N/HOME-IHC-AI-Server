@@ -8,10 +8,71 @@ CHATWOOT_BASE_URL = os.getenv("CHATWOOT_BASE_URL", "http://localhost:3000")
 CHATWOOT_API_TOKEN = os.getenv("CHATWOOT_API_TOKEN", "")
 CHATWOOT_ACCOUNT_ID = os.getenv("CHATWOOT_ACCOUNT_ID", "1")
 
+def resolve_whatsapp_phone_number_id(inbox_id: int, override_phone_number_id: str = None) -> tuple:
+    """
+    Resolves WhatsApp API Key and Phone Number ID with strict Staging vs Production isolation.
+    Guarantees that staging never dispatches messages through the production main line (1039310802596891).
+    """
+    inbox = get_inbox_details(inbox_id)
+    provider_config = inbox.get("provider_config", {}) if inbox else {}
+    api_key = provider_config.get("api_key") or os.getenv("WHATSAPP_API_TOKEN") or os.getenv("WHATSAPP_APP_SECRET")
+
+    is_staging = (
+        os.getenv("ENVIRONMENT", "").lower() == "staging"
+        or os.getenv("APP_ENV") == "staging"
+        or "staging" in os.getenv("REDIS_HOST", "")
+        or os.getenv("DB_HOST") == "whatsapp_ai_db_staging"
+        or str(inbox_id) == str(os.getenv("STAGING_INBOX_ID", "4"))
+    )
+
+    staging_default_phone = "1033113423218081"
+    prod_default_phone = "1039310802596891"
+    default_phone = staging_default_phone if is_staging else prod_default_phone
+
+    phone_number_id = (
+        override_phone_number_id
+        or provider_config.get("phone_number_id")
+        or os.getenv("WHATSAPP_TEMPLATE_PHONE_NUMBER_ID")
+        or default_phone
+    )
+
+    # HARD STAGING ISOLATION GUARD:
+    # Under no circumstances should staging environment use the production phone number ID
+    if is_staging and str(phone_number_id) == prod_default_phone:
+        logger.warning(
+            f"[STAGING SAFETY] Prevented staging from dispatching via production phone_number_id ({prod_default_phone}). "
+            f"Enforcing staging test number ID ({staging_default_phone})."
+        )
+        phone_number_id = staging_default_phone
+
+    return api_key, str(phone_number_id)
+
+
 def send_message(conversation_id: int, content: str):
     """
     Sends a message back to the Chatwoot conversation.
+    In staging, guards against dispatching public messages to production inboxes.
     """
+    is_staging = (
+        os.getenv("ENVIRONMENT", "").lower() == "staging"
+        or os.getenv("APP_ENV") == "staging"
+        or "staging" in os.getenv("REDIS_HOST", "")
+        or os.getenv("DB_HOST") == "whatsapp_ai_db_staging"
+    )
+    if is_staging:
+        staging_inbox_id = str(os.getenv("STAGING_INBOX_ID", "4"))
+        conv = get_conversation_details(conversation_id)
+        conv_inbox = str(conv.get("inbox_id", ""))
+        if conv_inbox and conv_inbox != staging_inbox_id:
+            logger.warning(
+                f"[STAGING SAFETY] Suppressed public outgoing message to production conversation {conversation_id} "
+                f"(inbox {conv_inbox} != staging inbox {staging_inbox_id}). Diverted to internal note."
+            )
+            return send_private_note(
+                conversation_id,
+                f"⚠️ [STAGING SAFETY] Automated message suppressed from production inbox {conv_inbox}:\n\n{content}"
+            )
+
     url = f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages"
     headers = {
         "api_access_token": CHATWOOT_API_TOKEN,
@@ -94,10 +155,7 @@ def send_whatsapp_image(inbox_id: int, to_phone: str, image_url: str, caption: s
     if not image_url or not to_phone:
         return None
         
-    inbox = get_inbox_details(inbox_id)
-    provider_config = inbox.get("provider_config", {})
-    api_key = provider_config.get("api_key") or os.getenv("WHATSAPP_API_TOKEN") or os.getenv("WHATSAPP_APP_SECRET")
-    phone_number_id = override_phone_number_id or provider_config.get("phone_number_id") or os.getenv("WHATSAPP_TEMPLATE_PHONE_NUMBER_ID", "1039310802596891")
+    api_key, phone_number_id = resolve_whatsapp_phone_number_id(inbox_id, override_phone_number_id)
     
     if not api_key or not phone_number_id:
         logger.warning(f"Missing API key or phone number ID for sending native image to {to_phone}")
@@ -140,11 +198,7 @@ def send_whatsapp_document(inbox_id: int, to_phone: str, document_url: str = Non
     if not to_phone:
         return None
         
-    inbox = get_inbox_details(inbox_id)
-    provider_config = inbox.get("provider_config", {}) if inbox else {}
-    api_key = provider_config.get("api_key") or os.getenv("WHATSAPP_API_TOKEN") or os.getenv("WHATSAPP_APP_SECRET")
-    phone_number_id = override_phone_number_id or provider_config.get("phone_number_id") or os.getenv("WHATSAPP_TEMPLATE_PHONE_NUMBER_ID", "1039310802596891")
-    
+    api_key, phone_number_id = resolve_whatsapp_phone_number_id(inbox_id, override_phone_number_id)
     clean_to_phone = to_phone.replace("+", "").replace(" ", "").replace("-", "")
 
     # If document_url is provided, use WhatsApp Cloud API direct link
@@ -262,10 +316,7 @@ def send_whatsapp_contact(inbox_id: int, to_phone: str, contact_name: str, conta
     Sends a native WhatsApp Contact Card directly using the WhatsApp Cloud API.
     Uses the credentials stored in the Chatwoot inbox's provider_config, with env fallbacks.
     """
-    inbox = get_inbox_details(inbox_id)
-    provider_config = inbox.get("provider_config", {})
-    api_key = provider_config.get("api_key") or os.getenv("WHATSAPP_API_TOKEN") or os.getenv("WHATSAPP_APP_SECRET")
-    phone_number_id = override_phone_number_id or provider_config.get("phone_number_id") or os.getenv("WHATSAPP_TEMPLATE_PHONE_NUMBER_ID", "1039310802596891")
+    api_key, phone_number_id = resolve_whatsapp_phone_number_id(inbox_id, override_phone_number_id)
     
     if not api_key or not phone_number_id:
         logger.error(f"Missing API key or phone number ID for sending contact card to {to_phone}")
@@ -321,10 +372,7 @@ def send_whatsapp_template(inbox_id: int, to_phone: str, template_name: str, par
     phone_number_id. This is needed when the template is registered on a different WABA
     than the inbox's phone number.
     """
-    inbox = get_inbox_details(inbox_id)
-    provider_config = inbox.get("provider_config", {}) if inbox else {}
-    api_key = provider_config.get("api_key") or os.getenv("WHATSAPP_API_TOKEN") or os.getenv("WHATSAPP_APP_SECRET")
-    phone_number_id = override_phone_number_id or provider_config.get("phone_number_id") or os.getenv("WHATSAPP_TEMPLATE_PHONE_NUMBER_ID", "1039310802596891")
+    api_key, phone_number_id = resolve_whatsapp_phone_number_id(inbox_id, override_phone_number_id)
     
     if not api_key or not phone_number_id:
         logger.error(f"Missing API key or phone number ID in inbox {inbox_id} for sending template")
