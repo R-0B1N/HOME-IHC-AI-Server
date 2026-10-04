@@ -422,6 +422,7 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
         combined_text = []
         combined_images = []
         contact_info = messages[0].get("sender", {})
+        latest_doc_struct = None
         
         for msg_payload in messages:
             content = msg_payload.get("content", "")
@@ -456,10 +457,28 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                     elif file_type == "file":
                         logger.info("Document/PDF attachment detected.")
                         try:
-                            doc_result = extract_text_from_document(data_url, attachment.get("data_file_name", ""))
+                            file_name_val = (
+                                attachment.get("data_file_name") 
+                                or attachment.get("file_name") 
+                                or attachment.get("title") 
+                                or ""
+                            )
+                            content_type_val = attachment.get("content_type", "")
+                            extension_val = attachment.get("extension", "")
+                            doc_result = extract_text_from_document(
+                                data_url, 
+                                file_name=file_name_val,
+                                content_type=content_type_val,
+                                extension=extension_val
+                            )
                             doc_text = doc_result.get("text", "")
                             if doc_text:
                                 combined_text.append(f"[Document Content]: {doc_text}")
+                            
+                            doc_struct = doc_result.get("structured_data", {})
+                            if doc_struct:
+                                latest_doc_struct = doc_struct
+                                combined_text.append(f"[Document Analysis & Extracted Particulars]:\n{json.dumps(doc_struct, ensure_ascii=False, indent=2)}")
                             
                             doc_images = doc_result.get("images", [])
                             if doc_images:
@@ -526,6 +545,23 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
             metadata=metadata
         )
         
+        if customer and latest_doc_struct:
+            try:
+                db_doc = SessionLocal()
+                try:
+                    c_rec = db_doc.query(Customer).filter(Customer.id == customer.id).first()
+                    if c_rec:
+                        c_meta = dict(c_rec.metadata_json or {})
+                        intake_props = c_meta.setdefault("intake_properties", [])
+                        intake_props.append(latest_doc_struct)
+                        c_meta["latest_document_extract"] = latest_doc_struct
+                        c_rec.metadata_json = c_meta
+                        db_doc.commit()
+                finally:
+                    db_doc.close()
+            except Exception as e:
+                logger.warning(f"Failed to persist intake property into customer metadata: {e}")
+
         if customer and customer.metadata_json and customer.metadata_json.get("bypass_ai"):
             logger.info(f"Customer {customer.id} has bypass_ai set. Skipping AI response.")
             try:
@@ -638,13 +674,18 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                     logger.error(f"Failed to fetch history: {e}")
                     conversation_history = ""
                     
-                # Perform RAG search for properties (Intent-gated)
+                # Perform Zero-Keyword Semantic Turn Classification
+                from app.services.llm import classify_turn_intent
+                turn_intent = classify_turn_intent(
+                    prompt=final_prompt_text,
+                    conversation_history=conversation_history,
+                    has_document=bool(latest_doc_struct or (combined_images and "document" in final_prompt_text.lower())),
+                    document_extract=latest_doc_struct
+                )
+                
                 is_seller_intent = (
                     role in ["seller", "landlord"]
-                    or any(k in (final_prompt_text + " " + conversation_history).lower() for k in [
-                        "jual", "nak jual", "owner", "geran", "borang 11bk", "pelan tanah", "hakmilik", 
-                        "let go", "sell my land", "sell land", "tuan tanah", "valuation", "nilai tanah"
-                    ])
+                    or turn_intent == "seller_intake"
                 )
                 if is_seller_intent:
                     logger.info("Seller/landowner intent detected: suppressing buyer property recommendations.")
@@ -656,7 +697,8 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                     }
                 else:
                     logger.info(f"Extracting search criteria from prompt: {final_prompt_text}")
-                    criteria = extract_property_search_criteria(final_prompt_text, conversation_history)
+                    # Strict User Utterance Search: Never contaminate criteria with assistant greetings
+                    criteria = extract_property_search_criteria(final_prompt_text, "")
                     logger.info(f"Extracted criteria: {criteria}")
                     
                     if criteria and any(criteria.values()):
@@ -680,6 +722,10 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                 session.clear()
                 session.update(SessionManager._new_session())
             
+            if latest_doc_struct:
+                session["latest_document_extract"] = latest_doc_struct
+            session["turn_intent"] = turn_intent
+
             agent_result = process_persona_state_machine(
                 phone_number, final_prompt_text, session,
                 conversation_history=conversation_history,
@@ -695,6 +741,8 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
             handover_from_state = agent_result.get("handover", False)
             assignee_email = agent_result.get("assignee_email")
             images_to_send = agent_result.get("images_to_send", [])
+            if is_seller_intent or turn_intent == "seller_intake":
+                images_to_send = []
             
             # Dynamic lead temperature based on 80% persona data completeness
             REQUIRED_PERSONA_KEYS = {

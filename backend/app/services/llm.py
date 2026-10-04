@@ -35,10 +35,10 @@ def transcribe_audio(audio_url: str) -> str:
         
         # 2. POST to whisper API with domain vocabulary biasing
         multilingual_prompt = (
-            "Irene Leong, ERA Realtor, Home IHC, BentongLand, Pahang, Kuantan, Bentong, Raub, Karak, Temerloh, Mentakab. "
-            "店面, 铺位, 铺头, 双层排屋, 农业地, 榴莲园, 佣金, 租金, 买卖, 一间, 一个月, 订金, 押金, 发展地, 商业地, 睇楼, 顶手, 屋主, 业主. "
-            "Tanah, kedai, sewa, jual, sewa sebulan, komisen, deposit 2+1, geran freehold leasehold, Musang King. "
-            "Tiàm-thâu, Chhu, Chhut-cho͘, Bóe, Bē, Thô͘-tī. Shoplot, rental, one month advance, ROI."
+            "Irene Leong, ERA Realtor, Home IHC, BentongLand, Pahang, Kuantan, Bentong, Raub, Karak, Temerloh, Mentakab, Triang, Bera. "
+            "店面, 铺位, 铺头, 双层排屋, 农业地, 榴莲园, 佣金, 一个月佣金, 租金, 一个月租金, 顶手费, 招租, 出租, 买卖, 一间, 一个月, 订金, 押金, 发展地, 商业地, 睇楼, 屋主, 业主, 阿Tuck 012-9663589. "
+            "Tanah, kedai, sewa, jual, sewa sebulan, komisen agent, deposit 2+1, geran freehold leasehold, Musang King. "
+            "Tiàm-thâu, Chhu, Chhut-cho͘, Bóe, Bē, Thô͘-tī. Shoplot, commercial shop, rental, one month advance commission, ROI."
         )
         
         files = {
@@ -652,3 +652,87 @@ def classify_intent(text: str, conversation_history: str = "") -> str:
     except Exception as e:
         logger.error(f"Failed to classify intent: {e}")
         return "GENERAL"
+
+
+def classify_turn_intent(
+    prompt: str, 
+    conversation_history: str = "", 
+    has_document: bool = False,
+    document_extract: dict = None
+) -> str:
+    """
+    Zero-Keyword Single-Pass Semantic Turn Classifier.
+    Accurately classifies the user's active message into:
+    - 'seller_intake': User wants to sell/let out/list a property or uploaded a land title/blueprint.
+    - 'buyer_search': User wants to buy or rent or is inquiring about available properties.
+    - 'unidentified_listing': Customer asking about a specific unidentified advertisement/shop/listing without providing name/link/photo.
+    - 'agent_inquiry': Fellow real estate agent / co-broke.
+    - 'valuer_inquiry': Bank valuer seeking transaction or listing data.
+    - 'general': Greetings, company questions, or general inquiry.
+    """
+    if has_document or (document_extract and any(document_extract.values())):
+        return "seller_intake"
+        
+    system_prompt = """You are an expert Real Estate intent and turn classifier for Home IHC Sdn Bhd (Pahang, Malaysia).
+Analyze the user's current message and conversational context. Output strictly a JSON object with a single string field "category".
+
+Categories:
+1. "seller_intake": User is an owner or representative offering a property for sale, rent out, valuation, or submitting land grants/plans (e.g. "酒楼出售 有兴趣了解吗？", "saya nak jual tanah", "can you help me sell my lot?").
+2. "buyer_search": User is seeking properties to buy, invest, or rent (e.g. "do you have durian land in Bentong?", "ada rumah sewa?", "looking for factory").
+3. "unidentified_listing": User refers to a specific advertisement, listing, or shoplot without identifying the property name, link, or photo (e.g. "你们那一间店面在哪里？", "那个铺位多少钱？", "is the shop still available?", "how much is the rent for that shop?").
+4. "agent_inquiry": Fellow agent or broker seeking co-broking.
+5. "valuer_inquiry": Bank valuer asking for transaction comparisons or bank values.
+6. "general": General greetings, thank you, or conversational pleasantries.
+
+Output format:
+{"category": "seller_intake" | "buyer_search" | "unidentified_listing" | "agent_inquiry" | "valuer_inquiry" | "general"}"""
+
+    user_content = f"Recent History:\n{conversation_history}\n\nCurrent User Message:\n{prompt}"
+    try:
+        response = llm_client.chat.completions.create(
+            model=LLM_MODEL_NAME,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content}
+            ],
+            response_format={"type": "json_object"},
+            max_tokens=60,
+            temperature=0.0,
+            timeout=10.0
+        )
+        parsed = _parse_json_from_llm(response.choices[0].message.content)
+        if parsed and parsed.get("category"):
+            cat = str(parsed["category"]).lower().strip()
+            if cat in ["seller_intake", "buyer_search", "unidentified_listing", "agent_inquiry", "valuer_inquiry", "general"]:
+                return cat
+    except Exception as e:
+        logger.warning(f"LLM turn classification fallback triggered: {e}")
+
+    # Deterministic semantic fallback
+    p_lower = (prompt or "").lower()
+    
+    # 1. Unidentified listing inquiry (Conversation 71 pattern)
+    if any(k in p_lower for k in [
+        "哪一间店面", "哪间店面", "哪里的店面", "那个店面", "那间店面", "那一间店面", "那一间店", "那间店", "那一间",
+        "那个铺位", "那间铺", "多少钱一个月", "一个月多少钱", "店面在哪里", "店在哪里", "在什么位置", "哪里的店",
+        "where is the shop", "where is that shop", "which shop", "how much is the shop", "how much for that shop", "that shop",
+        "kedai yang mana", "kedai kat mana", "berapa sewa kedai itu", "is that shop still available", "kedai itu", "kedai tu"
+    ]):
+        return "unidentified_listing"
+
+    # 2. Seller intake
+    if any(k in p_lower for k in [
+        "出售", "想卖", "放盘", "出让", "割爱", "卖地", "卖屋", "酒楼出售", "厂房出售", "店铺出售",
+        "jual", "nak jual", "owner nak jual", "tuan tanah", "valuation", "nilai tanah", "let go", "sell my", "sell land", "sell property"
+    ]):
+        return "seller_intake"
+
+    # 3. Buyer search
+    if any(k in p_lower for k in [
+        "buy", "rent", "cari", "sewa", "beli", "nak cari", "looking for", "interested to buy", "ada tanah", "ada rumah", "ada kedai",
+        "买", "租", "找", "想买", "想租", "想找", "有地吗", "有房子吗", "有店面吗", "有榴莲园吗", "有卖吗", "卖吗"
+    ]):
+        return "buyer_search"
+
+    return "general"
+

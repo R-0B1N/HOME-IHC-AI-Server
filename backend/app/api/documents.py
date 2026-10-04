@@ -9,7 +9,7 @@ import io
 import logging
 import requests
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Depends, Query, Response
+from fastapi import APIRouter, HTTPException, Depends, Query, Response, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -87,16 +87,37 @@ def view_document_inline(document_identifier: str, db: Session = Depends(get_db)
 
 
 @router.get("/proxy")
-def proxy_document_inline(url: str = Query(..., description="Target document URL to stream inline")):
+def proxy_document_inline(
+    request: Request,
+    url: str = Query(..., description="Target document URL to stream inline")
+):
     """
     Proxies an external or Chatwoot attachment URL and serves it with inline headers.
-    Solves mobile app PDF viewer 302 redirect incompatibilities.
+    Solves mobile app PDF viewer 302 redirect incompatibilities by translating redirect URLs
+    to permanent ActiveStorage proxy URLs and supporting HTTP Range byte-streaming.
     """
     if not url.startswith("http://") and not url.startswith("https://"):
         raise HTTPException(status_code=400, detail="Invalid document URL scheme.")
 
+    # Translate expiring redirect route to permanent proxy route if applicable
+    target_url = url
+    if "/rails/active_storage/blobs/redirect/" in target_url:
+        target_url = target_url.replace("/rails/active_storage/blobs/redirect/", "/rails/active_storage/blobs/proxy/")
+
+    # Forward client Range headers for mobile PDF page-by-page streaming
+    client_headers = {}
+    range_header = request.headers.get("range") or request.headers.get("Range")
+    if range_header:
+        client_headers["Range"] = range_header
+
     try:
-        resp = requests.get(url, stream=True, timeout=30)
+        resp = requests.get(target_url, headers=client_headers, stream=True, timeout=30)
+        
+        # Fallback to original url if proxy route translation returned 404
+        if resp.status_code == 404 and target_url != url:
+            target_url = url
+            resp = requests.get(target_url, headers=client_headers, stream=True, timeout=30)
+            
         resp.raise_for_status()
 
         content_type = resp.headers.get("Content-Type", "application/pdf")
@@ -109,11 +130,17 @@ def proxy_document_inline(url: str = Query(..., description="Target document URL
         headers = {
             "Content-Disposition": f'inline; filename="{filename}"',
             "Access-Control-Allow-Origin": "*",
+            "Accept-Ranges": "bytes",
             "Cache-Control": "public, max-age=3600"
         }
+        if "Content-Range" in resp.headers:
+            headers["Content-Range"] = resp.headers["Content-Range"]
+        if "Content-Length" in resp.headers:
+            headers["Content-Length"] = resp.headers["Content-Length"]
 
         return StreamingResponse(
-            io.BytesIO(resp.content),
+            resp.iter_content(chunk_size=65536),
+            status_code=resp.status_code,
             media_type=content_type,
             headers=headers
         )

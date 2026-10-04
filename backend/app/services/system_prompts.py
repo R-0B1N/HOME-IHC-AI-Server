@@ -17,6 +17,9 @@ COMPANY_NAME = "Home IHC"
 COMPANY_FULL_NAME = "Home IHC Sdn. Bhd. / BentongLand"
 DIGITAL_NAME_CARD_URL = "https://my.mecard.my/1733211127"
 ADMIN_EMAIL = "homeihc13@gmail.com"
+AH_TUCK_NAME = "Ah Tuck"
+AH_TUCK_PHONE = "+60129663589"
+AH_TUCK_EMAIL = "tuck@homeihc.com"
 
 # Malaysian Dialect & Domain Lexicon
 MALAY_KEYWORDS = {
@@ -194,6 +197,42 @@ def get_multilingual_handover_wrapup(language: str, customer_name: str = None, p
         return f"Thank you{name_str}! 😊 We have recorded your request{prop_str}. A senior property specialist from Home IHC will contact you shortly to follow up directly."
 
 
+def get_multilingual_disambiguation_request(language: str, customer_name: str = None) -> str:
+    """
+    Returns Listing Disambiguation Protocol message requesting ad photo/link on Turn 1.
+    """
+    name_str = f" {customer_name}" if customer_name else ""
+    if language == "zh":
+        return (
+            f"您好{name_str}！😊 为了能立刻为您核对这一间店面的准确详情与租金/售价，"
+            f"请问您方便把您看到的广告截图、照片或链接发给我吗？或者告诉我大概的店名/路名，我马上帮您查！"
+        )
+    elif language == "ms":
+        return (
+            f"Hai{name_str}! 😊 Untuk membantu menyemak butiran tepat dan sewa kedai ini dengan segera, "
+            f"boleh kongsikan tangkapan skrin iklan, gambar atau pautan iklan tersebut? Atau nama kedai/jalan, saya akan semak serta-merta!"
+        )
+    else:
+        return (
+            f"Hello{name_str}! 😊 To check the exact details and rental/price for this shop immediately, "
+            f"could you share a screenshot, photo, or link of the advertisement you saw? Or let me know the approximate shop or road name, and I'll verify it right away!"
+        )
+
+
+def get_multilingual_ah_tuck_handover(language: str, customer_name: str = None) -> str:
+    """
+    Returns immediate handover message to commercial specialist Ah Tuck.
+    """
+    name_str = f"{customer_name}，" if customer_name else ""
+    if language == "zh":
+        return f"{name_str}我已经把您的店面咨询直接转交给负责该区商业店面的资深主管 阿Tuck (012-9663589)。他会立刻通过 WhatsApp 或电话联系您协助处理！"
+    elif language == "ms":
+        return f"{name_str}Saya telah majukan pertanyaan kedai anda kepada Pengurus Kanan Komersial kami, Ah Tuck (012-9663589). Beliau akan segera menghubungi anda melalui WhatsApp atau panggilan!"
+    else:
+        return f"{name_str}I have forwarded your shop inquiry directly to our Senior Commercial Lead, Ah Tuck (012-9663589). He will reach out to you via WhatsApp or phone right away to assist you!"
+
+
+
 def build_system_prompt(
     cached_property: dict = None,
     available_properties: list = None,
@@ -354,6 +393,13 @@ Core Operational Directives:
      * Area / Size: State hectares and converted acres (1 ha = 2.471 acres; e.g. 0.289 ha = ~0.714 acres).
      * Tenure & Category: Freehold (Pegangan Selama-lamanya) vs Leasehold, Syarat Nyata (Pertanian / Dusun / Kelapa Sawit).
    - Consultative Seller Intake: If sender is the landowner/seller, confirm details respectfully, ask for their target asking price or valuation expectation, and highlight Home IHC's active buyer pool for Bentong/Pahang agricultural land. NEVER recommend buyer properties to a land seller.
+9. Unidentified Listing & Advertisement Inquiries (Conversation 71 Protocol):
+   - If customer asks about an unspecified commercial shop, advertisement, or listing ("哪一间店面?", "租金多少钱一个月?", "where is the shop?", "is the shop still available?"):
+   - Turn 1 Disambiguation: NEVER interrogate them with generic qualification questions (budget, area, investment purpose). Immediately and politely ask them to send the advertisement screenshot, photo, or link so we can check the exact listing for them right away.
+   - Turn 2+ Anti-Looping Handover: If the customer has sent repeated inquiries without identifying the listing, immediately route to Senior Commercial Lead Ah Tuck (012-9663589). Set "asked_meeting": true.
+10. Dual-Track State Isolation:
+   - When communicating with a property seller or landowner, NEVER search or pitch buyer properties from the database.
+   - If a seller switches to inquiring about buying (or a buyer uploads a property to sell), address the active priority directly without erasing their previously recorded profile.
 
 Output JSON format strictly (RESPONSE-FIRST with Dynamic Sparse Keys to optimize generation speed):
 {{

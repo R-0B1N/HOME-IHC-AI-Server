@@ -25,6 +25,7 @@ services:
     volumes:
       - /opt/crm/chatwoot_data:/app/storage
       - /opt/crm/chatwoot/disable_24_hour_window.rb:/app/config/initializers/disable_24_hour_window.rb
+      - ./active_storage_proxy.rb:/app/config/initializers/active_storage_proxy.rb
     networks:
       - crm_network
     depends_on:
@@ -41,6 +42,7 @@ services:
     volumes:
       - /opt/crm/chatwoot_data:/app/storage
       - /opt/crm/chatwoot/disable_24_hour_window.rb:/app/config/initializers/disable_24_hour_window.rb
+      - ./active_storage_proxy.rb:/app/config/initializers/active_storage_proxy.rb
     networks:
       - crm_network
     depends_on:
