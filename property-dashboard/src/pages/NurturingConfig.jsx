@@ -36,6 +36,18 @@ export default function NurturingConfig() {
     }
   }, [isAdmin]);
 
+  const handleToggleFollowUp = async (checked) => {
+    setConfig(prev => ({ ...prev, enabled: checked }));
+    try {
+      await axios.post(`${API_BASE_URL}/settings/followup-status`, { enabled: checked });
+      setStatusMsg(`Automated Follow-up engine immediately turned ${checked ? 'ON' : 'OFF'}.`);
+      setTimeout(() => setStatusMsg(''), 3000);
+    } catch (err) {
+      console.error('Failed to toggle follow-up engine status:', err);
+      alert('Failed to toggle follow-up engine status.');
+    }
+  };
+
   const handleSaveConfig = async (e) => {
     e.preventDefault();
     setSaving(true);
@@ -156,7 +168,7 @@ export default function NurturingConfig() {
                 <input 
                   type="checkbox" 
                   checked={config?.enabled || false}
-                  onChange={(e) => setConfig({ ...config, enabled: e.target.checked })}
+                  onChange={(e) => handleToggleFollowUp(e.target.checked)}
                   style={{ width: '18px', height: '18px', accentColor: '#10b981' }}
                 />
                 <span style={{ color: '#f8fafc', fontWeight: 600, fontSize: '0.9rem' }}>

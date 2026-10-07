@@ -84,6 +84,7 @@ function App() {
   });
 
   const [masterAiEnabled, setMasterAiEnabled] = useState(true);
+  const [followUpEnabled, setFollowUpEnabled] = useState(true);
   const [environment, setEnvironment] = useState(() => {
     if (typeof window !== 'undefined' && window.location.hostname.includes('staging')) {
       return 'staging';
@@ -247,7 +248,9 @@ function App() {
 
   const fetchMasterAiStatus = async () => {
     try {
-      const response = await axios.get(`${API_BASE_URL}/settings/ai-status`);
+      const response = await axios.get(`${API_BASE_URL}/settings/ai-status`, {
+        params: { environment }
+      });
       setMasterAiEnabled(response.data.enabled);
     } catch (error) {
       console.error('Failed to fetch master AI status:', error);
@@ -257,11 +260,37 @@ function App() {
   const toggleMasterAi = async () => {
     try {
       const newStatus = !masterAiEnabled;
-      const response = await axios.post(`${API_BASE_URL}/settings/ai-status`, { enabled: newStatus });
+      const response = await axios.post(`${API_BASE_URL}/settings/ai-status`, { enabled: newStatus }, {
+        params: { environment }
+      });
       setMasterAiEnabled(response.data.enabled);
     } catch (error) {
       console.error('Failed to toggle master AI status:', error);
       alert('Failed to toggle master AI status.');
+    }
+  };
+
+  const fetchFollowUpStatus = async () => {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/settings/followup-status`, {
+        params: { environment }
+      });
+      setFollowUpEnabled(response.data.enabled);
+    } catch (error) {
+      console.error('Failed to fetch follow-up status:', error);
+    }
+  };
+
+  const toggleFollowUp = async () => {
+    try {
+      const newStatus = !followUpEnabled;
+      const response = await axios.post(`${API_BASE_URL}/settings/followup-status`, { enabled: newStatus }, {
+        params: { environment }
+      });
+      setFollowUpEnabled(response.data.enabled);
+    } catch (error) {
+      console.error('Failed to toggle follow-up status:', error);
+      alert('Failed to toggle follow-up engine status.');
     }
   };
 
@@ -307,6 +336,7 @@ function App() {
   // Fetch data on tab or environment change + auto-refresh every 30s for real-time updates
   useEffect(() => {
     fetchMasterAiStatus();
+    fetchFollowUpStatus();
     if (isAdmin) {
       fetchPendingUsers();
     }
@@ -319,6 +349,7 @@ function App() {
 
     const interval = setInterval(() => {
       fetchMasterAiStatus();
+      fetchFollowUpStatus();
       if (isAdmin) {
         fetchPendingUsers();
       }
@@ -690,6 +721,16 @@ function App() {
           >
             <span className={`lux-status-dot ${masterAiEnabled ? 'active' : 'disabled'}`}></span>
             {environment === 'staging' ? 'Staging AI' : 'Master AI'}: <strong>{masterAiEnabled ? 'ON' : 'OFF'}</strong>
+          </button>
+
+          {/* Automated Lead Follow-Up Engine Toggle Pill */}
+          <button 
+            className={`lux-ai-toggle-pill ${followUpEnabled ? 'active' : 'disabled'}`}
+            onClick={toggleFollowUp}
+            title={followUpEnabled ? `Click to disable automated lead follow-up engine` : `Click to enable automated lead follow-up engine`}
+          >
+            <span className={`lux-status-dot ${followUpEnabled ? 'active' : 'disabled'}`}></span>
+            Follow-Up: <strong>{followUpEnabled ? 'ON' : 'OFF'}</strong>
           </button>
 
           {/* Authenticated User Capsule */}

@@ -50,6 +50,9 @@ HANDOVER_PATTERNS = [
     r'\bhuman\s+staff\b',
     r'\bperson\s+in\s+charge\b',
     r'\bpic\b',
+    r'\b(?:can|could|please)\s+(?:an?\s+)?(?:agent|someone|staff)\s+(?:call|contact|reach)\b',
+    r'\b(?:get|have)\s+(?:an?\s+)?(?:agent|someone|senior)\s+(?:call|contact)\b',
+    r'\bneed\s+(?:an?\s+)?(?:agent|human|person)\s+to\s+talk\b',
     
     # Malay / Pasar Malay
     r'\bboleh\s+(?:talipon|telefon|call|kol)\b',
@@ -76,6 +79,55 @@ HANDOVER_PATTERNS = [
     r'联系真人',
     r'有真人吗',
     r'打给我',
+    r'安排(?:专员|中介|agent|人)(?:联系|联络|打给我)',
+    r'有人可以联系我吗',
+    r'可以联络我吗',
+    r'帮我安排看房',
+    r'安排实地看',
+]
+
+
+HANDOVER_PROMISE_PATTERNS = [
+    # Chinese patterns
+    r'资深(?:房产)?专员',
+    r'资深主管',
+    r'资深顾问',
+    r'资深中介',
+    r'资深经理',
+    r'专员将(?:尽快)?(?:致电|联系|联络)',
+    r'致电与您直接联系',
+    r'电话联系您',
+    r'安排(?:专员|主管|顾问|同事|经理|团队|人).*(?:联系|联络|跟进|致电|打给)',
+    r'(?:专员|主管|顾问|同事|经理|团队).*(?:会|将).*(?:联系|联络|致电|跟进)',
+    r'(?:尽快|稍后|稍后会).*(?:联系|联络|致电|打给)您',
+    r'阿tuck',
+    r'012-?9663589',
+    r'看房确认书',
+    r'客户看房确认书',
+    
+    # Malay patterns
+    r'pegawai\s+(?:hartanah\s+)?kanan',
+    r'pengurus\s+kanan',
+    r'pakar\s+hartanah',
+    r'akan\s+(?:segera\s+)?menghubungi\s+anda',
+    r'akan\s+(?:segera\s+)?hubungi\s+anda',
+    r'rakan\s+sekerja\s+akan\s+hubungi',
+    r'borang\s+pengesahan\s+lawatan',
+    
+    # English patterns
+    r'senior\s+(?:property\s+)?specialist',
+    r'senior\s+commercial\s+lead',
+    r'senior\s+(?:property\s+)?agent',
+    r'senior\s+(?:property\s+)?consultant',
+    r'senior\s+(?:property\s+)?representative',
+    r'senior\s+(?:property\s+)?manager',
+    r'will\s+(?:shortly\s+)?contact\s+you',
+    r'will\s+(?:shortly\s+)?reach\s+out\s+to\s+you',
+    r'will\s+be\s+in\s+touch',
+    r'viewing\s+acknowledgement',
+    r'contact\s+you\s+shortly\s+to\s+assist',
+    r'contact\s+you\s+shortly',
+    r'have\s+(?:our\s+)?(?:specialist|senior|agent|colleague|team)\s+(?:reach\s+out|contact)',
 ]
 
 
@@ -122,6 +174,20 @@ def is_explicit_handover_request(text: str) -> bool:
         if word in clean:
             return True
 
+    return False
+
+
+def is_handover_promised(text: str) -> bool:
+    """
+    Determines if assistant response explicitly promises that a senior agent, specialist,
+    or human representative will follow up or contact the customer.
+    """
+    if not text or not isinstance(text, str):
+        return False
+    clean = text.strip()
+    for pattern in HANDOVER_PROMISE_PATTERNS:
+        if re.search(pattern, clean, re.IGNORECASE):
+            return True
     return False
 
 

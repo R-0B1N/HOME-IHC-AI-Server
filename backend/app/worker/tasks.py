@@ -25,6 +25,7 @@ from app.services.chatwoot import (
     send_whatsapp_template,
 )
 from app.services.llm import generate_response, transcribe_audio, extract_property_search_criteria, extract_valuer_data, extract_wordpress_property
+from app.services.system_prompts import is_handover_promised
 from app.services.document_parser import extract_text_from_document
 from app.services.db_services import get_or_create_customer, get_sender_role, search_properties, get_active_agents_and_employees
 from app.services.session_manager import SessionManager
@@ -381,8 +382,13 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
             return {"status": "deferred", "reason": "user still active"}
             
         # Master AI Toggle check
-        master_ai_raw = redis_client.get("master_ai_enabled")
-        master_ai_enabled = master_ai_raw.decode("utf-8") == "true" if master_ai_raw else True
+        try:
+            from app.api.settings import get_system_toggle
+            master_ai_enabled = get_system_toggle("master_ai_enabled", default=True)
+        except Exception:
+            master_ai_raw = redis_client.get("master_ai_enabled")
+            master_ai_enabled = master_ai_raw.decode("utf-8") == "true" if master_ai_raw else True
+
         if not master_ai_enabled:
             logger.info(f"Master AI Toggle is OFF. Skipping conversation {conversation_id} and clearing queue.")
             # Turn off typing indicator if it was triggered
@@ -392,7 +398,10 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                 pass
             # Flush the message queue so it doesn't pile up
             queue_key = f"convo_queue_{conversation_id}"
-            redis_client.delete(queue_key)
+            try:
+                redis_client.delete(queue_key)
+            except Exception:
+                pass
             return {"status": "skipped", "reason": "master_ai_disabled"}
 
         # If we reach here, it's been at least 10 seconds since the last message and AI is ON.
@@ -795,25 +804,28 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                 "电话联系", "安排见面", "nak jumpa", "call saya", "hubungi saya", "agent sebenar", 
                 "cakap dengan orang", "temujanji"
             ])
-            # Physical inspection bookings trigger handover when an actual property is selected
-            user_books_inspection = has_cached_prop and any(phrase in final_prompt_text.lower() for phrase in [
+            # Physical inspection bookings trigger handover
+            user_books_inspection = any(phrase in final_prompt_text.lower() for phrase in [
                 "安排看房", "预约看房", "睇楼", "tengok rumah", "tengok tanah", "arrange viewing", "schedule viewing", "book viewing"
             ])
             
-            # Handover should ONLY trigger when:
+            # Handover should trigger when:
             # 1. State machine finished workflow (handover_from_state == True)
-            # 2. Or user explicitly asks for immediate human contact or books a physical inspection for a known property
-            # 3. Or bank valuer submission complete
-            # P1 fix: Require at least 1 prior AI response before explicit handover triggers
-            assistant_msg_count = conversation_history.count("Assistant:") if conversation_history else 0
+            # 2. Or user explicitly asks for immediate human contact or books a physical inspection
+            # 3. Or assistant response explicitly promises that a senior agent / specialist will follow up
+            # 4. Or bank valuer submission complete
             handover_initiated = False
+            response_promises_handover = is_handover_promised(response_text)
             if role not in ["admin", "employee"]:
-                if handover_from_state:
+                if (
+                    handover_from_state
+                    or user_wants_immediate_human
+                    or user_books_inspection
+                    or response_promises_handover
+                ):
                     handover_initiated = True
-                elif (user_wants_immediate_human or user_books_inspection) and assistant_msg_count >= 1:
-                    handover_initiated = True
-                    # Append polite wrap-up if not already present
-                    if "senior" not in response_text.lower() and "specialist" not in response_text.lower() and "representative" not in response_text.lower():
+                    # Append polite wrap-up if user requested human/inspection and AI hasn't already promised it
+                    if not response_promises_handover and "senior" not in response_text.lower() and "specialist" not in response_text.lower() and "representative" not in response_text.lower() and "专员" not in response_text and "pegawai" not in response_text.lower():
                         response_text += f"\n\nThank you, {contact_name}! 😊 We have noted your request. A senior property specialist from Home IHC will contact you shortly to assist directly."
                 elif intent == "bank valuer" and 'valuer_data' in locals() and valuer_data:
                     handover_initiated = True
@@ -1314,6 +1326,14 @@ def run_lead_nurturing_daemon(self):
     - If customer interacted > 24 hours ago: free-form WhatsApp messages are prohibited;
       posts a private note in Chatwoot for human agent intervention or template dispatch.
     """
+    try:
+        from app.api.settings import get_system_toggle
+        if not get_system_toggle("lead_nurturing_enabled", default=True):
+            logger.info("[SKIPPED] Lead nurturing daemon: follow-up engine disabled via dashboard toggle.")
+            return {"status": "skipped", "reason": "followup_disabled"}
+    except Exception as te:
+        logger.warning(f"Could not check follow-up toggle in daemon: {te}")
+
     from app.services.lead_nurturing import LeadNurturingManager
     logger.info("Starting lead nurturing daemon run via LeadNurturingManager...")
     try:
