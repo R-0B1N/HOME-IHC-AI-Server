@@ -87,9 +87,11 @@ def view_document_inline(document_identifier: str, db: Session = Depends(get_db)
 
 
 @router.get("/proxy")
+@router.get("/proxy/{filename:path}")
 def proxy_document_inline(
     request: Request,
-    url: str = Query(..., description="Target document URL to stream inline")
+    url: str = Query(..., description="Target document URL to stream inline"),
+    filename: Optional[str] = None
 ):
     """
     Proxies an external or Chatwoot attachment URL and serves it with inline headers.
@@ -120,15 +122,14 @@ def proxy_document_inline(
             
         resp.raise_for_status()
 
-        content_type = resp.headers.get("Content-Type", "application/pdf")
-        filename = "document.pdf"
+        out_filename = filename or "document.pdf"
         if "filename=" in resp.headers.get("Content-Disposition", ""):
-            filename = resp.headers["Content-Disposition"].split("filename=")[-1].strip('"\' ')
-        elif url.split("?")[0].split("/")[-1]:
-            filename = url.split("?")[0].split("/")[-1]
+            out_filename = resp.headers["Content-Disposition"].split("filename=")[-1].strip('"\' ')
+        elif not filename and url.split("?")[0].split("/")[-1]:
+            out_filename = url.split("?")[0].split("/")[-1]
 
         headers = {
-            "Content-Disposition": f'inline; filename="{filename}"',
+            "Content-Disposition": f'inline; filename="{out_filename}"',
             "Access-Control-Allow-Origin": "*",
             "Accept-Ranges": "bytes",
             "Cache-Control": "public, max-age=3600"

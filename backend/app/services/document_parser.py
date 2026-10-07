@@ -82,7 +82,8 @@ def extract_text_from_document(
         "text": "", 
         "images": [], 
         "structured_data": {},
-        "file_name": effective_name
+        "file_name": effective_name,
+        "preview_image_bytes": None
     }
     
     try:
@@ -123,6 +124,18 @@ def extract_text_from_document(
                 
             raw_extracted_text = "\n".join(text_pages).strip()
             result["text"] = raw_extracted_text
+
+            # Always render high-resolution Page 1 thumbnail for mobile inline preview
+            if len(doc) > 0:
+                try:
+                    p0 = doc[0]
+                    rect0 = p0.rect
+                    max_dim0 = max(rect0.width, rect0.height)
+                    scale0 = (TARGET_IMAGE_MAX_DIM / max_dim0) if max_dim0 > TARGET_IMAGE_MAX_DIM else 1.0
+                    pix0 = p0.get_pixmap(matrix=fitz.Matrix(scale0, scale0), alpha=False)
+                    result["preview_image_bytes"] = pix0.tobytes("jpeg", jpg_quality=JPEG_QUALITY)
+                except Exception as p0_err:
+                    logger.warning(f"Could not render page 1 thumbnail: {p0_err}")
 
             # If document is mostly scanned raster drawings or blueprints (e.g. CAD drawings, land titles)
             if total_chars < 50:

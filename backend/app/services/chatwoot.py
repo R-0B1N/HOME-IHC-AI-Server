@@ -527,6 +527,29 @@ def set_priority(conversation_id: int, priority: str):
         # Not raising e because priority is a nice-to-have, and if API changes, it shouldn't crash the worker
         pass
 
+def update_conversation_status(conversation_id: int, status: str = "open"):
+    """
+    Updates the conversation status in Chatwoot (e.g. 'open', 'resolved', 'pending').
+    Crucial for human handovers so the conversation enters the human agent queue.
+    """
+    if not conversation_id or not CHATWOOT_BASE_URL:
+        return None
+
+    url = f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/toggle_status"
+    headers = {
+        "api_access_token": CHATWOOT_API_TOKEN,
+        "Content-Type": "application/json"
+    }
+    payload = {"status": status}
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=10)
+        response.raise_for_status()
+        logger.info(f"Successfully toggled status={status} for conversation {conversation_id}")
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"Failed to update conversation status to {status} for conv {conversation_id}: {e}")
+        return None
+
 def toggle_typing_status(conversation_id: int, status: str):
     """
     Toggles the typing status in a Chatwoot conversation.

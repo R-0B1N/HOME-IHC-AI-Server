@@ -81,6 +81,52 @@ class TestHandoverAndDashboardToggles(unittest.TestCase):
         # Re-enable
         set_system_toggle("lead_nurturing_enabled", True)
 
+    @patch("app.services.agent_logic.generate_conversational_response")
+    @patch("app.services.agent_logic.MultiIntentMemoryTracker.persist_customer_memory")
+    def test_dynamic_llm_promises_handover_triggers_state_completion(self, mock_persist, mock_gen):
+        """Validates that dynamic sparse LLM key 'promises_handover: true' triggers handover without regex reliance."""
+        from app.services.agent_logic import process_persona_state_machine
+
+        mock_gen.return_value = {
+            "response": "Hello, I will arrange for our lead to follow up with you.",
+            "intent": "buyer",
+            "promises_handover": True,
+            "asked_meeting": False,
+            "asked_photos": False,
+            "asked_specs": False,
+            "asked_alternatives": False,
+            "is_out_of_context": False,
+            "extracted_data": {}
+        }
+
+        res = process_persona_state_machine(
+            phone_number="+60129998888",
+            text="Can someone check on this property?",
+            conversation_history="",
+            session={"state": "INITIAL", "collected_data": {}}
+        )
+
+        self.assertTrue(res["handover"], "Handover must be True when LLM sets promises_handover=True")
+        self.assertTrue(res["promises_handover"], "promises_handover must be True in return dict")
+        self.assertEqual(res["updated_session"]["state"], "COMPLETED", "Session state must transition to COMPLETED")
+
+    @patch("requests.post")
+    def test_update_conversation_status(self, mock_post):
+        """Validates that update_conversation_status calls toggle_status endpoint with status=open."""
+        from app.services.chatwoot import update_conversation_status
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"id": 456, "status": "open"}
+        mock_post.return_value = mock_resp
+
+        res = update_conversation_status(456, "open")
+        self.assertIsNotNone(res)
+        self.assertEqual(res["status"], "open")
+        mock_post.assert_called_once()
+        args, kwargs = mock_post.call_args
+        self.assertIn("/conversations/456/toggle_status", args[0])
+        self.assertEqual(kwargs["json"], {"status": "open"})
+
 
 if __name__ == "__main__":
     unittest.main()

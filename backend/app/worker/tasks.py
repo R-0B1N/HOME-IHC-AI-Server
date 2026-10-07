@@ -23,6 +23,7 @@ from app.services.chatwoot import (
     send_private_note,
     send_whatsapp_contact,
     send_whatsapp_template,
+    update_conversation_status,
 )
 from app.services.llm import generate_response, transcribe_audio, extract_property_search_criteria, extract_valuer_data, extract_wordpress_property
 from app.services.system_prompts import is_handover_promised
@@ -328,6 +329,12 @@ def dispatch_hot_lead_handover(
                 send_private_note(conversation_id, private_note_text)
             except Exception as ne:
                 logger.error(f"Failed to post internal private note on handover: {ne}")
+            try:
+                apply_label(conversation_id, ["human-handover", "hot-lead"])
+                set_priority(conversation_id, "urgent")
+                update_conversation_status(conversation_id, "open")
+            except Exception as le:
+                logger.warning(f"Could not apply handover labels/status to conv {conversation_id}: {le}")
 
         assigned_agent_list = [
             {"name": t["name"], "phone_number": t["phone"], "score": t["score"]}
@@ -493,6 +500,33 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                             if doc_images:
                                 logger.info(f"Extracted {len(doc_images)} images from document.")
                                 combined_images.extend(doc_images)
+
+                            # Mobile PDF Viewer Fix: Dispatch inline Page-1 JPEG preview and direct browser stream link
+                            preview_bytes = doc_result.get("preview_image_bytes")
+                            if preview_bytes and conversation_id:
+                                try:
+                                    import urllib.parse
+                                    from app.services.chatwoot import send_message_with_attachment
+                                    clean_doc_name = file_name_val or "Document.pdf"
+                                    backend_public_url = os.getenv("BACKEND_PUBLIC_URL", "https://api.bentongland.com.my").rstrip("/")
+                                    encoded_url = urllib.parse.quote(data_url, safe='')
+                                    mobile_viewer_url = f"{backend_public_url}/api/v1/documents/proxy/{urllib.parse.quote(clean_doc_name)}?url={encoded_url}"
+                                    preview_caption = (
+                                        f"📄 **Client Document Received**: `{clean_doc_name}`\n"
+                                        f"📱 *Mobile Preview (Page 1)* rendered below.\n"
+                                        f"🔗 [Open Full PDF in Mobile Browser]({mobile_viewer_url})"
+                                    )
+                                    send_message_with_attachment(
+                                        conversation_id=conversation_id,
+                                        content=preview_caption,
+                                        file_name=f"preview_{clean_doc_name}.jpg",
+                                        file_content=preview_bytes,
+                                        content_type="image/jpeg",
+                                        is_private=True
+                                    )
+                                    logger.info(f"Dispatched inline page 1 preview for {clean_doc_name} to conv {conversation_id}")
+                                except Exception as prev_err:
+                                    logger.warning(f"Could not dispatch inline document preview: {prev_err}")
                         except Exception as e:
                             logger.error(f"Failed to extract document text/images: {e}")
         final_prompt_text = "\n".join(combined_text).strip()
@@ -815,7 +849,8 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
             # 3. Or assistant response explicitly promises that a senior agent / specialist will follow up
             # 4. Or bank valuer submission complete
             handover_initiated = False
-            response_promises_handover = is_handover_promised(response_text)
+            llm_promises_handover = bool(agent_result.get("promises_handover"))
+            response_promises_handover = llm_promises_handover or is_handover_promised(response_text)
             if role not in ["admin", "employee"]:
                 if (
                     handover_from_state
