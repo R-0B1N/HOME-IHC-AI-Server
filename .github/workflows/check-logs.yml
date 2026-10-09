@@ -49,8 +49,12 @@ jobs:
                 if c
                   puts \"=== SPECIFIC TARGET CONVERSATION #{c.id} ===\"
                   puts \"Convo #{c.id}: Inbox #{c.inbox_id} | Status #{c.status} | Priority #{c.priority} | Labels: #{c.label_list} | Contact: #{c.contact&.name} (#{c.contact&.phone_number})\"
-                  c.messages.order(id: :desc).limit(10).reverse.each do |m|
-                    puts \"  [#{m.created_at}] Msg #{m.id} | #{m.message_type} | #{m.sender_type}: #{m.content.to_s.tr(\"\n\", ' ')[0..160]}\"
+                  puts \"Total Messages: #{c.messages.count}\"
+                  c.messages.order(id: :asc).each do |m|
+                    puts \"  [#{m.created_at}] Msg #{m.id} | #{m.message_type} | #{m.sender_type} (#{m.sender&.name}): #{m.content.to_s.tr(\"\n\", ' ')}\"
+                    m.attachments.each do |att|
+                      puts \"    -> ATTACHMENT: #{att.file_type} | #{att.external_url || att.data_url} | file: #{att.file&.filename}\"
+                    end
                   end
                 else
                   puts \"Target Conversation #{target_id} not found!\"
@@ -69,35 +73,46 @@ jobs:
             echo "======================================================="
             echo "3. REDIS STATE & ACTIVE QUEUES"
             echo "======================================================="
-            echo "Master AI Enabled:"
-            docker exec whatsapp_ai_redis_staging redis-cli get master_ai_enabled || echo "No master_ai_enabled"
-            echo "Active Convo Queues:"
-            docker exec whatsapp_ai_redis_staging redis-cli keys "convo_*" || echo "No convo keys"
-            echo "Active Message Locks:"
-            docker exec whatsapp_ai_redis_staging redis-cli keys "chatwoot_lock_*" || echo "No lock keys"
+            echo "Master AI Enabled (Staging):"
+            docker exec whatsapp_ai_redis_staging redis-cli get master_ai_enabled || echo "No staging master_ai_enabled"
+            echo "Master AI Enabled (Production):"
+            docker exec whatsapp_ai_redis_production redis-cli get master_ai_enabled || echo "No prod master_ai_enabled"
+            echo "Active Convo Queues (Staging):"
+            docker exec whatsapp_ai_redis_staging redis-cli keys "convo_*" || echo "No convo keys staging"
+            echo "Active Convo Queues (Production):"
+            docker exec whatsapp_ai_redis_production redis-cli keys "convo_*" || echo "No convo keys prod"
+            echo "Specific Phone Session (Production):"
+            docker exec whatsapp_ai_redis_production redis-cli get "session:+60178754316" || echo "No prod session"
+            echo "Specific Phone Session (Staging):"
+            docker exec whatsapp_ai_redis_staging redis-cli get "session:+60178754316" || echo "No staging session"
 
             echo "======================================================="
-            echo "4. STAGING API LOGS (LAST ${TAIL_N} LINES)"
+            echo "4. PRODUCTION WORKER LOGS (LAST ${TAIL_N} LINES)"
             echo "======================================================="
-            docker logs --tail "$TAIL_N" whatsapp_ai_api_staging || echo "No staging api logs"
+            docker logs --tail "$TAIL_N" whatsapp_ai_worker_production || echo "No production worker logs"
 
             echo "======================================================="
-            echo "5. STAGING WORKER LOGS (LAST ${TAIL_N} LINES)"
+            echo "5. PRODUCTION API LOGS (LAST ${TAIL_N} LINES)"
+            echo "======================================================="
+            docker logs --tail "$TAIL_N" whatsapp_ai_api_production || echo "No production api logs"
+
+            echo "======================================================="
+            echo "6. STAGING WORKER LOGS (LAST ${TAIL_N} LINES)"
             echo "======================================================="
             docker logs --tail "$TAIL_N" whatsapp_ai_worker_staging || echo "No staging worker logs"
 
             echo "======================================================="
-            echo "6. CHATWOOT WEB SERVER LOGS (LAST ${TAIL_N} LINES)"
+            echo "7. STAGING API LOGS (LAST ${TAIL_N} LINES)"
+            echo "======================================================="
+            docker logs --tail "$TAIL_N" whatsapp_ai_api_staging || echo "No staging api logs"
+
+            echo "======================================================="
+            echo "8. CHATWOOT WEB SERVER LOGS (LAST ${TAIL_N} LINES)"
             echo "======================================================="
             docker logs --tail "$TAIL_N" crm-chatwoot-web || echo "No chatwoot web logs"
 
             echo "======================================================="
-            echo "7. CHATWOOT WORKER (SIDEKIQ) LOGS (LAST ${TAIL_N} LINES)"
-            echo "======================================================="
-            docker logs --tail "$TAIL_N" crm-chatwoot-worker || echo "No chatwoot worker logs"
-
-            echo "======================================================="
-            echo "8. VLLM SERVER LOGS (LAST 100 LINES)"
+            echo "9. VLLM SERVER LOGS (LAST 100 LINES)"
             echo "======================================================="
             docker logs --tail 100 crm-vllm 2>/dev/null || echo "No vllm logs"
 
