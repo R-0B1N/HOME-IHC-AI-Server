@@ -92,4 +92,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Document Formatting Defects**: Resolved 11 specific document layout and data hallucination defects (Items a-k).
 
 ### Removed
-- Deprecated legacy n8n JSON workflows and obsolete expect deployment scripts.
+- Deprecated legacy prototyping workflow JSONs and obsolete expect deployment scripts.

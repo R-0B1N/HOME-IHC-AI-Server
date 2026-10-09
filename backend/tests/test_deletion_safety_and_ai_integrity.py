@@ -238,7 +238,7 @@ class TestDeletionSafetyAndAIIntegrity(unittest.TestCase):
     def test_workflow_templates_definitions_integrity(self):
         """
         Validates that seed_workflows.py contains all essential personas and steps,
-        proving that external n8n JSONs in workflows/ are completely unnecessary.
+        proving that external workflow JSONs in workflows/ are completely unnecessary.
         """
         from scripts.seed_workflows import seed_workflows
         import inspect

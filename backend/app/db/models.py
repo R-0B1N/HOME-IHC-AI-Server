@@ -11,8 +11,8 @@ from sqlalchemy.dialects.postgresql import UUID, ARRAY
 logger = logging.getLogger(__name__)
 
 DB_HOST = os.getenv("DB_HOST", os.getenv("POSTGRES_HOST", "postgres"))
-DB_USER = os.getenv("POSTGRES_USER", os.getenv("DB_USER", "n8n"))
-DB_PASS = os.getenv("POSTGRES_PASSWORD", os.getenv("DB_PASSWORD", "n8n"))
+DB_USER = os.getenv("POSTGRES_USER", os.getenv("DB_USER", "postgres"))
+DB_PASS = os.getenv("POSTGRES_PASSWORD", os.getenv("DB_PASSWORD", "postgres"))
 DB_NAME = os.getenv("POSTGRES_DB", os.getenv("DB_NAME", "whatsapp_ai"))
 
 encoded_pass = quote_plus(DB_PASS) if DB_PASS else ""

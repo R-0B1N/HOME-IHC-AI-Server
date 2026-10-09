@@ -121,7 +121,7 @@ def on_startup():
 app.include_router(auth_router, prefix="/api/v1/auth", tags=["Authentication"])
 app.include_router(users_router, prefix="/api/v1/users", tags=["User Management"])
 app.include_router(webhooks_router, prefix="/api/v1/webhooks", tags=["Webhooks"])
-app.include_router(webhooks_router, prefix="/webhook", tags=["Legacy Webhook"]) # Fallback for old n8n webhook URL
+app.include_router(webhooks_router, prefix="/webhook", tags=["Legacy Webhook"]) # Fallback for legacy webhook URL
 app.include_router(wordpress_router, prefix="/api/v1/wordpress", tags=["WordPress"])
 app.include_router(wordpress_router, prefix="/api/v1/webhooks/wordpress", tags=["WordPress Webhook"])
 app.include_router(properties_router, prefix="/api/v1/properties", tags=["Properties"])
