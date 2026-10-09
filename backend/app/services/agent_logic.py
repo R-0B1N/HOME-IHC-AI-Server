@@ -68,7 +68,7 @@ class MultiIntentMemoryTracker:
     """
 
     @staticmethod
-    def extract_intent_entities(text: str) -> dict:
+    def extract_intent_entities(text: str, existing_role: str = None) -> dict:
         clean = (text or "").lower()
         
         # 1. Categories & property types
@@ -122,8 +122,8 @@ class MultiIntentMemoryTracker:
             except (ValueError, TypeError):
                 pass
 
-        # 5. Role
-        role = "buyer"
+        # 5. Role: Inherit existing role when prompt has no explicit role markers
+        role = existing_role or "buyer"
         if any(k in clean for k in ["sell", "selling", "list my", "jual", "出让", "想卖", "放盘"]):
             role = "seller"
         elif any(k in clean for k in ["rent out", "lease out", "for rent", "bagi sewa", "sewakan", "出租", "放租", "招租"]):
@@ -183,13 +183,19 @@ class MultiIntentMemoryTracker:
         active_inq = req_profile.get("active_inquiry") or {}
         retained_inqs = req_profile.get("retained_inquiries") or []
         
-        extracted = cls.extract_intent_entities(text)
+        # Derive existing role to preserve context across turns
+        current_existing_role = (
+            active_inq.get("role")
+            or session.get("collected_data", {}).get("customer_category")
+            or (session.get("current_agent", "").lower() if session.get("current_agent") in ["SELLER", "BUYER", "AGENT"] else None)
+        )
+        extracted = cls.extract_intent_entities(text, existing_role=current_existing_role)
         new_cat = extracted.get("category")
         new_label = extracted.get("property_type_label")
         new_loc = extracted.get("location")
         new_budget = extracted.get("budget")
         new_amp = extracted.get("power_amp")
-        new_role = extracted.get("role", "buyer")
+        new_role = extracted.get("role", current_existing_role or "buyer")
         
         # 1. Handle Concurrent Multi-Intent Search
         if extracted.get("is_concurrent") and extracted.get("concurrent_inquiries"):
@@ -505,8 +511,13 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
 
     # Detect and track customer language
     detected_lang = detect_customer_language(actual_text)
-    if detected_lang != "en" or not session.get("language"):
-        session["language"] = detected_lang
+    if actual_text:
+        if detected_lang in ["zh", "ms"]:
+            session["language"] = detected_lang
+        elif detected_lang == "en" and len(actual_text.split()) >= 2:
+            session["language"] = "en"
+        elif not session.get("language"):
+            session["language"] = detected_lang
     customer_lang = session.get("language", detected_lang)
 
     # Auto-reset session if in completed/stale state
@@ -569,7 +580,13 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
     seller_track = session.setdefault("seller_track", {})
     buyer_track = session.setdefault("buyer_track", {})
 
-    if turn_intent == "seller_intake":
+    is_existing_seller = (
+        seller_track.get("status") == "active"
+        or collected_data.get("customer_category") == "seller"
+        or session.get("current_agent") == "SELLER"
+    )
+
+    if turn_intent == "seller_intake" or (is_existing_seller and turn_intent not in ["buyer_search", "agent_inquiry", "agent"]):
         seller_track["status"] = "active"
         seller_track["last_active"] = datetime.datetime.utcnow().isoformat()
         if session.get("latest_document_extract"):
@@ -581,6 +598,8 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
     elif turn_intent == "buyer_search":
         buyer_track["status"] = "active"
         buyer_track["last_active"] = datetime.datetime.utcnow().isoformat()
+        session["current_agent"] = "BUYER"
+        collected_data["customer_category"] = "buyer"
     elif turn_intent in ["agent_inquiry", "agent"]:
         agent_track = session.setdefault("agent_track", {})
         agent_track["status"] = "active"
@@ -620,14 +639,25 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
                 "updated_session": session
             }
 
-    cached_prop = session.get("interested_property")
+    is_seller = (
+        seller_track.get("status") == "active"
+        or collected_data.get("customer_category") == "seller"
+        or session.get("current_agent") == "SELLER"
+        or turn_intent == "seller_intake"
+    )
 
-    # If no cached property, try to resolve from conversation history
-    if not cached_prop and conversation_history:
-        history_prop = find_matching_property(conversation_history)
-        if history_prop:
-            session["interested_property"] = history_prop
-            cached_prop = history_prop
+    if is_seller:
+        # A seller is listing their own property; purge any mistakenly cached inventory property
+        session.pop("interested_property", None)
+        cached_prop = None
+    else:
+        cached_prop = session.get("interested_property")
+        # If no cached property and not a seller, try to resolve from conversation history
+        if not cached_prop and conversation_history:
+            history_prop = find_matching_property(conversation_history)
+            if history_prop:
+                session["interested_property"] = history_prop
+                cached_prop = history_prop
 
     # 3. Dynamic RAG Property Search & Multi-Intent Priority Memory
     available_properties = []
@@ -701,6 +731,7 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
         collected_data=collected_data,
         customer_name=current_user_name,
         unlisted_property_text=_property_entity_text if _property_entity_detected else None,
+        is_seller=is_seller,
         **llm_kwargs
     )
 
@@ -741,7 +772,10 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
     images_to_send = []
 
     # 5. Handle Native WhatsApp Photos
-    if is_photo_request and cached_prop:
+    if is_seller:
+        # Sellers provide photos to Home IHC; do not dispatch inventory listing photos to a seller
+        images_to_send = []
+    elif is_photo_request and cached_prop:
         prop_images = cached_prop.get("image_urls") or []
         
         # If cached dict has no image_urls, query DB directly
@@ -1056,7 +1090,8 @@ def generate_conversational_response(
             )
         )
         effective_history = conversation_history if assistant_spoke else None
-        fallback_msg = get_multilingual_fallback(lang, effective_history)
+        is_seller_flag = kwargs.get("is_seller", False)
+        fallback_msg = get_multilingual_fallback(lang, effective_history, is_seller=is_seller_flag)
         return {
             "intent": "general",
             "asked_photos": False,
