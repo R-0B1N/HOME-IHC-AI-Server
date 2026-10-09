@@ -52,8 +52,12 @@ jobs:
                   puts \"Total Messages: #{c.messages.count}\"
                   c.messages.order(id: :asc).each do |m|
                     puts \"  [#{m.created_at}] Msg #{m.id} | #{m.message_type} | #{m.sender_type} (#{m.sender&.name}): #{m.content.to_s.tr(\"\n\", ' ')}\"
-                    m.attachments.each do |att|
-                      puts \"    -> ATTACHMENT: #{att.file_type} | #{att.external_url || att.data_url} | file: #{att.file&.filename}\"
+                    begin
+                      m.attachments.each do |att|
+                        puts \"    -> ATTACHMENT: #{att.file_type rescue 'unknown'}\"
+                      end
+                    rescue => e
+                      puts \"    -> ATTACHMENT ERROR: #{e.message}\"
                     end
                   end
                 else
