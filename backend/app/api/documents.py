@@ -122,6 +122,7 @@ def proxy_document_inline(
             
         resp.raise_for_status()
 
+        content_type = resp.headers.get("Content-Type", "application/pdf")
         out_filename = filename or "document.pdf"
         if "filename=" in resp.headers.get("Content-Disposition", ""):
             out_filename = resp.headers["Content-Disposition"].split("filename=")[-1].strip('"\' ')

@@ -222,7 +222,16 @@ def dispatch_hot_lead_handover(
         is_fallback = False
         is_tie = False
 
-        if max_score > 0:
+        if intent and str(intent).strip().upper() in ["AGENT", "AGENT_INQUIRY", "BROKER"]:
+            # Co-broke agent/broker inquiry: Handled directly by Irene Leong (Main Number: +601165144931)
+            routed_targets.append({
+                "phone": "+601165144931",
+                "name": "Irene Leong (Main Number)",
+                "score": 100,
+                "remark": "🤝 Co-Broke Agent Inquiry: Handled directly by Main Number."
+            })
+            max_score = 100
+        elif max_score > 0:
             top_candidates = [c for c in scored_candidates if c["score"] == max_score]
             if len(top_candidates) == 1:
                 winner = top_candidates[0]
@@ -304,7 +313,9 @@ def dispatch_hot_lead_handover(
             )
 
         routing_notes = []
-        if is_fallback:
+        if intent and str(intent).strip().upper() in ["AGENT", "AGENT_INQUIRY", "BROKER"]:
+            routing_notes.append("🤝 Routed directly to Main Number (Irene Leong: +601165144931) for Co-Broke qualification")
+        elif is_fallback:
             routing_notes.append("⚠️ Routed to Main Admin Lines (Score: 0 - No specialization matches)")
         elif is_tie:
             tied_names = [f"{t['name']} ({t['phone']})" for t in routed_targets]

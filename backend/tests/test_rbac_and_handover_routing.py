@@ -344,6 +344,48 @@ class TestDynamicHotLeadHandoverRouting(unittest.TestCase):
         mock_send_contact.assert_called_once()
         self.assertEqual(mock_send_contact.call_args[1]["contact_phone"], DEFAULT_FALLBACK_ADMIN_NUMBERS[0])
 
+    @patch("app.worker.tasks.send_whatsapp_contact")
+    @patch("app.worker.tasks.send_whatsapp_template")
+    @patch("app.worker.tasks.get_active_agents_and_employees")
+    def test_agent_cobroke_handover_routes_directly_to_main_number(self, mock_get_agents, mock_send_template, mock_send_contact):
+        """External Agent/Broker co-broke inquiries must route directly to Irene Leong Main Number (+601165144931)."""
+        mock_get_agents.return_value = [
+            {
+                "id": "1",
+                "name": "Agent Marcus",
+                "phone_number": "+60122222222",
+                "role": "agent",
+                "assigned_locations": ["Bentong"],
+                "assigned_property_types": ["Durian Land"]
+            }
+        ]
+
+        lead_data = {
+            "customer_phone": "+60189999999",
+            "customer_name": "Agent Jason (IQI Realty)",
+            "intent": "AGENT",
+            "city": "Bentong",
+            "property_category": ["Durian Land"],
+            "title": "Co-broking inquiry for buyer",
+            "inquiry_text": "I have a buyer looking for 5 acres durian land in Bentong"
+        }
+
+        result = dispatch_hot_lead_handover(lead_data)
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["winning_score"], 100)
+        self.assertEqual(len(result["assigned_agents"]), 1)
+        self.assertEqual(result["assigned_agents"][0]["phone_number"], "+601165144931")
+        self.assertEqual(result["assigned_agents"][0]["name"], "Irene Leong (Main Number)")
+
+        # Dispatched template to Irene Leong Main Number
+        self.assertEqual(mock_send_template.call_count, 1)
+        self.assertEqual(mock_send_template.call_args[1]["to_phone"], "+601165144931")
+
+        # Contact card sent to external agent customer with Irene Leong's number
+        mock_send_contact.assert_called_once()
+        self.assertEqual(mock_send_contact.call_args[1]["contact_phone"], "+601165144931")
+
 
 class TestRBACPromptAndDataIsolation(unittest.TestCase):
     """Test AI prompt isolation across Customer, Agent/Employee, and Admin tiers."""

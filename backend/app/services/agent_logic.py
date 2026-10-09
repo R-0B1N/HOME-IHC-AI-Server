@@ -581,6 +581,12 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
     elif turn_intent == "buyer_search":
         buyer_track["status"] = "active"
         buyer_track["last_active"] = datetime.datetime.utcnow().isoformat()
+    elif turn_intent in ["agent_inquiry", "agent"]:
+        agent_track = session.setdefault("agent_track", {})
+        agent_track["status"] = "active"
+        agent_track["last_active"] = datetime.datetime.utcnow().isoformat()
+        session["current_agent"] = "AGENT"
+        collected_data["customer_category"] = "agent"
 
     # Conversation 71 Protocol: Unidentified Listing & Advertisement Inquiry
     is_unidentified_inquiry = (turn_intent == "unidentified_listing") or (
