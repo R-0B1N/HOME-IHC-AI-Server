@@ -8,10 +8,71 @@ CHATWOOT_BASE_URL = os.getenv("CHATWOOT_BASE_URL", "http://localhost:3000")
 CHATWOOT_API_TOKEN = os.getenv("CHATWOOT_API_TOKEN", "")
 CHATWOOT_ACCOUNT_ID = os.getenv("CHATWOOT_ACCOUNT_ID", "1")
 
+def resolve_whatsapp_phone_number_id(inbox_id: int, override_phone_number_id: str = None) -> tuple:
+    """
+    Resolves WhatsApp API Key and Phone Number ID with strict Staging vs Production isolation.
+    Guarantees that staging never dispatches messages through the production main line (1039310802596891).
+    """
+    inbox = get_inbox_details(inbox_id)
+    provider_config = inbox.get("provider_config", {}) if inbox else {}
+    api_key = provider_config.get("api_key") or os.getenv("WHATSAPP_API_TOKEN") or os.getenv("WHATSAPP_APP_SECRET")
+
+    is_staging = (
+        os.getenv("ENVIRONMENT", "").lower() == "staging"
+        or os.getenv("APP_ENV") == "staging"
+        or "staging" in os.getenv("REDIS_HOST", "")
+        or os.getenv("DB_HOST") == "whatsapp_ai_db_staging"
+        or str(inbox_id) == str(os.getenv("STAGING_INBOX_ID", "4"))
+    )
+
+    staging_default_phone = "1033113423218081"
+    prod_default_phone = "1039310802596891"
+    default_phone = staging_default_phone if is_staging else prod_default_phone
+
+    phone_number_id = (
+        override_phone_number_id
+        or provider_config.get("phone_number_id")
+        or os.getenv("WHATSAPP_TEMPLATE_PHONE_NUMBER_ID")
+        or default_phone
+    )
+
+    # HARD STAGING ISOLATION GUARD:
+    # Under no circumstances should staging environment use the production phone number ID
+    if is_staging and str(phone_number_id) == prod_default_phone:
+        logger.warning(
+            f"[STAGING SAFETY] Prevented staging from dispatching via production phone_number_id ({prod_default_phone}). "
+            f"Enforcing staging test number ID ({staging_default_phone})."
+        )
+        phone_number_id = staging_default_phone
+
+    return api_key, str(phone_number_id)
+
+
 def send_message(conversation_id: int, content: str):
     """
     Sends a message back to the Chatwoot conversation.
+    In staging, guards against dispatching public messages to production inboxes.
     """
+    is_staging = (
+        os.getenv("ENVIRONMENT", "").lower() == "staging"
+        or os.getenv("APP_ENV") == "staging"
+        or "staging" in os.getenv("REDIS_HOST", "")
+        or os.getenv("DB_HOST") == "whatsapp_ai_db_staging"
+    )
+    if is_staging:
+        staging_inbox_id = str(os.getenv("STAGING_INBOX_ID", "4"))
+        conv = get_conversation_details(conversation_id)
+        conv_inbox = str(conv.get("inbox_id", ""))
+        if conv_inbox and conv_inbox != staging_inbox_id:
+            logger.warning(
+                f"[STAGING SAFETY] Suppressed public outgoing message to production conversation {conversation_id} "
+                f"(inbox {conv_inbox} != staging inbox {staging_inbox_id}). Diverted to internal note."
+            )
+            return send_private_note(
+                conversation_id,
+                f"⚠️ [STAGING SAFETY] Automated message suppressed from production inbox {conv_inbox}:\n\n{content}"
+            )
+
     url = f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages"
     headers = {
         "api_access_token": CHATWOOT_API_TOKEN,
@@ -55,9 +116,10 @@ def send_private_note(conversation_id: int, content: str):
         logger.error(f"Failed to post private note to Chatwoot: {e}")
         return None
 
-def send_message_with_attachment(conversation_id: int, content: str, file_name: str, file_content: bytes, content_type: str):
+def send_message_with_attachment(conversation_id: int, content: str, file_name: str, file_content: bytes, content_type: str, is_private: bool = False):
     """
     Sends a message back to the Chatwoot conversation with an attachment.
+    Can be sent as a public message (to WhatsApp customer) or as an internal private note.
     """
     url = f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages"
     headers = {
@@ -66,7 +128,7 @@ def send_message_with_attachment(conversation_id: int, content: str, file_name: 
     data = {
         "content": content,
         "message_type": "outgoing",
-        "private": "false"
+        "private": "true" if is_private else "false"
     }
     files = {
         "attachments[]": (file_name, file_content, content_type)
@@ -75,7 +137,7 @@ def send_message_with_attachment(conversation_id: int, content: str, file_name: 
     try:
         response = requests.post(url, headers=headers, data=data, files=files)
         response.raise_for_status()
-        logger.info(f"Successfully sent message with attachment to Chatwoot conversation {conversation_id}")
+        logger.info(f"Successfully sent message with attachment to Chatwoot conversation {conversation_id} (private={is_private})")
         return response.json()
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to send message with attachment to Chatwoot: {e}")
@@ -93,10 +155,7 @@ def send_whatsapp_image(inbox_id: int, to_phone: str, image_url: str, caption: s
     if not image_url or not to_phone:
         return None
         
-    inbox = get_inbox_details(inbox_id)
-    provider_config = inbox.get("provider_config", {})
-    api_key = provider_config.get("api_key") or os.getenv("WHATSAPP_API_TOKEN") or os.getenv("WHATSAPP_APP_SECRET")
-    phone_number_id = override_phone_number_id or provider_config.get("phone_number_id") or os.getenv("WHATSAPP_TEMPLATE_PHONE_NUMBER_ID", "1039310802596891")
+    api_key, phone_number_id = resolve_whatsapp_phone_number_id(inbox_id, override_phone_number_id)
     
     if not api_key or not phone_number_id:
         logger.warning(f"Missing API key or phone number ID for sending native image to {to_phone}")
@@ -130,6 +189,64 @@ def send_whatsapp_image(inbox_id: int, to_phone: str, image_url: str, caption: s
         if hasattr(e, 'response') and e.response is not None:
             logger.error(f"Response: {e.response.text}")
         return None
+
+
+def send_whatsapp_document(inbox_id: int, to_phone: str, document_url: str = None, file_content: bytes = None, file_name: str = "Document.xlsx", caption: str = None, override_phone_number_id: str = None):
+    """
+    Sends a native WhatsApp Document directly via WhatsApp Cloud API or Chatwoot attachment.
+    """
+    if not to_phone:
+        return None
+        
+    api_key, phone_number_id = resolve_whatsapp_phone_number_id(inbox_id, override_phone_number_id)
+    clean_to_phone = to_phone.replace("+", "").replace(" ", "").replace("-", "")
+
+    # If document_url is provided, use WhatsApp Cloud API direct link
+    if document_url and api_key and phone_number_id:
+        url = f"https://graph.facebook.com/v21.0/{phone_number_id}/messages"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": clean_to_phone,
+            "type": "document",
+            "document": {
+                "link": document_url,
+                "filename": file_name
+            }
+        }
+        if caption:
+            payload["document"]["caption"] = caption
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=15)
+            response.raise_for_status()
+            logger.info(f"Successfully sent native WhatsApp document to {clean_to_phone} via URL")
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to send native whatsapp document via URL to {clean_to_phone}: {e}")
+
+    # Fallback / file_content dispatch via Chatwoot conversation
+    if file_content:
+        try:
+            contact_id = get_or_create_contact(clean_to_phone, f"Staff/Admin ({clean_to_phone})")
+            if contact_id:
+                conv_id = create_conversation(contact_id, inbox_id)
+                if conv_id:
+                    mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if file_name.endswith(".xlsx") else "application/pdf"
+                    return send_message_with_attachment(
+                        conversation_id=conv_id,
+                        content=caption or f"📄 {file_name}",
+                        file_name=file_name,
+                        file_content=file_content,
+                        content_type=mime,
+                        is_private=False
+                    )
+        except Exception as ce:
+            logger.error(f"Failed to dispatch document via Chatwoot to {clean_to_phone}: {ce}")
+            
+    return None
 
 
 def send_chatwoot_image_attachment(conversation_id: int, image_url: str, caption: str = None):
@@ -199,10 +316,7 @@ def send_whatsapp_contact(inbox_id: int, to_phone: str, contact_name: str, conta
     Sends a native WhatsApp Contact Card directly using the WhatsApp Cloud API.
     Uses the credentials stored in the Chatwoot inbox's provider_config, with env fallbacks.
     """
-    inbox = get_inbox_details(inbox_id)
-    provider_config = inbox.get("provider_config", {})
-    api_key = provider_config.get("api_key") or os.getenv("WHATSAPP_API_TOKEN") or os.getenv("WHATSAPP_APP_SECRET")
-    phone_number_id = override_phone_number_id or provider_config.get("phone_number_id") or os.getenv("WHATSAPP_TEMPLATE_PHONE_NUMBER_ID", "1039310802596891")
+    api_key, phone_number_id = resolve_whatsapp_phone_number_id(inbox_id, override_phone_number_id)
     
     if not api_key or not phone_number_id:
         logger.error(f"Missing API key or phone number ID for sending contact card to {to_phone}")
@@ -249,7 +363,7 @@ def send_whatsapp_contact(inbox_id: int, to_phone: str, contact_name: str, conta
             logger.error(f"Response: {e.response.text}")
         return None
 
-def send_whatsapp_template(inbox_id: int, to_phone: str, template_name: str, parameters: list, language_code: str = "en", override_phone_number_id: str = None):
+def send_whatsapp_template(inbox_id: int, to_phone: str, template_name: str, parameters: list, language_code: str = "en_US", override_phone_number_id: str = None):
     """
     Sends a WhatsApp Template Message via the Graph API.
     parameters should be a list of strings mapping to {{1}}, {{2}}, etc.
@@ -258,10 +372,7 @@ def send_whatsapp_template(inbox_id: int, to_phone: str, template_name: str, par
     phone_number_id. This is needed when the template is registered on a different WABA
     than the inbox's phone number.
     """
-    inbox = get_inbox_details(inbox_id)
-    provider_config = inbox.get("provider_config", {})
-    api_key = provider_config.get("api_key")
-    phone_number_id = override_phone_number_id or provider_config.get("phone_number_id")
+    api_key, phone_number_id = resolve_whatsapp_phone_number_id(inbox_id, override_phone_number_id)
     
     if not api_key or not phone_number_id:
         logger.error(f"Missing API key or phone number ID in inbox {inbox_id} for sending template")
@@ -273,7 +384,7 @@ def send_whatsapp_template(inbox_id: int, to_phone: str, template_name: str, par
         "Content-Type": "application/json"
     }
     
-    clean_to_phone = to_phone.replace("+", "")
+    clean_to_phone = to_phone.replace("+", "").replace(" ", "").replace("-", "")
     
     # Construct template components
     body_parameters = []
@@ -302,14 +413,31 @@ def send_whatsapp_template(inbox_id: int, to_phone: str, template_name: str, par
     }
     
     try:
-        response = requests.post(url, headers=headers, json=payload)
+        response = requests.post(url, headers=headers, json=payload, timeout=15)
         response.raise_for_status()
-        logger.info(f"Successfully sent WhatsApp template '{template_name}' to {clean_to_phone}")
+        logger.info(f"Successfully sent WhatsApp template '{template_name}' ({language_code}) to {clean_to_phone}")
         return response.json()
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to send template message: {e}")
+        resp_text = ""
         if hasattr(e, 'response') and e.response is not None:
-            logger.error(f"Response: {e.response.text}")
+            resp_text = e.response.text
+            logger.error(f"Response: {resp_text}")
+            
+        # Automatic fallback for common English translation mismatch (error 132001)
+        if "132001" in resp_text:
+            alt_lang = "en" if language_code == "en_US" else "en_US"
+            logger.info(f"Retrying template '{template_name}' with alternative language code '{alt_lang}'...")
+            payload["template"]["language"]["code"] = alt_lang
+            try:
+                retry_resp = requests.post(url, headers=headers, json=payload, timeout=15)
+                retry_resp.raise_for_status()
+                logger.info(f"Successfully sent WhatsApp template '{template_name}' with fallback language '{alt_lang}' to {clean_to_phone}")
+                return retry_resp.json()
+            except Exception as retry_err:
+                logger.error(f"Fallback retry with '{alt_lang}' also failed: {retry_err}")
+                if hasattr(retry_err, 'response') and retry_err.response is not None:
+                    logger.error(f"Fallback response: {retry_err.response.text}")
         return None
 
 def get_conversation_details(conversation_id: int) -> dict:

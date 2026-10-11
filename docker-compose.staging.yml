@@ -41,6 +41,7 @@ services:
       - CHATWOOT_BASE_URL=http://crm-chatwoot-web:3000
       - CHATWOOT_API_TOKEN=E8wuqP3YDvyPXYwoQcTXLnTT
       - OLLAMA_BASE_URL=http://crm-vllm:8000
+      - WHATSAPP_TEMPLATE_PHONE_NUMBER_ID=1033113423218081
     depends_on:
       - redis_staging
       - db_staging
@@ -72,6 +73,7 @@ services:
       - CHATWOOT_BASE_URL=http://crm-chatwoot-web:3000
       - CHATWOOT_API_TOKEN=E8wuqP3YDvyPXYwoQcTXLnTT
       - OLLAMA_BASE_URL=http://crm-vllm:8000
+      - WHATSAPP_TEMPLATE_PHONE_NUMBER_ID=1033113423218081
     depends_on:
       - redis_staging
       - db_staging
@@ -100,6 +102,7 @@ services:
       - CHATWOOT_BASE_URL=http://crm-chatwoot-web:3000
       - CHATWOOT_API_TOKEN=E8wuqP3YDvyPXYwoQcTXLnTT
       - OLLAMA_BASE_URL=http://crm-vllm:8000
+      - WHATSAPP_TEMPLATE_PHONE_NUMBER_ID=1033113423218081
     depends_on:
       - redis_staging
       - db_staging

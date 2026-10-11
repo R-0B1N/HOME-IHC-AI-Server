@@ -201,10 +201,20 @@ def dispatch_hot_lead_handover(
         scored_candidates.sort(key=lambda x: x["score"], reverse=True)
         max_score = scored_candidates[0]["score"] if scored_candidates else 0
 
+        is_staging_env = (
+            os.getenv("DB_HOST") == "whatsapp_ai_db_staging"
+            or "staging" in os.getenv("REDIS_HOST", "")
+            or os.getenv("APP_ENV") == "staging"
+            or os.getenv("ENVIRONMENT", "").lower() == "staging"
+        )
+        staging_default_phone = "1033113423218081"
+        prod_default_phone = "1039310802596891"
         TEMPLATE_PHONE_NUMBER_ID = os.getenv(
             "WHATSAPP_TEMPLATE_PHONE_NUMBER_ID",
-            "1039310802596891"
+            staging_default_phone if is_staging_env else prod_default_phone
         )
+        if is_staging_env and str(TEMPLATE_PHONE_NUMBER_ID) == prod_default_phone:
+            TEMPLATE_PHONE_NUMBER_ID = staging_default_phone
 
         routed_targets = []
         is_fallback = False
@@ -273,9 +283,9 @@ def dispatch_hot_lead_handover(
             send_whatsapp_template(
                 inbox_id=inbox_id,
                 to_phone=target_phone,
-                template_name="new_lead_alert_utility",
+                template_name=os.getenv("WHATSAPP_HANDOVER_TEMPLATE", "hot_lead_alert_utility"),
                 parameters=template_params,
-                language_code="en",
+                language_code=os.getenv("WHATSAPP_HANDOVER_TEMPLATE_LANGUAGE", "en"),
                 override_phone_number_id=TEMPLATE_PHONE_NUMBER_ID
             )
             dispatched_phones.append(target_phone)
@@ -412,6 +422,7 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
         combined_text = []
         combined_images = []
         contact_info = messages[0].get("sender", {})
+        latest_doc_struct = None
         
         for msg_payload in messages:
             content = msg_payload.get("content", "")
@@ -446,10 +457,28 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                     elif file_type == "file":
                         logger.info("Document/PDF attachment detected.")
                         try:
-                            doc_result = extract_text_from_document(data_url, attachment.get("data_file_name", ""))
+                            file_name_val = (
+                                attachment.get("data_file_name") 
+                                or attachment.get("file_name") 
+                                or attachment.get("title") 
+                                or ""
+                            )
+                            content_type_val = attachment.get("content_type", "")
+                            extension_val = attachment.get("extension", "")
+                            doc_result = extract_text_from_document(
+                                data_url, 
+                                file_name=file_name_val,
+                                content_type=content_type_val,
+                                extension=extension_val
+                            )
                             doc_text = doc_result.get("text", "")
                             if doc_text:
                                 combined_text.append(f"[Document Content]: {doc_text}")
+                            
+                            doc_struct = doc_result.get("structured_data", {})
+                            if doc_struct:
+                                latest_doc_struct = doc_struct
+                                combined_text.append(f"[Document Analysis & Extracted Particulars]:\n{json.dumps(doc_struct, ensure_ascii=False, indent=2)}")
                             
                             doc_images = doc_result.get("images", [])
                             if doc_images:
@@ -460,8 +489,12 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
         final_prompt_text = "\n".join(combined_text).strip()
             
         if not final_prompt_text:
-            logger.info("No text or audio to process. Skipping.")
-            return {"status": "skipped", "reason": "empty aggregated input"}
+            if combined_images:
+                final_prompt_text = "[Customer shared land grant / document photo(s). Please analyze the document and extract property particulars.]"
+                logger.info(f"Synthesized prompt for {len(combined_images)} image attachment(s).")
+            else:
+                logger.info("No text, audio, or images to process. Skipping.")
+                return {"status": "skipped", "reason": "empty aggregated input"}
             
         # 2. LLM Intent Classification & Response Generation
         logger.info(f"Generating LLM response for aggregated text:\n{final_prompt_text}")
@@ -512,6 +545,23 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
             metadata=metadata
         )
         
+        if customer and latest_doc_struct:
+            try:
+                db_doc = SessionLocal()
+                try:
+                    c_rec = db_doc.query(Customer).filter(Customer.id == customer.id).first()
+                    if c_rec:
+                        c_meta = dict(c_rec.metadata_json or {})
+                        intake_props = c_meta.setdefault("intake_properties", [])
+                        intake_props.append(latest_doc_struct)
+                        c_meta["latest_document_extract"] = latest_doc_struct
+                        c_rec.metadata_json = c_meta
+                        db_doc.commit()
+                finally:
+                    db_doc.close()
+            except Exception as e:
+                logger.warning(f"Failed to persist intake property into customer metadata: {e}")
+
         if customer and customer.metadata_json and customer.metadata_json.get("bypass_ai"):
             logger.info(f"Customer {customer.id} has bypass_ai set. Skipping AI response.")
             try:
@@ -624,18 +674,40 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                     logger.error(f"Failed to fetch history: {e}")
                     conversation_history = ""
                     
-                # Perform RAG search for properties
-                logger.info(f"Extracting search criteria from prompt: {final_prompt_text}")
-                criteria = extract_property_search_criteria(final_prompt_text, conversation_history)
-                logger.info(f"Extracted criteria: {criteria}")
+                # Perform Zero-Keyword Semantic Turn Classification
+                from app.services.llm import classify_turn_intent
+                turn_intent = classify_turn_intent(
+                    prompt=final_prompt_text,
+                    conversation_history=conversation_history,
+                    has_document=bool(latest_doc_struct or (combined_images and "document" in final_prompt_text.lower())),
+                    document_extract=latest_doc_struct
+                )
                 
-                if criteria and any(criteria.values()):
-                    matched_properties = search_properties(criteria, limit=15)
-                    logger.info(f"Found {len(matched_properties)} matching properties.")
-                    db_context["data"]["properties"] = matched_properties
+                is_seller_intent = (
+                    role in ["seller", "landlord"]
+                    or turn_intent == "seller_intake"
+                )
+                if is_seller_intent:
+                    logger.info("Seller/landowner intent detected: suppressing buyer property recommendations.")
+                    db_context["data"]["properties"] = []
+                    db_context["data"]["seller_market_context"] = {
+                        "district": "Bentong",
+                        "agriculture_rate_benchmark": "RM 150,000 - RM 280,000 per acre for agricultural land depending on road access, terrain, and water source.",
+                        "service_note": "Home IHC provides direct off-market listing and marketing services directly to serious qualified buyers."
+                    }
                 else:
-                    # Fallback to general available properties if no criteria
-                    db_context["data"]["properties"] = [{"id": str(p.id), "name": p.title, "price": p.asking_price_myr, "status": p.listing_status} for p in db.query(Property).filter(Property.listing_status == "Available").limit(10).all()]
+                    logger.info(f"Extracting search criteria from prompt: {final_prompt_text}")
+                    # Strict User Utterance Search: Never contaminate criteria with assistant greetings
+                    criteria = extract_property_search_criteria(final_prompt_text, "")
+                    logger.info(f"Extracted criteria: {criteria}")
+                    
+                    if criteria and any(criteria.values()):
+                        matched_properties = search_properties(criteria, limit=15)
+                        logger.info(f"Found {len(matched_properties)} matching properties.")
+                        db_context["data"]["properties"] = matched_properties
+                    else:
+                        # Fallback to general available properties if no criteria
+                        db_context["data"]["properties"] = [{"id": str(p.id), "name": p.title, "price": p.asking_price_myr, "status": p.listing_status} for p in db.query(Property).filter(Property.listing_status == "Available").limit(10).all()]
         finally:
             db.close()
         
@@ -650,12 +722,17 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                 session.clear()
                 session.update(SessionManager._new_session())
             
+            if latest_doc_struct:
+                session["latest_document_extract"] = latest_doc_struct
+            session["turn_intent"] = turn_intent
+
             agent_result = process_persona_state_machine(
                 phone_number, final_prompt_text, session,
                 conversation_history=conversation_history,
                 contact_name=contact_name,
                 role=role,
-                db_context=db_context
+                db_context=db_context,
+                images=combined_images
             )
             session = agent_result.get("updated_session", session)
             
@@ -664,6 +741,8 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
             handover_from_state = agent_result.get("handover", False)
             assignee_email = agent_result.get("assignee_email")
             images_to_send = agent_result.get("images_to_send", [])
+            if is_seller_intent or turn_intent == "seller_intake":
+                images_to_send = []
             
             # Dynamic lead temperature based on 80% persona data completeness
             REQUIRED_PERSONA_KEYS = {
@@ -887,18 +966,21 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
         except Exception as e:
             logger.warning(f"Failed to turn typing status off: {e}")
             
-        # Update customer with bypass_ai ONLY after response is sent
-        if customer and handover_initiated:
+        # Update customer with lead_temp, last_interaction, and bypass_ai if handover
+        if customer:
             db = SessionLocal()
             try:
                 db_cust = db.query(Customer).filter(Customer.id == customer.id).first()
                 if db_cust:
                     meta = db_cust.metadata_json.copy() if db_cust.metadata_json else {}
-                    meta["bypass_ai"] = True
+                    meta["lead_temp"] = lead_temp
+                    if handover_initiated:
+                        meta["bypass_ai"] = True
                     db_cust.metadata_json = meta
+                    db_cust.last_interaction = datetime.utcnow()
                     db.commit()
             except Exception as e:
-                logger.error(f"Failed to update customer bypass_ai flag: {e}")
+                logger.error(f"Failed to update customer metadata/lead_temp: {e}")
                 db.rollback()
             finally:
                 db.close()
@@ -1249,21 +1331,24 @@ def run_lead_nurturing_daemon(self):
 
 
 @celery_app.task(bind=True, max_retries=2)
-def generate_and_send_weekly_reports(self, output_dir: str = None):
+def generate_and_send_weekly_reports(self, output_dir: str = None, send_to_admins: bool = True):
     """
-    Weekly Celery Beat task to compile and archive Buyer Database.xlsx and Owner Database.xlsx.
+    Weekly Celery Beat task to compile and archive Buyer Database.xlsx and Owner Database.xlsx,
+    and dispatch directly to Administrator WhatsApp lines.
     """
     logger.info("Executing weekly database reporting task...")
     try:
-        from app.services.reporting import generate_weekly_database_reports, DEFAULT_REPORTS_DIR
+        from app.services.reporting import WeeklyDatabaseReportManager, DEFAULT_REPORTS_DIR
         target_dir = output_dir or DEFAULT_REPORTS_DIR
-        reports = generate_weekly_database_reports(output_dir=target_dir)
-        logger.info(f"Successfully generated weekly reports: {reports}")
+        manager = WeeklyDatabaseReportManager(output_dir=target_dir)
+        outcome = manager.generate_and_dispatch(send_to_admins=send_to_admins)
+        logger.info(f"Successfully generated and dispatched weekly reports: {outcome}")
         return {
             "status": "success",
-            "reports": reports
+            "reports": outcome.get("reports"),
+            "dispatch_results": outcome.get("dispatch_results")
         }
     except Exception as exc:
-        logger.error(f"Failed to generate weekly reports: {exc}")
+        logger.error(f"Failed to generate/dispatch weekly reports: {exc}")
         raise self.retry(exc=exc, countdown=120)
 

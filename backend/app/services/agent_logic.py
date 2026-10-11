@@ -5,7 +5,7 @@ import os
 import datetime
 import redis
 from app.db.models import SessionLocal, Property, Customer
-from app.services.llm import llm_client, LLM_MODEL_NAME, _parse_json_from_llm
+from app.services.llm import llm_client, LLM_MODEL_NAME, _parse_json_from_llm, classify_turn_intent
 from app.services.db_services import find_matching_property, find_similar_properties, search_properties
 from app.services.system_prompts import (
     detect_customer_language,
@@ -13,8 +13,13 @@ from app.services.system_prompts import (
     get_multilingual_greeting,
     get_multilingual_fallback,
     get_multilingual_handover_wrapup,
+    get_multilingual_disambiguation_request,
+    get_multilingual_ah_tuck_handover,
     build_system_prompt,
-    ADMIN_EMAIL
+    ADMIN_EMAIL,
+    AH_TUCK_NAME,
+    AH_TUCK_PHONE,
+    AH_TUCK_EMAIL
 )
 
 logger = logging.getLogger(__name__)
@@ -170,7 +175,6 @@ class MultiIntentMemoryTracker:
         - Intelligent hybrid opportunity detection (dual-purpose properties).
         - Edge cases: Budget contradiction separation, location switching, role switches.
         """
-        import datetime
         now_iso = datetime.datetime.utcnow().isoformat()
         req_profile = session.setdefault("requirements_profile", {})
         intent_progression = session.setdefault("intent_progression", [])
@@ -400,6 +404,12 @@ class MultiIntentMemoryTracker:
                     meta["intent_progression"] = session.get("intent_progression")
                     meta["presented_properties"] = session.get("presented_properties")
                     meta["shortlisted_properties"] = session.get("shortlisted_properties")
+                    if session.get("seller_track"):
+                        meta["seller_track"] = session.get("seller_track")
+                    if session.get("buyer_track"):
+                        meta["buyer_track"] = session.get("buyer_track")
+                    if session.get("intake_properties"):
+                        meta["intake_properties"] = session.get("intake_properties")
                     if session.get("viewing_acknowledgement"):
                         meta["viewing_acknowledgement"] = session.get("viewing_acknowledgement")
                     if session.get("current_agent"):
@@ -419,7 +429,6 @@ def parse_viewing_schedule_datetime(text: str) -> datetime.datetime:
     Parses natural language date/time references into a concrete upcoming datetime.
     Supports English, Malay, and Chinese date/time phrases with standard business hours fallback.
     """
-    import datetime
     now = datetime.datetime.now()
     text_lower = (text or "").lower()
     target_dt = now + datetime.timedelta(days=1)
@@ -481,7 +490,7 @@ def parse_viewing_schedule_datetime(text: str) -> datetime.datetime:
     return target_dt.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
 
-def process_persona_state_machine(phone_number: str, text: str = "", session: dict = None, conversation_history: str = "", contact_name: str = None, raw_text: str = None, **kwargs) -> dict:
+def process_persona_state_machine(phone_number: str, text: str = "", session: dict = None, conversation_history: str = "", contact_name: str = None, raw_text: str = None, images: list = None, **kwargs) -> dict:
     """
     Enterprise-standard Conversational AI Engine for Home IHC.
     Engages naturally, provides on-demand property specs, dispatches native WhatsApp photos,
@@ -546,6 +555,64 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
                 _property_entity_text = raw_text.strip()
                 break
 
+    # 2.5 Dynamic Semantic Turn Classification & Conversation 71 Guard
+    turn_intent = classify_turn_intent(
+        prompt=raw_text,
+        conversation_history=conversation_history,
+        has_document=bool(session.get("latest_document_extract")),
+        document_extract=session.get("latest_document_extract")
+    )
+    session["turn_intent"] = turn_intent
+
+    # Manage Persistent Dual-Track State Machine
+    seller_track = session.setdefault("seller_track", {})
+    buyer_track = session.setdefault("buyer_track", {})
+
+    if turn_intent == "seller_intake":
+        seller_track["status"] = "active"
+        seller_track["last_active"] = datetime.datetime.utcnow().isoformat()
+        if session.get("latest_document_extract"):
+            intake_list = seller_track.setdefault("intake_properties", [])
+            intake_list.append(session.get("latest_document_extract"))
+            session["intake_properties"] = intake_list
+        session["current_agent"] = "SELLER"
+        collected_data["customer_category"] = "seller"
+    elif turn_intent == "buyer_search":
+        buyer_track["status"] = "active"
+        buyer_track["last_active"] = datetime.datetime.utcnow().isoformat()
+
+    # Conversation 71 Protocol: Unidentified Listing & Advertisement Inquiry
+    is_unidentified_inquiry = (turn_intent == "unidentified_listing") or (
+        session.get("unidentified_listing_turns", 0) >= 1 and not matched_prop and not _property_entity_detected
+    )
+    if not matched_prop and is_unidentified_inquiry:
+        unidentified_turns = session.get("unidentified_listing_turns", 0) + 1
+        session["unidentified_listing_turns"] = unidentified_turns
+        
+        if unidentified_turns >= 2:
+            # Turn 2+: Anti-Looping Handover Guard -> Transfer immediately to Ah Tuck (+60129663589)
+            session["state"] = "COMPLETED"
+            session["handover"] = True
+            handover_msg = get_multilingual_ah_tuck_handover(customer_lang, current_user_name)
+            MultiIntentMemoryTracker.persist_customer_memory(phone_number, session)
+            return {
+                "response": handover_msg,
+                "handover": True,
+                "assignee_email": AH_TUCK_EMAIL,
+                "images_to_send": [],
+                "updated_session": session
+            }
+        else:
+            # Turn 1: Listing Disambiguation Protocol -> Ask for ad screenshot/photo/link
+            disambig_msg = get_multilingual_disambiguation_request(customer_lang, current_user_name)
+            MultiIntentMemoryTracker.persist_customer_memory(phone_number, session)
+            return {
+                "response": disambig_msg,
+                "handover": False,
+                "images_to_send": [],
+                "updated_session": session
+            }
+
     cached_prop = session.get("interested_property")
 
     # If no cached property, try to resolve from conversation history
@@ -585,7 +652,13 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
         session["interested_property"] = None
         cached_prop = None
 
-    if not cached_prop:
+    if turn_intent == "seller_intake":
+        # Suppress buyer inventory search during seller intake
+        available_properties = []
+        hybrid_properties = []
+        cached_prop = None
+        session["interested_property"] = None
+    elif not cached_prop:
         # Search DB for primary active criteria (1st Priority)
         primary_crit = memory_context["primary_criteria"]
         has_any_criteria = any(v for v in primary_crit.values() if v and str(v).lower() not in ["none", "null", ""])
@@ -609,6 +682,8 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
     # 4. LLM Intent & Conversational Generation
     llm_kwargs = dict(kwargs)
     llm_kwargs["customer_language"] = customer_lang
+    if images:
+        llm_kwargs["images"] = images
     llm_analysis = generate_conversational_response(
         text=raw_text,
         cached_property=cached_prop,
@@ -769,7 +844,6 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
 
     # Track viewing acknowledgement status if user expressed inspection intent
     if user_books_cached_viewing or bool(asked_meeting) or any(k in raw_text.lower() for k in ["viewing", "看房", "睇楼", "tengok rumah", "tengok tanah", "arrange viewing", "schedule viewing"]):
-        import datetime
         prop_title = cached_prop.get('title') if cached_prop else (session.get("requirements_profile", {}).get("active_inquiry", {}).get("property_type_label") or "Property")
         session["viewing_acknowledgement"] = {
             "status": "Scheduled",
@@ -851,15 +925,31 @@ def generate_conversational_response(
         total_chars = len(system_prompt) + len(history_to_use) + len(text or "")
         est_input_tokens = int(total_chars / 3.0)
 
+    images = kwargs.get("images") or []
     # Bounded output token budget (Ample completion room for complete response)
-    safe_max_tokens = max(250, min(450, 2035 - est_input_tokens))
+    safe_max_tokens = max(350, min(550, 2035 - est_input_tokens)) if images else max(250, min(450, 2035 - est_input_tokens))
 
     messages = [
         {"role": "system", "content": system_prompt}
     ]
     if history_to_use:
         messages.append({"role": "system", "content": f"Recent Conversation History:\n{history_to_use}"})
-    messages.append({"role": "user", "content": text})
+    
+    if images:
+        user_content = []
+        user_prompt_text = (text or "").strip() or "Please analyze the attached property document / land title / image and advise."
+        user_content.append({"type": "text", "text": user_prompt_text})
+        for img in images:
+            if isinstance(img, str):
+                if img.startswith("http://") or img.startswith("https://") or img.startswith("data:"):
+                    user_content.append({"type": "image_url", "image_url": {"url": img}})
+                else:
+                    user_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img}"}})
+            elif isinstance(img, dict) and img.get("url"):
+                user_content.append({"type": "image_url", "image_url": {"url": img["url"]}})
+        messages.append({"role": "user", "content": user_content})
+    else:
+        messages.append({"role": "user", "content": text or ""})
 
     try:
         response = llm_client.chat.completions.create(
