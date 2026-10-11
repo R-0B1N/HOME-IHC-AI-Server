@@ -26,31 +26,67 @@ try:
 except Exception:
     staging_redis_client = None
 
+_IN_MEMORY_SETTINGS = {
+    "master_ai_enabled": True,
+    "lead_nurturing_enabled": True
+}
+
+def get_redis_client_for_env(env: Optional[str] = None):
+    if env and env.lower() == "staging" and staging_redis_client:
+        return staging_redis_client
+    return redis_client
+
+def get_system_toggle(key: str, default: bool = True, env: Optional[str] = None) -> bool:
+    """Reads system toggle boolean with fallback to in-memory state on connection error."""
+    try:
+        client = get_redis_client_for_env(env)
+        val = client.get(key)
+        if val is not None:
+            res = val.decode("utf-8").strip().lower() in ("true", "1", "yes")
+            _IN_MEMORY_SETTINGS[key] = res
+            return res
+    except Exception as e:
+        logger.warning(f"Error accessing Redis for toggle '{key}': {e}. Using fallback.")
+    return _IN_MEMORY_SETTINGS.get(key, default)
+
+def set_system_toggle(key: str, enabled: bool, env: Optional[str] = None) -> bool:
+    """Sets system toggle boolean with in-memory persistence and Redis propagation."""
+    _IN_MEMORY_SETTINGS[key] = enabled
+    status_str = "true" if enabled else "false"
+    try:
+        client = get_redis_client_for_env(env)
+        client.set(key, status_str)
+        return True
+    except Exception as e:
+        logger.warning(f"Error persisting toggle '{key}' to Redis: {e}.")
+        return False
+
 class AIToggleState(BaseModel):
     enabled: bool
 
 @router.get("/ai-status", response_model=AIToggleState)
-def get_ai_status():
-    status = redis_client.get("master_ai_enabled")
-    if status is None:
-        return {"enabled": True}  # Default is ON
-    return {"enabled": status.decode("utf-8") == "true"}
+def get_ai_status(environment: Optional[str] = None):
+    enabled = get_system_toggle("master_ai_enabled", default=True, env=environment)
+    return {"enabled": enabled}
 
 @router.post("/ai-status", response_model=AIToggleState)
-def set_ai_status(state: AIToggleState):
-    status_str = "true" if state.enabled else "false"
-    redis_client.set("master_ai_enabled", status_str)
+def set_ai_status(state: AIToggleState, environment: Optional[str] = None):
+    set_system_toggle("master_ai_enabled", state.enabled, env=environment)
     
     if state.enabled:
         # Re-trigger all pending conversations
-        from app.worker.tasks import process_conversation_queue
-        import time
-        keys = redis_client.keys("convo_queue_*")
-        for key in keys:
-            conversation_id = key.decode("utf-8").split("_")[-1]
-            process_conversation_queue.apply_async(
-                args=[int(conversation_id), time.time()]
-            )
+        try:
+            from app.worker.tasks import process_conversation_queue
+            import time
+            client = get_redis_client_for_env(environment)
+            keys = client.keys("convo_queue_*")
+            for key in keys:
+                conversation_id = key.decode("utf-8").split("_")[-1]
+                process_conversation_queue.apply_async(
+                    args=[int(conversation_id), time.time()]
+                )
+        except Exception as e:
+            logger.warning(f"Could not re-trigger queued conversations: {e}")
             
     return {"enabled": state.enabled}
 
@@ -58,28 +94,46 @@ def set_ai_status(state: AIToggleState):
 @router.get("/staging/ai-status", response_model=AIToggleState)
 def get_staging_ai_status(admin=Depends(require_admin)):
     """Admin-only endpoint to get AI response toggle state for Staging environment."""
-    try:
-        client = staging_redis_client or redis_client
-        status = client.get("master_ai_enabled")
-        if status is None:
-            return {"enabled": True}
-        return {"enabled": status.decode("utf-8") == "true"}
-    except Exception as e:
-        logger.error(f"Error reading staging Redis: {e}")
-        return {"enabled": True}
+    enabled = get_system_toggle("master_ai_enabled", default=True, env="staging")
+    return {"enabled": enabled}
 
 
 @router.post("/staging/ai-status", response_model=AIToggleState)
 def set_staging_ai_status(state: AIToggleState, admin=Depends(require_admin)):
     """Admin-only endpoint to set AI response toggle state for Staging environment."""
+    set_system_toggle("master_ai_enabled", state.enabled, env="staging")
+    return {"enabled": state.enabled}
+
+
+@router.get("/followup-status", response_model=AIToggleState)
+def get_followup_status(environment: Optional[str] = None):
+    """Retrieves current Lead Follow-up / Nurturing engine toggle state."""
+    enabled = get_system_toggle("lead_nurturing_enabled", default=True, env=environment)
+    return {"enabled": enabled}
+
+
+@router.post("/followup-status", response_model=AIToggleState)
+def set_followup_status(state: AIToggleState, environment: Optional[str] = None):
+    """Toggles Lead Follow-up / Nurturing engine state in real time and synchronizes config."""
+    set_system_toggle("lead_nurturing_enabled", state.enabled, env=environment)
+    
+    # Also update enabled inside lead_nurturing_config JSON for complete synchronization
     try:
-        client = staging_redis_client or redis_client
-        status_str = "true" if state.enabled else "false"
-        client.set("master_ai_enabled", status_str)
-        return {"enabled": state.enabled}
+        import json
+        client = get_redis_client_for_env(environment)
+        raw = client.get("lead_nurturing_config")
+        config = {}
+        if raw:
+            try:
+                config = json.loads(raw.decode("utf-8"))
+            except Exception:
+                config = {}
+        config["enabled"] = state.enabled
+        client.set("lead_nurturing_config", json.dumps(config))
     except Exception as e:
-        logger.error(f"Error updating staging Redis: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to update staging AI toggle: {e}")
+        logger.warning(f"Could not synchronize lead_nurturing_config JSON: {e}")
+        
+    return {"enabled": state.enabled}
 
 
 # =========================================================================
@@ -248,7 +302,11 @@ def update_nurturing_config(payload: NurturingConfigPayload, admin=Depends(requi
         "warm_cadence_days": payload.warm_cadence_days,
         "cold_cadence_days": payload.cold_cadence_days,
     }
-    redis_client.set("lead_nurturing_config", json.dumps(data))
+    set_system_toggle("lead_nurturing_enabled", payload.enabled)
+    try:
+        redis_client.set("lead_nurturing_config", json.dumps(data))
+    except Exception as e:
+        logger.warning(f"Could not save lead_nurturing_config to Redis: {e}")
     return {"status": "success", "config": data}
 
 

@@ -5,6 +5,46 @@ All notable changes to the Home IHC Real Estate WhatsApp AI CRM will be document
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - Milestone 2 (v1.1.0-dev)
+
+### Added
+- **Multimodal Document Parsing & Ingestion (`DocumentParser` & `DocumentExtractor`)**:
+  - Inbound media attachment handling for customer-submitted property documents, land titles, site photos, and raster drawings.
+  - CAD Blueprint downscaling budget limiting rendering to max 3 sheets, JPEG format (<500KB/sheet), and sub-5s latency.
+  - High-fidelity extraction of legal land particulars (`Pelan Bangunan`, Mukim, Lot, District, State, Acreage, Tenure, Owner, Architect).
+  - ActiveStorage Range byte-proxy streaming (`GET /api/v1/documents/proxy`) enabling inline document rendering in Chatwoot.
+- **Conversation 71 Mei Lin Anti-Looping Handover Guard**:
+  - Two-turn disambiguation protocol for unidentified property listings or advertisement inquiries without explicit database matches.
+  - Turn 1 requests listing screenshot/link; Turn 2+ triggers defensive handover to senior agent Ah Tuck (`+6012-9663589` / `tuck@homeihc.com`).
+  - Chatwoot simultaneous typing race condition lock preventing AI responses while staff agents are actively drafting replies.
+- **Dual-Track Conversational State Machine**:
+  - Multi-intent memory preservation separating Seller Intake track (`seller_track`) from Buyer Search track (`buyer_track`) without context wipeout during mid-conversation pivots.
+- **Staging Test Number Isolation**:
+  - Lead nurturing daemon in staging environments strictly filtered to verified test phone numbers to prevent accidental customer dispatches.
+- **Meta WhatsApp Template Multi-Language Fallback**:
+  - Auto-retries templates with alternative language codes (`en` vs `en_US`), resolving Meta API error `132001`.
+- **Property Dashboard Enhancements**:
+  - Full-width dynamic screen layout, private viewing attachment previews, and admin number auto-saving.
+
+- **Tag-Based RBAC Agent Specialization & Dispatch Engine**:
+  - Replaces legacy Two-Number routing logic with multi-tag specialization scoring across `assigned_locations` and `assigned_property_types`.
+  - Supports tie resolution with shared-case notices and zero-hit fallback to general inquiry line.
+- **Multilingual Handover Promise Detection & Instant Dispatch**:
+  - Added `is_handover_promised` regex engine detecting assistant promises of senior specialist follow-up across English, Chinese, and Bahasa Melayu.
+  - Removed artificial turn-counter constraints (`assistant_msg_count >= 1`), enabling immediate human handover upon first-turn request, viewing booking, or senior specialist mention.
+- **Unified Master AI & Automated Follow-Up Dashboard Switches**:
+  - Added `/settings/followup-status` GET/POST endpoints with real-time toggle persistence across Redis and Celery daemon execution.
+  - Added high-visibility Follow-Up ON/OFF pill button in dashboard header alongside Master AI switch with real-time 30s polling synchronization.
+  - Immediate toggle dispatch on Nurturing Config checkbox avoiding unpersisted state loss.
+  - Resilient Redis failover with in-memory caching preventing 500 errors on Redis disconnection.
+
+### Fixed
+- **Handover Suppression Bug**: Fixed issue where state machine failed to trigger human handover when assistant replies promised a senior agent would reach out.
+- **Dashboard Switch Desynchronization**: Resolved issue where Master AI and Follow-Up switches failed to reflect live state or persist across page refreshes.
+- **Reporting Generator Attribute Error**: Resolved missing attribute access during scheduled Excel database compilation.
+- **Settings Router Type Annotations**: Added missing `Optional` typing import in settings router.
+- **Webhook Timestamp Resolution**: Defensive timestamp parser preventing `UnboundLocalError` on malformed webhook payloads.
+
 ---
 
 ## [1.0.0] - 2026-09-24

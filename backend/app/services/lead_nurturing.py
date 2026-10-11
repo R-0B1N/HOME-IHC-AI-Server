@@ -587,6 +587,21 @@ class LeadNurturingManager:
         """
         Scans all database customers and processes due nurture cadences.
         """
+        # Respect Dashboard Follow-Up Toggle
+        try:
+            from app.api.settings import get_system_toggle
+            if not get_system_toggle("lead_nurturing_enabled", default=True):
+                logger.info("[SKIPPED] Automated lead follow-up engine is disabled via dashboard settings.")
+                return {
+                    "status": "skipped",
+                    "reason": "followup_disabled",
+                    "nurtured_messages": 0,
+                    "templates_dispatched": 0,
+                    "private_notes": 0
+                }
+        except Exception as toggle_err:
+            logger.warning(f"Could not check follow-up toggle status: {toggle_err}")
+
         db = self.db_session or SessionLocal()
         should_close = self.db_session is None
         nurtured_messages = 0

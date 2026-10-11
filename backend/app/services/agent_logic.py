@@ -10,6 +10,7 @@ from app.services.db_services import find_matching_property, find_similar_proper
 from app.services.system_prompts import (
     detect_customer_language,
     is_explicit_handover_request,
+    is_handover_promised,
     get_multilingual_greeting,
     get_multilingual_fallback,
     get_multilingual_handover_wrapup,
@@ -831,6 +832,8 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
         collected_data["scheduled_property_title"] = prop_title
         session["viewing_scheduled"] = True
 
+    handover_promised = is_handover_promised(response_text)
+    promises_handover = bool(llm_analysis.get("promises_handover"))
     if user_wants_immediate_human:
         handover = True
         name_str = f" {current_user_name}" if current_user_name else ""
@@ -838,8 +841,15 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
         if "senior" not in response_text.lower() and "specialist" not in response_text.lower() and "representative" not in response_text.lower() and "专员" not in response_text and "pegawai" not in response_text.lower():
             response_text = get_multilingual_handover_wrapup(customer_lang, current_user_name, cached_prop.get('title') if cached_prop else None)
         session["state"] = "COMPLETED"
-    elif user_books_cached_viewing:
+    elif user_books_cached_viewing or has_viewing_confirmation or bool(asked_meeting):
         handover = True
+        session["state"] = "COMPLETED"
+    elif handover_promised or promises_handover:
+        handover = True
+        session["state"] = "COMPLETED"
+
+    if handover:
+        session["handover"] = True
         session["state"] = "COMPLETED"
 
     # Track viewing acknowledgement status if user expressed inspection intent
@@ -865,6 +875,7 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
     return {
         "response": response_text,
         "handover": handover,
+        "promises_handover": promises_handover or handover_promised,
         "images_to_send": images_to_send,
         "schedule_viewing": schedule_viewing,
         "viewing_property": cached_prop if schedule_viewing else None,
@@ -984,6 +995,7 @@ def generate_conversational_response(
             parsed.setdefault("asked_photos", False)
             parsed.setdefault("asked_specs", False)
             parsed.setdefault("asked_meeting", False)
+            parsed.setdefault("promises_handover", False)
             parsed.setdefault("asked_alternatives", False)
             parsed.setdefault("is_out_of_context", False)
             parsed.setdefault("new_constraints", {})
@@ -1017,6 +1029,7 @@ def generate_conversational_response(
                     retry_parsed.setdefault("asked_photos", False)
                     retry_parsed.setdefault("asked_specs", False)
                     retry_parsed.setdefault("asked_meeting", False)
+                    retry_parsed.setdefault("promises_handover", False)
                     retry_parsed.setdefault("asked_alternatives", False)
                     retry_parsed.setdefault("is_out_of_context", False)
                     retry_parsed.setdefault("new_constraints", {})
@@ -1043,6 +1056,7 @@ def generate_conversational_response(
             "asked_photos": False,
             "asked_specs": False,
             "asked_meeting": False,
+            "promises_handover": False,
             "viewing_confirmed": False,
             "viewing_date_text": None,
             "asked_alternatives": False,

@@ -50,6 +50,9 @@ HANDOVER_PATTERNS = [
     r'\bhuman\s+staff\b',
     r'\bperson\s+in\s+charge\b',
     r'\bpic\b',
+    r'\b(?:can|could|please)\s+(?:an?\s+)?(?:agent|someone|staff)\s+(?:call|contact|reach)\b',
+    r'\b(?:get|have)\s+(?:an?\s+)?(?:agent|someone|senior)\s+(?:call|contact)\b',
+    r'\bneed\s+(?:an?\s+)?(?:agent|human|person)\s+to\s+talk\b',
     
     # Malay / Pasar Malay
     r'\bboleh\s+(?:talipon|telefon|call|kol)\b',
@@ -76,6 +79,55 @@ HANDOVER_PATTERNS = [
     r'联系真人',
     r'有真人吗',
     r'打给我',
+    r'安排(?:专员|中介|agent|人)(?:联系|联络|打给我)',
+    r'有人可以联系我吗',
+    r'可以联络我吗',
+    r'帮我安排看房',
+    r'安排实地看',
+]
+
+
+HANDOVER_PROMISE_PATTERNS = [
+    # Chinese patterns
+    r'资深(?:房产)?专员',
+    r'资深主管',
+    r'资深顾问',
+    r'资深中介',
+    r'资深经理',
+    r'专员将(?:尽快)?(?:致电|联系|联络)',
+    r'致电与您直接联系',
+    r'电话联系您',
+    r'安排(?:专员|主管|顾问|同事|经理|团队|人).*(?:联系|联络|跟进|致电|打给)',
+    r'(?:专员|主管|顾问|同事|经理|团队).*(?:会|将).*(?:联系|联络|致电|跟进)',
+    r'(?:尽快|稍后|稍后会).*(?:联系|联络|致电|打给)您',
+    r'阿tuck',
+    r'012-?9663589',
+    r'看房确认书',
+    r'客户看房确认书',
+    
+    # Malay patterns
+    r'pegawai\s+(?:hartanah\s+)?kanan',
+    r'pengurus\s+kanan',
+    r'pakar\s+hartanah',
+    r'akan\s+(?:segera\s+)?menghubungi\s+anda',
+    r'akan\s+(?:segera\s+)?hubungi\s+anda',
+    r'rakan\s+sekerja\s+akan\s+hubungi',
+    r'borang\s+pengesahan\s+lawatan',
+    
+    # English patterns
+    r'senior\s+(?:property\s+)?specialist',
+    r'senior\s+commercial\s+lead',
+    r'senior\s+(?:property\s+)?agent',
+    r'senior\s+(?:property\s+)?consultant',
+    r'senior\s+(?:property\s+)?representative',
+    r'senior\s+(?:property\s+)?manager',
+    r'will\s+(?:shortly\s+)?contact\s+you',
+    r'will\s+(?:shortly\s+)?reach\s+out\s+to\s+you',
+    r'will\s+be\s+in\s+touch',
+    r'viewing\s+acknowledgement',
+    r'contact\s+you\s+shortly\s+to\s+assist',
+    r'contact\s+you\s+shortly',
+    r'have\s+(?:our\s+)?(?:specialist|senior|agent|colleague|team)\s+(?:reach\s+out|contact)',
 ]
 
 
@@ -122,6 +174,20 @@ def is_explicit_handover_request(text: str) -> bool:
         if word in clean:
             return True
 
+    return False
+
+
+def is_handover_promised(text: str) -> bool:
+    """
+    Determines if assistant response explicitly promises that a senior agent, specialist,
+    or human representative will follow up or contact the customer.
+    """
+    if not text or not isinstance(text, str):
+        return False
+    clean = text.strip()
+    for pattern in HANDOVER_PROMISE_PATTERNS:
+        if re.search(pattern, clean, re.IGNORECASE):
+            return True
     return False
 
 
@@ -384,7 +450,7 @@ Core Operational Directives:
 2. Strict Grounding: NEVER invent properties or prices. Only reference properties in context. If customer inquires about residential homes (e.g. Semi-D, house, terrace, bungalow, condo), NEVER pitch or substitute commercial shop lots or industrial warehouses! If customer asks for rent, do not pitch sale properties without clarifying.
 3. Viewing & Acknowledgement: When viewing is requested, acknowledge warmly, ask for preferred day/time window, and explain that Home IHC prepares a standard Customer Property Viewing Acknowledgement form prior to inspection. Set "asked_meeting": true only if concrete viewing is confirmed.
 4. Off-Market Consultative Protocol: If 0 matching properties exist in the database for the requested category and area (e.g. Semi-D in Raub), explain warmly that listings for this category in that area are primarily handled off-market directly with private owners and landlords. Ask 1-2 consultative qualification questions (preferred budget range, specific neighborhood/area) and offer to scout off-market options. NEVER substitute commercial or industrial properties for a residential request.
-5. Handover Discipline: Handover ("asked_meeting": true) triggers ONLY if customer explicitly demands phone call / human agent or confirms physical viewing for a known property. Never trigger handover on turn 1.
+5. Handover Protocol: Set "asked_meeting": true and "promises_handover": true immediately if: (a) customer demands phone call / human agent / physical viewing, OR (b) your response states or promises that a senior agent, specialist, negotiator, or colleague will contact, call, or follow up with them. This triggers on ANY turn (including Turn 1).
 6. Media Handling: If customer sends image/doc without text, ask how to assist regarding that property/document. Never say "image not received".
 7. Non-Real-Estate: Job vacancy -> set "is_out_of_context": true, refer to {ADMIN_EMAIL}.
 8. Land Document & Title Extraction (Borang 11BK, Borang B2, Geran, Rekod Ketuanpunyaan):
@@ -396,7 +462,7 @@ Core Operational Directives:
 9. Unidentified Listing & Advertisement Inquiries (Conversation 71 Protocol):
    - If customer asks about an unspecified commercial shop, advertisement, or listing ("哪一间店面?", "租金多少钱一个月?", "where is the shop?", "is the shop still available?"):
    - Turn 1 Disambiguation: NEVER interrogate them with generic qualification questions (budget, area, investment purpose). Immediately and politely ask them to send the advertisement screenshot, photo, or link so we can check the exact listing for them right away.
-   - Turn 2+ Anti-Looping Handover: If the customer has sent repeated inquiries without identifying the listing, immediately route to Senior Commercial Lead Ah Tuck (012-9663589). Set "asked_meeting": true.
+   - Turn 2+ Anti-Looping Handover: If the customer has sent repeated inquiries without identifying the listing, immediately route to Senior Commercial Lead Ah Tuck (012-9663589). Set "asked_meeting": true and "promises_handover": true.
 10. Dual-Track State Isolation:
    - When communicating with a property seller or landowner, NEVER search or pitch buyer properties from the database.
    - If a seller switches to inquiring about buying (or a buyer uploads a property to sell), address the active priority directly without erasing their previously recorded profile.
@@ -415,6 +481,7 @@ Output JSON format strictly (RESPONSE-FIRST with Dynamic Sparse Keys to optimize
   "asked_photos": true,
   "asked_specs": true,
   "asked_meeting": true,
+  "promises_handover": true,
   "asked_alternatives": true,
   "is_out_of_context": true
 }}"""
