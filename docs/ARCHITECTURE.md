@@ -22,6 +22,7 @@ When implementing new features or bug fixes, use **strictly** the approved libra
 * **Tag-Based RBAC Routing Engine:** Dynamic multi-tag specialization scoring (`calculate_agent_specialization_score`) across `assigned_locations` and `assigned_property_types` with synonym expansions. Dispatches hot leads (`dispatch_hot_lead_handover`) via Meta WhatsApp template and customer vCard contact card. Handles ties via shared case notices, and falls back to general admin lines (`DEFAULT_FALLBACK_ADMIN_NUMBERS`). Supersedes legacy 2-number routing.
 * **Property Vector Search & WordPress Sync:** PostgreSQL 16 with `pgvector` (0.2.5) storing 5-aspect embeddings (`fastembed`). Ingests WordPress listings via REST API with vector normalization.
 * **Frontend Dashboard:** React 19 + Vite 8 in `property-dashboard/` with `oxlint` and `lucide-react`. Includes unified Master AI and Follow-Up switch synchronization via Redis-backed settings API.
+* **Dynamic OOP Agent State Engine:** Model-driven Object-Oriented Architecture (`ConversationSession`, `PersonaStrategy`, `TurnAnalysis`) replacing procedural regex dictionary heuristics (`MALAY_KEYWORDS`, single-turn role overrides, hardcoded string pre-pending). The Foundation LLM dynamically handles natural language, cultural phrasing, and intent extraction, while encapsulated domain models enforce state invariants (e.g., `SellerPersona` strictly prohibits buyer inventory RAG and photo pushes).
 * **Telemetry Guard:** NVIDIA `nvidia-smi` parsers must verify returncode 0 and assert 7 CSV parts before unpacking.
 
 ---

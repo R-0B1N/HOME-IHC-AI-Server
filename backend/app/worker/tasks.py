@@ -737,9 +737,24 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                     document_extract=latest_doc_struct
                 )
                 
+                existing_sess_category = None
+                try:
+                    from app.services.session_manager import SessionManager
+                    cached_sess = SessionManager.get_session(phone_number)
+                    if cached_sess:
+                        existing_sess_category = (
+                            cached_sess.get("current_agent")
+                            or cached_sess.get("collected_data", {}).get("customer_category")
+                            or cached_sess.get("seller_track", {}).get("status")
+                        )
+                except Exception:
+                    pass
+
                 is_seller_intent = (
                     role in ["seller", "landlord"]
                     or turn_intent == "seller_intake"
+                    or (existing_sess_category in ["SELLER", "seller", "active"] and turn_intent not in ["buyer_search", "agent_inquiry"])
+                    or (customer and customer.metadata_json and customer.metadata_json.get("customer_category") == "seller")
                 )
                 if is_seller_intent:
                     logger.info("Seller/landowner intent detected: suppressing buyer property recommendations.")
@@ -795,7 +810,7 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
             handover_from_state = agent_result.get("handover", False)
             assignee_email = agent_result.get("assignee_email")
             images_to_send = agent_result.get("images_to_send", [])
-            if is_seller_intent or turn_intent == "seller_intake":
+            if is_seller_intent or turn_intent == "seller_intake" or session.get("current_agent") == "SELLER" or session.get("seller_track", {}).get("status") == "active":
                 images_to_send = []
             
             # Dynamic lead temperature based on 80% persona data completeness

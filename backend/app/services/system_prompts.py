@@ -24,10 +24,10 @@ AH_TUCK_EMAIL = "tuck@homeihc.com"
 # Malaysian Dialect & Domain Lexicon
 MALAY_KEYWORDS = {
     "ada", "bilik", "sewa", "rumah", "tanah", "kedai", "nak", "berapa", "mana",
-    "boleh", "talipon", "telefon", "kol", "terima kasih", "tq", "pagi", "petang",
-    "malam", "saya", "kami", "tuan", "puan", "jual", "bajet", "lot", "kawasan",
-    "hutan", "tengok", "pajakan", "ekar", "padi", "solar", "pelan", "geran",
-    "jawatan", "kosong", "kerja", "bos", "boss", "sy", "blh", "dkt", "kat", "bwh"
+    "boleh", "talipon", "telefon", "kol", "terima kasih", "pagi", "petang",
+    "malam", "saya", "kami", "tuan", "puan", "jual", "bajet", "kawasan",
+    "hutan", "tengok", "pajakan", "ekar", "padi", "pelan", "geran",
+    "jawatan", "kosong", "kerja", "sy", "blh", "dkt", "kat", "bwh"
 }
 
 CHINESE_PATTERN = re.compile(r'[\u4e00-\u9fff]')
@@ -149,7 +149,21 @@ def detect_customer_language(text: str) -> str:
     # 2. Check for Malay keywords
     words = set(re.findall(r'\b[a-zA-Z]+\b', clean.lower()))
     malay_hits = words.intersection(MALAY_KEYWORDS)
-    if len(malay_hits) >= 1 or any(kw in clean.lower() for kw in ["talipon", "terima kasih", "selamat pagi", "bilik sewa", "sewa kosong"]):
+    
+    # Specific unambiguous multi-word Malay phrases
+    strong_malay_phrases = [
+        "talipon", "terima kasih", "selamat pagi", "selamat petang", "selamat malam", 
+        "bilik sewa", "sewa kosong", "nak jual", "nak sewa", "nak beli", "saya nak", 
+        "kat mana", "dkt mana", "berapa harga", "boleh tahu", "tolong call", "hubungi saya"
+    ]
+    if any(kw in clean.lower() for kw in strong_malay_phrases):
+        return "ms"
+
+    # If sentence has multiple words, require either >= 2 Malay hits OR at least 30% of words being Malay
+    if len(words) > 3:
+        if len(malay_hits) >= 2 or (len(malay_hits) >= 1 and (len(malay_hits) / len(words)) >= 0.3):
+            return "ms"
+    elif len(malay_hits) >= 1:
         return "ms"
 
     return "en"
@@ -216,9 +230,9 @@ def get_multilingual_greeting(language: str, customer_name: str = None) -> str:
         )
 
 
-def get_multilingual_fallback(language: str, conversation_history: str = None) -> str:
+def get_multilingual_fallback(language: str, conversation_history: str = None, is_seller: bool = False) -> str:
     """
-    Returns resilient fallback message matching customer language.
+    Returns resilient fallback message matching customer language and intent track.
     Guarantees that ongoing conversations NEVER repeat greeting or name card.
     Only treats as ongoing dialogue if the assistant has previously spoken in history.
     """
@@ -233,6 +247,19 @@ def get_multilingual_fallback(language: str, conversation_history: str = None) -
     )
 
     if has_assistant_history:
+        if is_seller:
+            if language == "zh":
+                return (
+                    "感谢您提供房产资料！我们会为您整理专业评估与市价参考，资深专员也将尽快与您直接联系跟进。😊"
+                )
+            elif language == "ms":
+                return (
+                    "Terima kasih atas maklumat hartanah anda! Kami akan menyemak penilaian dan pegawai kanan kami akan menghubungi anda sebentar lagi. 😊"
+                )
+            else:
+                return (
+                    "Thank you for sharing your property details! We are reviewing the information for valuation, and our senior property specialist will follow up with you directly shortly. 😊"
+                )
         if language == "zh":
             return (
                 "收到您的需求！请问您预计的预算大约在什么范围，或者对具体要求有更详细的想法吗？我会尽快跟进并为您配对最合适的心水房源。😊"
