@@ -29,7 +29,7 @@ def test_password_url_encoding():
     db_pass = "P@ssw0rdo"
     encoded = quote_plus(db_pass)
     assert encoded == "P%40ssw0rdo", f"Expected P%40ssw0rdo, got {encoded}"
-    url = f"postgresql://crm_admin:{encoded}@crm-postgres:5432/n8n_crm"
+    url = f"postgresql://crm_admin:{encoded}@crm-postgres:5432/whatsapp_ai"
     assert "@crm-postgres" in url
     assert "crm_admin:P%40ssw0rdo@" in url
     print("✅ test_password_url_encoding passed")
