@@ -1050,7 +1050,7 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
                     if handover_initiated:
                         meta["bypass_ai"] = True
                     db_cust.metadata_json = meta
-                    db_cust.last_interaction = datetime.utcnow()
+                    db_cust.last_interaction = datetime.datetime.now(datetime.timezone.utc)
                     db.commit()
             except Exception as e:
                 logger.error(f"Failed to update customer metadata/lead_temp: {e}")

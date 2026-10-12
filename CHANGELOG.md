@@ -46,7 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Purged 19 duplicate non-code document files (~12MB) and legacy `.planning/` notes from `Whatsapp AI` repository.
   - Formally linked repositories via `home-ihc.code-workspace`.
 
-### Fixed
+- **Bidirectional Webhook Inbox Isolation (INCIDENT-20261012-DOUBLE-REPLY)**: Enforced strict bidirectional environment filtering in `backend/app/api/webhooks.py`, dropping staging test inbox (Inbox 4) events when running in production to eliminate dual-worker processing and double replies.
+- **Production Outgoing Message Guard (INCIDENT-20261012-DOUBLE-REPLY)**: Added `[PRODUCTION SAFETY]` guard in `backend/app/services/chatwoot.py:send_message` preventing public message transmissions to staging inboxes from production instances.
+- **UTC Timestamp Generation Syntax (`tasks.py`)**: Replaced bare `datetime.utcnow()` with `datetime.datetime.now(datetime.timezone.utc)` at customer last interaction update, eliminating `AttributeError`.
 - **Mobile Document Proxy Content-Type Resolution (CR-005)**: Restored missing `content_type` variable extraction from upstream response headers in `proxy_document_inline` (`backend/app/api/documents.py`), eliminating 502 Bad Gateway regression and bringing unit test suite back to 100% pass rate.
 - **Workspace Topology & Concurrency Compliance (CR-006)**: Purged untracked physical `staging/` and `production/` directories to enforce Git-native branch isolation, established `docs/adr/0001-workspace-topology-and-monorepo-structure.md`, initialized `Sessions/Active-Sessions/` concurrency lock registry, and mapped `Requirements/TRACEABILITY_MATRIX.md`.
 - **Handover Suppression Bug**: Fixed issue where state machine failed to trigger human handover when assistant replies promised a senior agent would reach out.

@@ -39,6 +39,38 @@ class TestSprint1SecurityAndIsolation(unittest.TestCase):
         self.assertNotIn("# Removed strict inbox ID filtering so test/production inboxes both work", content,
                          "Webhooks.py still has comment disabling inbox filtering!")
 
+    def test_production_drops_staging_inbox_webhooks(self):
+        """
+        P0-3b: Production webhook must drop incoming messages for staging inboxes (e.g. Inbox 4).
+        Prevents double-reply collisions when staging and production coexist in the same Chatwoot account.
+        """
+        with open("app/api/webhooks.py", "r", encoding="utf-8") as f:
+            content = f.read()
+
+        self.assertIn("production_ignores_staging_inbox", content,
+                      "Webhooks.py must explicitly drop staging inbox webhooks when running in production!")
+
+    def test_chatwoot_send_message_production_safety_guard(self):
+        """
+        P0-3c: Chatwoot send_message must guard against dispatching messages to staging inboxes from production.
+        """
+        with open("app/services/chatwoot.py", "r", encoding="utf-8") as f:
+            content = f.read()
+
+        self.assertIn("[PRODUCTION SAFETY]", content,
+                      "Chatwoot send_message must implement PRODUCTION SAFETY guard against staging inboxes!")
+
+    def test_tasks_datetime_utc_timestamp_syntax(self):
+        """
+        P0-3d: tasks.py must use datetime.datetime.now(datetime.timezone.utc) or datetime.datetime.utcnow(),
+        never bare datetime.utcnow() which causes AttributeError.
+        """
+        with open("app/worker/tasks.py", "r", encoding="utf-8") as f:
+            content = f.read()
+
+        self.assertNotIn("datetime.utcnow()", content,
+                         "tasks.py still invokes bare datetime.utcnow()!")
+
     def test_chatwoot_hmac_signature_rejection_enforced(self):
         """
         P0-5: Invalid Chatwoot webhook signature must be rejected, not bypassed.

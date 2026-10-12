@@ -89,6 +89,7 @@ class TestResetCommand(unittest.TestCase):
         self.assertIsNone(meta["interested_property"])
         self.assertIn("last_reset_at", meta)
 
+    @unittest.mock.patch.dict("os.environ", {"ENVIRONMENT": "staging", "STAGING_INBOX_ID": "4"})
     @unittest.mock.patch("app.api.webhooks.process_conversation_queue")
     @unittest.mock.patch("app.api.webhooks.redis_client")
     def test_chatwoot_webhook_incoming_message_no_unbound_local_error(self, mock_redis, mock_celery_task):

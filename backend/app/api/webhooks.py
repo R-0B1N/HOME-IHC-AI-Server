@@ -583,7 +583,7 @@ async def chatwoot_webhook(request: Request):
 
     inbox_id = payload.get("inbox", {}).get("id") or payload.get("conversation", {}).get("inbox_id")
     
-    # Environment Isolation: Prevent Staging AI from cross-firing on live Production inboxes
+    # Environment Isolation: Prevent Staging AI and Production AI cross-firing on inappropriate inboxes
     runtime_env = os.getenv("ENVIRONMENT", "production").lower()
     staging_inbox_id = str(os.getenv("STAGING_INBOX_ID", "4"))
     if runtime_env == "staging":
@@ -591,6 +591,11 @@ async def chatwoot_webhook(request: Request):
         if str(inbox_id) != staging_inbox_id:
             logger.info(f"Staging environment ignoring production inbox message (inbox_id: {inbox_id}).")
             return {"status": "skipped", "reason": "staging_ignores_production_inbox"}
+    elif runtime_env == "production":
+        # Production must strictly ignore messages from staging/test inboxes (e.g. Inbox 4)
+        if str(inbox_id) == staging_inbox_id:
+            logger.info(f"Production environment ignoring staging inbox message (inbox_id: {inbox_id}).")
+            return {"status": "skipped", "reason": "production_ignores_staging_inbox"}
     
     conversation = payload.get("conversation", {})
     conversation_id = conversation.get("id")
