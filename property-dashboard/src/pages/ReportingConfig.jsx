@@ -44,7 +44,9 @@ export default function ReportingConfig() {
         enabled: config.enabled,
         cron_schedule: config.cron_schedule,
         admin_numbers: config.admin_numbers,
-        auto_dispatch_whatsapp: config.auto_dispatch_whatsapp
+        auto_dispatch_whatsapp: config.auto_dispatch_whatsapp,
+        template_name: config.template_name || 'weekly_business_report_digest',
+        template_language: config.template_language || 'en_US'
       };
       await axios.post(`${API_BASE_URL}/settings/reporting-config`, payload);
       setStatusMsg('Configuration saved successfully.');
@@ -57,7 +59,7 @@ export default function ReportingConfig() {
     }
   };
 
-  const [downloading, setDownloading] = useState({ buyer: false, owner: false });
+  const [downloading, setDownloading] = useState({ consolidated: false, buyer: false, owner: false });
 
   const handleTriggerReport = async (sendWhatsApp) => {
     setTriggering(true);
@@ -67,7 +69,7 @@ export default function ReportingConfig() {
       const r = res.data.result;
       setStatusMsg(
         `Reports generated successfully! Buyers: ${r.buyers_count || 0}, Properties: ${r.owners_count || 0}. ${
-          sendWhatsApp ? 'Dispatched to Admin WhatsApp numbers.' : 'Available for immediate download.'
+          sendWhatsApp ? 'Dispatched via Meta Template digest to Admin WhatsApp.' : 'Available for immediate download.'
         }`
       );
       fetchConfig();
@@ -98,7 +100,9 @@ export default function ReportingConfig() {
         enabled: updatedConfig.enabled,
         cron_schedule: updatedConfig.cron_schedule,
         admin_numbers: updatedNumbers,
-        auto_dispatch_whatsapp: updatedConfig.auto_dispatch_whatsapp
+        auto_dispatch_whatsapp: updatedConfig.auto_dispatch_whatsapp,
+        template_name: updatedConfig.template_name || 'weekly_business_report_digest',
+        template_language: updatedConfig.template_language || 'en_US'
       });
       setStatusMsg(`Added ${clean} and saved configuration.`);
       setTimeout(() => setStatusMsg(''), 3000);
@@ -119,7 +123,9 @@ export default function ReportingConfig() {
         enabled: updatedConfig.enabled,
         cron_schedule: updatedConfig.cron_schedule,
         admin_numbers: updatedNumbers,
-        auto_dispatch_whatsapp: updatedConfig.auto_dispatch_whatsapp
+        auto_dispatch_whatsapp: updatedConfig.auto_dispatch_whatsapp,
+        template_name: updatedConfig.template_name || 'weekly_business_report_digest',
+        template_language: updatedConfig.template_language || 'en_US'
       });
       setStatusMsg(`Removed ${phoneToRemove} and saved configuration.`);
       setTimeout(() => setStatusMsg(''), 3000);
@@ -140,7 +146,12 @@ export default function ReportingConfig() {
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', `${type === 'buyer' ? 'Buyer_Database' : 'Owner_Database'}.xlsx`);
+      const filenameMap = {
+        consolidated: 'Home_IHC_Weekly_Business_Report.xlsx',
+        buyer: 'Buyer_Database.xlsx',
+        owner: 'Owner_Database.xlsx',
+      };
+      link.setAttribute('download', filenameMap[type] || `${type}_Report.xlsx`);
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -257,6 +268,55 @@ export default function ReportingConfig() {
               </p>
             </div>
 
+            {/* Meta Message Template Settings */}
+            <div style={{ marginBottom: '1.25rem', background: 'rgba(255, 255, 255, 0.02)', border: '1px solid #334155', borderRadius: '8px', padding: '0.85rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+                <Zap size={15} color="#10b981" />
+                <strong style={{ color: '#f8fafc', fontSize: '0.85rem' }}>Meta WhatsApp Template Settings</strong>
+              </div>
+              <p style={{ color: '#94a3b8', fontSize: '0.74rem', marginBottom: '10px' }}>
+                Dispatches a single pre-approved Meta utility digest template to bypass Error 131047 (Re-engagement message 24-hr customer window).
+              </p>
+              
+              <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '8px' }}>
+                <div>
+                  <label style={{ display: 'block', color: '#cbd5e1', fontSize: '0.75rem', marginBottom: '4px' }}>Template Name</label>
+                  <input
+                    type="text"
+                    value={config?.template_name || 'weekly_business_report_digest'}
+                    onChange={(e) => setConfig({ ...config, template_name: e.target.value })}
+                    style={{
+                      width: '100%',
+                      background: '#1e293b',
+                      border: '1px solid #334155',
+                      borderRadius: '6px',
+                      padding: '6px 8px',
+                      color: '#f8fafc',
+                      fontSize: '0.8rem',
+                      fontFamily: 'monospace'
+                    }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', color: '#cbd5e1', fontSize: '0.75rem', marginBottom: '4px' }}>Language</label>
+                  <input
+                    type="text"
+                    value={config?.template_language || 'en_US'}
+                    onChange={(e) => setConfig({ ...config, template_language: e.target.value })}
+                    style={{
+                      width: '100%',
+                      background: '#1e293b',
+                      border: '1px solid #334155',
+                      borderRadius: '6px',
+                      padding: '6px 8px',
+                      color: '#f8fafc',
+                      fontSize: '0.8rem'
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+
             {/* Recipient Numbers List */}
             <div style={{ marginBottom: '1.25rem' }}>
               <label style={{ display: 'block', color: '#cbd5e1', fontSize: '0.82rem', fontWeight: 600, marginBottom: '6px' }}>
@@ -354,6 +414,37 @@ export default function ReportingConfig() {
           </h3>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            {/* Consolidated Report Card */}
+            <div style={{
+              background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.12), rgba(14, 165, 233, 0.08))',
+              border: '1px solid rgba(16, 185, 129, 0.4)',
+              borderRadius: '8px',
+              padding: '1rem',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '12px'
+            }}>
+              <div>
+                <strong style={{ color: '#10b981', fontSize: '0.96rem', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  ⭐ Consolidated Business Report (Multi-Tab .xlsx)
+                </strong>
+                <span style={{ color: '#cbd5e1', fontSize: '0.78rem', display: 'block', marginTop: '2px' }}>
+                  {config?.latest_consolidated_report || 'Home_IHC_Weekly_Business_Report.xlsx'}
+                </span>
+                <span style={{ color: '#64748b', fontSize: '0.72rem', display: 'block', marginTop: '2px' }}>
+                  Consolidates: Executive KPI Summary • Buyer Database • Owner & Seller Database
+                </span>
+              </div>
+              <button
+                onClick={() => handleDownload('consolidated')}
+                disabled={downloading.consolidated}
+                className="lux-btn-primary"
+                style={{ fontSize: '0.8rem', padding: '7px 14px', display: 'flex', alignItems: 'center', gap: '6px' }}
+              >
+                <Download size={14} /> {downloading.consolidated ? 'Downloading...' : 'Download Full Workbook'}
+              </button>
+            </div>
             {/* Buyer Report Card */}
             <div style={{
               background: 'rgba(255, 255, 255, 0.03)',

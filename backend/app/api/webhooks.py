@@ -370,39 +370,57 @@ async def chatwoot_webhook(request: Request):
                 args = content.split()
                 should_send_admins = "send" in args
                 
-                send_private_note(conversation_id, "⏳ **Generating Weekly Database Reports (Buyer & Owner spreadsheets)...**")
+                send_private_note(conversation_id, "⏳ **Generating Weekly Business Reports (Consolidated Multi-Tab Workbook)...**")
                 report_mgr = WeeklyDatabaseReportManager()
                 result = report_mgr.generate_and_dispatch(send_to_admins=should_send_admins)
                 
+                consolidated_file = result.get("consolidated_file")
                 buyer_file = result.get("buyer_file")
                 owner_file = result.get("owner_file")
                 
-                if buyer_file and os.path.exists(buyer_file):
-                    with open(buyer_file, "rb") as bf:
+                if consolidated_file and os.path.exists(consolidated_file):
+                    with open(consolidated_file, "rb") as cf:
                         send_message_with_attachment(
                             conversation_id=conversation_id,
-                            content=f"📊 **Weekly Buyer Database Report** ({result.get('buyers_count', 0)} leads indexed)",
-                            file_name=os.path.basename(buyer_file),
-                            file_content=bf.read(),
+                            content=(
+                                f"📊 **Weekly Business Report (Consolidated Executive Workbook)**\n"
+                                f"• Tab 1: Executive KPI Summary\n"
+                                f"• Tab 2: Buyer Database ({result.get('buyers_count', 0)} leads)\n"
+                                f"• Tab 3: Owner & Seller Database ({result.get('owners_count', 0)} listings)"
+                            ),
+                            file_name=os.path.basename(consolidated_file),
+                            file_content=cf.read(),
                             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             is_private=True
                         )
-                if owner_file and os.path.exists(owner_file):
-                    with open(owner_file, "rb") as of:
-                        send_message_with_attachment(
-                            conversation_id=conversation_id,
-                            content=f"📑 **Weekly Owner / Seller Database Report** ({result.get('owners_count', 0)} listings indexed)",
-                            file_name=os.path.basename(owner_file),
-                            file_content=of.read(),
-                            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            is_private=True
-                        )
+                else:
+                    if buyer_file and os.path.exists(buyer_file):
+                        with open(buyer_file, "rb") as bf:
+                            send_message_with_attachment(
+                                conversation_id=conversation_id,
+                                content=f"📊 **Weekly Buyer Database Report** ({result.get('buyers_count', 0)} leads indexed)",
+                                file_name=os.path.basename(buyer_file),
+                                file_content=bf.read(),
+                                content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                is_private=True
+                            )
+                    if owner_file and os.path.exists(owner_file):
+                        with open(owner_file, "rb") as of:
+                            send_message_with_attachment(
+                                conversation_id=conversation_id,
+                                content=f"📑 **Weekly Owner / Seller Database Report** ({result.get('owners_count', 0)} listings indexed)",
+                                file_name=os.path.basename(owner_file),
+                                file_content=of.read(),
+                                content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                is_private=True
+                            )
                 
                 status_summary = (
-                    f"✅ **Weekly Reports Generated Successfully**\n\n"
-                    f"• **Buyer Database**: `{os.path.basename(buyer_file) if buyer_file else 'N/A'}` ({result.get('buyers_count', 0)} records)\n"
-                    f"• **Owner Database**: `{os.path.basename(owner_file) if owner_file else 'N/A'}` ({result.get('owners_count', 0)} records)\n"
-                    f"• **WhatsApp Admin Dispatch**: {'✅ Dispatched directly to admin WhatsApp numbers (+601165144931, +14709202239)' if should_send_admins else 'ℹ️ Private note view only (Use `/report send` to dispatch to WhatsApp)'}\n"
+                    f"✅ **Weekly Business Reports Generated Successfully**\n\n"
+                    f"• **Consolidated Workbook**: `{os.path.basename(consolidated_file) if consolidated_file else 'N/A'}`\n"
+                    f"• **Buyers Indexed**: {result.get('buyers_count', 0)}\n"
+                    f"• **Owners Indexed**: {result.get('owners_count', 0)}\n"
+                    f"• **WhatsApp Admin Dispatch**: {'✅ Dispatched via Meta Template utility digest to admin WhatsApp numbers' if should_send_admins else 'ℹ️ Private note view only (Use `/report send` to dispatch to WhatsApp)'}\n"
                 )
                 send_private_note(conversation_id, status_summary)
                 return {"status": "command_executed", "command": "/report"}

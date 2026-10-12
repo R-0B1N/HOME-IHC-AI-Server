@@ -145,6 +145,8 @@ class ReportingConfigPayload(BaseModel):
     cron_schedule: str = "0 9 * * 1"
     admin_numbers: list[str] = ["+601165144931", "+14709202239"]
     auto_dispatch_whatsapp: bool = True
+    template_name: str = "weekly_business_report_digest"
+    template_language: str = "en_US"
 
 
 @router.get("/reporting-config")
@@ -157,6 +159,8 @@ def get_reporting_config(admin=Depends(require_admin)):
         "cron_schedule": "0 9 * * 1 (Mondays at 09:00 MYT)",
         "admin_numbers": ["+601165144931", "+14709202239"],
         "auto_dispatch_whatsapp": True,
+        "template_name": "weekly_business_report_digest",
+        "template_language": "en_US",
         "reports_dir": "/app/data/output/reports",
         "last_generated_at": None,
         "last_status": "Idle"
@@ -170,15 +174,19 @@ def get_reporting_config(admin=Depends(require_admin)):
 
     # Check for existing reports
     reports_dir = "/app/data/output/reports"
+    consolidated_file = None
     buyer_file = None
     owner_file = None
     if os.path.exists(reports_dir):
         for f in sorted(os.listdir(reports_dir), reverse=True):
+            if "Home_IHC_Weekly_Business_Report" in f and f.endswith(".xlsx") and not consolidated_file:
+                consolidated_file = f
             if "Buyer_Database" in f and f.endswith(".xlsx") and not buyer_file:
                 buyer_file = f
             if "Owner_Database" in f and f.endswith(".xlsx") and not owner_file:
                 owner_file = f
 
+    config["latest_consolidated_report"] = consolidated_file
     config["latest_buyer_report"] = buyer_file
     config["latest_owner_report"] = owner_file
     return config
@@ -193,6 +201,8 @@ def update_reporting_config(payload: ReportingConfigPayload, admin=Depends(requi
         "cron_schedule": payload.cron_schedule,
         "admin_numbers": payload.admin_numbers,
         "auto_dispatch_whatsapp": payload.auto_dispatch_whatsapp,
+        "template_name": payload.template_name,
+        "template_language": payload.template_language,
     }
     redis_client.set("weekly_reporting_config", json.dumps(data))
     return {"status": "success", "config": data}
@@ -213,14 +223,20 @@ def trigger_reporting_generation(send_whatsapp: bool = True, admin=Depends(requi
 
 @router.get("/reporting-download/{report_type}")
 def download_weekly_report(report_type: str, admin=Depends(require_admin)):
-    """Admin-only endpoint to download latest generated Excel report ('buyer' or 'owner')."""
+    """Admin-only endpoint to download latest generated Excel report ('consolidated', 'buyer' or 'owner')."""
     from fastapi.responses import FileResponse
     from app.services.reporting import DEFAULT_REPORTS_DIR, WeeklyDatabaseReportManager
     
     reports_dir = DEFAULT_REPORTS_DIR
     os.makedirs(reports_dir, exist_ok=True)
 
-    keyword = "Buyer_Database" if report_type.lower() == "buyer" else "Owner_Database"
+    if report_type.lower() in ["consolidated", "all", "weekly"]:
+        keyword = "Home_IHC_Weekly_Business_Report"
+    elif report_type.lower() == "buyer":
+        keyword = "Buyer_Database"
+    else:
+        keyword = "Owner_Database"
+
     matching = [
         f for f in sorted(os.listdir(reports_dir), reverse=True)
         if keyword in f and f.endswith(".xlsx")
