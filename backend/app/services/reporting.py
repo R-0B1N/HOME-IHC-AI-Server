@@ -654,33 +654,40 @@ class AdminWhatsAppDispatcher:
     re-engagement blocks (Error 131047) and Chatwoot conversation duplication.
     """
 
-    def __init__(self, admin_phones: List[str] = None, inbox_id: int = None):
+    def __init__(
+        self,
+        admin_phones: List[str] = None,
+        inbox_id: int = None,
+        template_name: str = None,
+        template_lang: str = None
+    ):
+        stored_phones = []
         stored_template_name = None
         stored_template_lang = None
+        try:
+            from app.api.settings import redis_client
+            import json
+            raw = redis_client.get("weekly_reporting_config")
+            if raw:
+                stored = json.loads(raw.decode("utf-8"))
+                stored_phones = stored.get("admin_numbers", [])
+                stored_template_name = stored.get("template_name")
+                stored_template_lang = stored.get("template_language")
+        except Exception:
+            pass
+
         if admin_phones:
             self.admin_phones = admin_phones
         else:
-            # Check Redis configured admin numbers first
-            stored_phones = []
-            try:
-                from app.api.settings import redis_client
-                import json
-                raw = redis_client.get("weekly_reporting_config")
-                if raw:
-                    stored = json.loads(raw.decode("utf-8"))
-                    stored_phones = stored.get("admin_numbers", [])
-                    stored_template_name = stored.get("template_name")
-                    stored_template_lang = stored.get("template_language")
-            except Exception:
-                pass
             self.admin_phones = stored_phones or [
                 os.getenv("PRIMARY_ADMIN_PHONE", "+601165144931"),
                 os.getenv("SECONDARY_ADMIN_PHONE", "+14709202239")
             ]
+
         is_staging = os.getenv("ENVIRONMENT", "").lower() == "staging"
         self.inbox_id = inbox_id or int(os.getenv("STAGING_INBOX_ID" if is_staging else "WHATSAPP_INBOX_ID", "3" if not is_staging else "4"))
-        self.template_name = stored_template_name or os.getenv("WHATSAPP_WEEKLY_REPORT_TEMPLATE", "weekly_business_report_digest")
-        self.template_lang = stored_template_lang or os.getenv("WHATSAPP_WEEKLY_REPORT_TEMPLATE_LANGUAGE", "en_US")
+        self.template_name = template_name or stored_template_name or os.getenv("WHATSAPP_WEEKLY_REPORT_TEMPLATE", "weekly_business_report_digest")
+        self.template_lang = template_lang or stored_template_lang or os.getenv("WHATSAPP_WEEKLY_REPORT_TEMPLATE_LANGUAGE", "en_US")
         self.download_base = os.getenv("API_PUBLIC_BASE_URL", "https://crm.bentongland.com.my")
 
     def dispatch_consolidated_report(self, consolidated_info: Dict[str, Any]) -> Dict[str, Any]:
@@ -748,6 +755,8 @@ class AdminWhatsAppDispatcher:
                         contact_id = get_or_create_contact(clean_phone, f"Staff/Admin ({clean_phone})")
                         if contact_id:
                             conv_id = get_or_create_conversation(contact_id, self.inbox_id)
+                            if isinstance(conv_id, dict):
+                                conv_id = conv_id.get("id")
                             if conv_id:
                                 send_message_with_attachment(
                                     conversation_id=conv_id,
