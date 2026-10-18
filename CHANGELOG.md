@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] - Milestone 2 (v1.1.0-dev)
 
 ### Added
+- **Clean Code & Object-Oriented Reporting Architecture (`app/services/reporting.py`)**:
+  - Encapsulated low-level binary OpenXML and openpyxl packaging into a single `OpenXmlSpreadsheetBuilder` class with pure standard-library fallback.
+  - Implemented Template Method pattern across `BaseExcelReportGenerator`, `BuyerReportGenerator`, and `OwnerReportGenerator`, eliminating 100% of duplicated customer and property extraction loops.
+  - Decomposed `AdminWhatsAppDispatcher` into focused, single-responsibility methods (`_dispatch_template_to_admin`, `_archive_report_in_chatwoot`), adhering to Uncle Bob's Stepdown rule.
+  - Maintained 100% backward-compatible procedural facades (`export_buyer_database_xlsx`, `export_owner_database_xlsx`, `generate_weekly_database_reports`), verifying all 115 unit and regression tests pass cleanly.
+- **Modern Timezone-Aware UTC Timestamping (`main.py`)**: Replaced deprecated `datetime.datetime.utcnow()` with `datetime.datetime.now(datetime.timezone.utc)` during startup lead synchronization.
 - **Multimodal Document Parsing & Ingestion (`DocumentParser` & `DocumentExtractor`)**:
   - Inbound media attachment handling for customer-submitted property documents, land titles, site photos, and raster drawings.
   - CAD Blueprint downscaling budget limiting rendering to max 3 sheets, JPEG format (<500KB/sheet), and sub-5s latency.
