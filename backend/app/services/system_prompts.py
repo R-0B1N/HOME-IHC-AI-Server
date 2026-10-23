@@ -16,6 +16,8 @@ AGENCY_NAME = "ERA Realtor"
 COMPANY_NAME = "Home IHC"
 COMPANY_FULL_NAME = "Home IHC Sdn. Bhd. / BentongLand"
 DIGITAL_NAME_CARD_URL = "https://my.mecard.my/1733211127"
+IRENE_MAIN_PHONE = "+601165144931"
+IRENE_DISPLAY_PHONE = "+60 11-6514 4931"
 ADMIN_EMAIL = "homeihc13@gmail.com"
 AH_TUCK_NAME = "Ah Tuck"
 AH_TUCK_PHONE = "+60129663589"
@@ -207,30 +209,121 @@ def is_handover_promised(text: str) -> bool:
 
 def get_multilingual_greeting(language: str, customer_name: str = None) -> str:
     """
-    Returns initial greeting and Irene Leong introduction matching customer's language.
+    Returns initial greeting and Irene Leong introduction matching customer's language,
+    presenting Step 2 category selection (Personal Buyer, Property Agent / Broker, Seller).
     """
     name_str = f" {customer_name}" if customer_name else ""
     if language == "zh":
         return (
             f"您好{name_str}！😊 我是来自 ERA Realtor 的 Irene Leong，代表 Home IHC 为您服务。\n\n"
             f"这是我的电子名片：\n{DIGITAL_NAME_CARD_URL}\n\n"
-            f"请问有什么我可以协助您的呢？无论是买房、租房、土地投资或业主委托出售，我都随时为您服务。"
+            f"为了给您发送最精准的房产与地皮资料，请问您属于以下哪种类型呢？\n"
+            f"🙋 个人买家 (Personal Buyer)\n"
+            f"🤝 房产经纪 / 中介 (Property Agent / Broker)\n"
+            f"🏡 业主 / 卖家 (Seller / Property Owner)"
         )
     elif language == "ms":
         return (
             f"Selamat sejahtera{name_str}! 😊 Saya Irene Leong, Ejen Hartanah Kanan dari ERA Realtor mewakili Home IHC.\n\n"
             f"Ini adalah kad nama digital saya:\n{DIGITAL_NAME_CARD_URL}\n\n"
-            f"Bagaimanakah Home IHC boleh bantu anda hari ini? Sama ada untuk membeli, menyewa, tanah pertanian atau urusan pemilik, saya sedia membantu anda."
+            f"Untuk menghantar maklumat yang paling tepat kepada anda, boleh saya tahu anda dalam kategori mana?\n"
+            f"🙋 Pembeli Peribadi (Personal Buyer)\n"
+            f"🤝 Ejen Hartanah / Broker (Property Agent / Broker)\n"
+            f"🏡 Penjual / Pemilik Hartanah (Seller / Property Owner)"
         )
     else:
         return (
             f"Good day{name_str}! 😊 I'm Irene Leong, a Senior Property Agent from ERA Realtor representing Home IHC.\n\n"
             f"Here is my digital name card:\n{DIGITAL_NAME_CARD_URL}\n\n"
-            f"How may Home IHC assist you with properties in Pahang today?"
+            f"To send you the most relevant information, may I know which category you belong to?\n"
+            f"🙋 Personal Buyer\n"
+            f"🤝 Property Agent / Broker\n"
+            f"🏡 Seller / Property Owner"
         )
 
 
-def get_multilingual_fallback(language: str, conversation_history: str = None, is_seller: bool = False) -> str:
+def get_multilingual_premature_questions(role: str, language: str, customer_name: str = None) -> str:
+    """
+    Returns tailored exploratory/premature qualification questions when role is assigned
+    but no property information has been provided yet (Step 2 of workflow).
+    """
+    name_str = f" {customer_name}" if customer_name else ""
+    role_clean = (role or "buyer").lower()
+    
+    if role_clean in ["seller", "owner", "landlord"]:
+        if language == "zh":
+            return (
+                f"感谢您的信任{name_str}！😊 请问您的房产/土地位于哪一个区域（如 Bentong、Raub 或 Karak）？"
+                f"是住宅、商业店面还是农业地（占地多大）？您的预期售价是多少呢？如果有地契（Geran）照片也欢迎随时发给我核对评估。"
+            )
+        elif language == "ms":
+            return (
+                f"Terima kasih atas kepercayaan anda{name_str}! 😊 Boleh kongsikan di mana lokasi hartanah/tanah anda (seperti Bentong, Raub, atau Karak), "
+                f"jenis hartanah atau keluasan tanah, dan anggaran harga jualan yang anda inginkan? Jika ada salinan geran, boleh hantarkan kepada saya untuk penilaian awal."
+            )
+        else:
+            return (
+                f"Thank you for reaching out{name_str}! 😊 Could you share where your property or land is located (e.g. Bentong, Raub, or Karak), "
+                f"the property type or size/acreage, and your expected asking price? If you have a land title (Geran) copy or photos, feel free to share them as well."
+            )
+    elif role_clean in ["agent", "broker"]:
+        if language == "zh":
+            return (
+                f"您好{name_str}！非常欢迎同行合作 🤝 请问方便分享您的所属经纪公司名称和 REN 编号吗？"
+                f"另外您客户目前正在寻找哪一个区域、什么类型及预算的房产进行配对呢？"
+            )
+        elif language == "ms":
+            return (
+                f"Selamat sejahtera{name_str}! Kami mengalu-alukan kerjasama ejen 🤝 Boleh kongsikan nama agensi dan nombor REN anda? "
+                f"Selain itu, apakah jenis hartanah, kawasan, dan anggaran bajet yang dicari oleh pelanggan anda untuk tujuan padanan?"
+            )
+        else:
+            return (
+                f"Hello{name_str}! We welcome co-broking collaboration 🤝 Could you kindly share your agency name and REN registration number? "
+                f"Also, what property type, location, and budget range is your client currently looking for?"
+            )
+    else:  # buyer / tenant / default
+        if language == "zh":
+            return (
+                f"太好了{name_str}！😊 请问您预计想在哪个区域寻找房产（例如 Bentong、Raub 或 Karak）？"
+                f"心仪的是农业地/榴莲园、住宅还是商业店面？大约的预算在什么范围呢？"
+            )
+        elif language == "ms":
+            return (
+                f"Bagus sekali{name_str}! 😊 Boleh saya tahu kawasan mana yang anda minati (contohnya Bentong, Raub, atau Karak)? "
+                f"Jenis hartanah apa yang anda cari (tanah pertanian/dusun, rumah kediaman, atau kedai komersial), dan berapa anggaran bajet anda?"
+            )
+        else:
+            return (
+                f"Wonderful{name_str}! 😊 Could you let me know which area you are looking in (e.g. Bentong, Raub, or Karak), "
+                f"what type of property you prefer (agricultural land/durian farm, residential home, or commercial shop), and your target budget range?"
+            )
+
+
+def get_multilingual_out_of_scope_redirect(language: str, customer_name: str = None) -> str:
+    """
+    Returns immediate redirection message to Irene Leong (+60 11-6514 4931) and admin team
+    when an inquiry is out of scope.
+    """
+    name_str = f" {customer_name}" if customer_name else ""
+    if language == "zh":
+        return (
+            f"感谢您联系 Home IHC{name_str}。由于您的咨询超出常规房产服务范围，"
+            f"已为您直接转交至资深主管 Irene Leong（{IRENE_DISPLAY_PHONE}）及管理团队进行进一步协助与跟进，专员将尽快与您联系。😊"
+        )
+    elif language == "ms":
+        return (
+            f"Terima kasih kerana menghubungi Home IHC{name_str}. Pertanyaan anda berada di luar skop hartanah biasa, "
+            f"dan telah dimajukan kepada Ejen Kanan kami Irene Leong ({IRENE_DISPLAY_PHONE}) serta pasukan pengurusan untuk penjelasan lanjut. Pihak kami akan menghubungi anda sebentar lagi. 😊"
+        )
+    else:
+        return (
+            f"Thank you for contacting Home IHC{name_str}. Your inquiry is out of our standard property scope, "
+            f"and has been redirected to our Senior Agent Irene Leong ({IRENE_DISPLAY_PHONE}) and our management team for further clarification. Our team will follow up with you shortly. 😊"
+        )
+
+
+def get_multilingual_fallback(language: str, conversation_history: str = None, is_seller: bool = False, role: str = None) -> str:
     """
     Returns resilient fallback message matching customer language and intent track.
     Guarantees that ongoing conversations NEVER repeat greeting or name card.
@@ -247,7 +340,8 @@ def get_multilingual_fallback(language: str, conversation_history: str = None, i
     )
 
     if has_assistant_history:
-        if is_seller:
+        role_clean = (role or ("seller" if is_seller else "buyer")).lower()
+        if is_seller or role_clean in ["seller", "owner"]:
             if language == "zh":
                 return (
                     "感谢您提供房产资料！我们会为您整理专业评估与市价参考，资深专员也将尽快与您直接联系跟进。😊"
@@ -259,6 +353,19 @@ def get_multilingual_fallback(language: str, conversation_history: str = None, i
             else:
                 return (
                     "Thank you for sharing your property details! We are reviewing the information for valuation, and our senior property specialist will follow up with you directly shortly. 😊"
+                )
+        elif role_clean in ["agent", "broker"]:
+            if language == "zh":
+                return (
+                    "感谢您的联系！请问方便分享您的名片/REN编号，以及您客户的具体预算与心水区域吗？我们资深专员会尽快与您对接合作！🤝"
+                )
+            elif language == "ms":
+                return (
+                    "Terima kasih atas maklumat anda! Boleh kongsikan nombor REN anda dan kawasan serta bajet pelanggan anda? Pegawai kanan kami akan menghubungi anda untuk tindakan susulan. 🤝"
+                )
+            else:
+                return (
+                    "Thank you for reaching out! Could you share your REN number and your client's target location and budget? Our senior specialist will follow up with you directly for co-broking! 🤝"
                 )
         if language == "zh":
             return (
@@ -453,7 +560,9 @@ CRITICAL ANTI-REPETITION RULE:
     else:
         greeting_instruction = f"""[CONVERSATION_STAGE: FIRST_INTERACTION]
 - In your introductory greeting, introduce yourself as Irene Leong from ERA Realtor representing Home IHC.
-- Share your digital name card: {DIGITAL_NAME_CARD_URL}."""
+- Share your digital name card: {DIGITAL_NAME_CARD_URL}.
+- If customer has NOT specified property details or explicitly stated their role, ask which category they belong to (Step 2 of the workflow):
+  🙋 Personal Buyer | 🤝 Property Agent / Broker | 🏡 Seller / Property Owner."""
 
     name_instruction = (
         f"The customer's name is '{customer_name}'. Greet them naturally by name (e.g. 'Hi {customer_name}! 😊'). DO NOT interrogate them for their name."
@@ -477,9 +586,9 @@ Core Operational Directives:
 2. Strict Grounding: NEVER invent properties or prices. Only reference properties in context. If customer inquires about residential homes (e.g. Semi-D, house, terrace, bungalow, condo), NEVER pitch or substitute commercial shop lots or industrial warehouses! If customer asks for rent, do not pitch sale properties without clarifying.
 3. Viewing & Acknowledgement: When viewing is requested, acknowledge warmly, ask for preferred day/time window, and explain that Home IHC prepares a standard Customer Property Viewing Acknowledgement form prior to inspection. Set "asked_meeting": true only if concrete viewing is confirmed.
 4. Off-Market Consultative Protocol: If 0 matching properties exist in the database for the requested category and area (e.g. Semi-D in Raub), explain warmly that listings for this category in that area are primarily handled off-market directly with private owners and landlords. Ask 1-2 consultative qualification questions (preferred budget range, specific neighborhood/area) and offer to scout off-market options. NEVER substitute commercial or industrial properties for a residential request.
-5. Handover Protocol: Set "asked_meeting": true and "promises_handover": true immediately if: (a) customer demands phone call / human agent / physical viewing, OR (b) your response states or promises that a senior agent, specialist, negotiator, or colleague will contact, call, or follow up with them. This triggers on ANY turn (including Turn 1).
+5. Handover Protocol: Set "asked_meeting": true and "promises_handover": true immediately if: (a) customer demands phone call / human agent / physical viewing, OR (b) your response states or promises that a senior agent, specialist, negotiator, or colleague will contact, call, or follow up with them, OR (c) sufficient qualification information has been collected. This triggers on ANY turn.
 6. Media Handling: If customer sends image/doc without text, ask how to assist regarding that property/document. Never say "image not received".
-7. Non-Real-Estate: Job vacancy -> set "is_out_of_context": true, refer to {ADMIN_EMAIL}.
+7. Out-of-Scope Redirection: If the customer asks for something out of scope (e.g. job vacancies, non-property services, personal matters) before/without sufficient property information -> set "is_out_of_context": true and redirect directly to Senior Agent Irene Leong ({IRENE_DISPLAY_PHONE}) and our management team. NEVER refer to any email address.
 8. Land Document & Title Extraction (Borang 11BK, Borang B2, Geran, Rekod Ketuanpunyaan):
    - When customer shares photos or PDFs of land grants or boundary plans, accurately extract and acknowledge:
      * Title & Lot: H.S.(M) / Geran No., PT / Lot No., Mukim and District (e.g. Mukim Bentong, Jalan Bilut).
@@ -493,6 +602,11 @@ Core Operational Directives:
 10. Dual-Track State Isolation:
    - When communicating with a property seller or landowner, NEVER search or pitch buyer properties from the database.
    - If a seller switches to inquiring about buying (or a buyer uploads a property to sell), address the active priority directly without erasing their previously recorded profile.
+11. 4-Step Qualification & Handover Workflow:
+   - Step 1: If role is unknown and no property info provided, ask which category they belong to (Personal Buyer, Property Agent / Broker, Seller / Property Owner).
+   - Step 2: Once role is assigned and no property details were provided, ask premature qualification questions (Buyer: location, property type, budget; Seller: location, property type/size, asking price; Agent: agency, REN, client needs).
+   - Step 3: Once sufficient information is gathered (>= 80% completeness or key fields gathered), set "promises_handover": true and "asked_meeting": true so specialist agent or Irene can follow up.
+   - Step 4: If not enough information was gathered and customer asks for out-of-scope services, set "is_out_of_context": true and redirect to Irene Leong ({IRENE_DISPLAY_PHONE}).
 
 Output JSON format strictly (RESPONSE-FIRST with Dynamic Sparse Keys to optimize generation speed):
 {{

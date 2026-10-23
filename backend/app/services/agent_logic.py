@@ -13,10 +13,14 @@ from app.services.system_prompts import (
     is_handover_promised,
     get_multilingual_greeting,
     get_multilingual_fallback,
+    get_multilingual_premature_questions,
+    get_multilingual_out_of_scope_redirect,
     get_multilingual_handover_wrapup,
     get_multilingual_disambiguation_request,
     get_multilingual_ah_tuck_handover,
     build_system_prompt,
+    IRENE_MAIN_PHONE,
+    IRENE_DISPLAY_PHONE,
     ADMIN_EMAIL,
     AH_TUCK_NAME,
     AH_TUCK_PHONE,
@@ -586,7 +590,80 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
         or session.get("current_agent") == "SELLER"
     )
 
-    if turn_intent == "seller_intake" or (is_existing_seller and turn_intent not in ["buyer_search", "agent_inquiry", "agent"]):
+    raw_lower = raw_text.strip().lower()
+
+    # Step 1 / 2 Category Selection Detection
+    explicit_category = None
+    if re.search(r'^(?:1|1\.|1\)|🙋?\s*(?:personal\s+buyer|buyer|pembeli|买家|个人买家))$', raw_lower) or any(
+        phrase in raw_lower for phrase in ["personal buyer", "pembeli peribadi", "个人买家", "我是买家", "i am a buyer", "i am buyer"]
+    ):
+        explicit_category = "buyer"
+    elif re.search(r'^(?:2|2\.|2\)|🤝?\s*(?:property\s+agent|agent|broker|ejen|中介|房产经纪))$', raw_lower) or any(
+        phrase in raw_lower for phrase in ["property agent", "agent / broker", "ejen hartanah", "我是中介", "我是agent", "co-broke", "cobroke"]
+    ):
+        explicit_category = "agent"
+    elif re.search(r'^(?:3|3\.|3\)|🏡?\s*(?:seller|property\s+owner|owner|penjual|pemilik|卖家|业主))$', raw_lower) or any(
+        phrase in raw_lower for phrase in ["property owner", "pemilik hartanah", "我是业主", "我是卖家", "i am owner", "i am seller", "委托出售"]
+    ):
+        explicit_category = "seller"
+
+    # Has any property information been provided in this message or session?
+    has_msg_property_info = bool(
+        matched_prop or _property_entity_detected or session.get("latest_document_extract")
+        or any(k in raw_lower for k in [
+            "bentong", "raub", "karak", "temerloh", "kuantan", "mentakab", "pahang",
+            "tanah", "land", "durian", "rumah", "house", "semi-d", "bungalow", "kedai", "shop", "factory",
+            "acre", "ekar", "sqft", "geran", "rm", "budget", "bajet", "price", "harga",
+            "property", "properties", "hartanah", "unit", "units", "condo", "apartment", "lot",
+            "房产", "产业", "地皮", "排屋", "店面", "租", "买", "卖", "buy", "sell", "rent"
+        ])
+    )
+
+    # Step 4: Early Out-of-Scope Interception (Job vacancies, non-property queries)
+    # If not enough property information was gathered and customer asks out of scope, redirect immediately
+    has_known_property_info = (
+        has_msg_property_info
+        or bool(collected_data.get("buyer_property_type") or collected_data.get("property_type"))
+        or bool(collected_data.get("buyer_location") or collected_data.get("location"))
+    )
+    ooc_keywords = [
+        "kerja kosong", "jawatan kosong", "job vacancy", "job offer", "hiring", "apply job",
+        "招聘", "找工作", "招人吗", "请人", "应聘", "cleaning service", "car wash", "personal loan",
+        "pinjaman wang", "insurance agent", "internship", "part time job", "兼职"
+    ]
+    if not has_known_property_info and any(kw in raw_lower for kw in ooc_keywords):
+        session["state"] = "COMPLETED"
+        session["handover"] = True
+        session["is_out_of_context"] = True
+        session["current_agent"] = "OUT_OF_SCOPE"
+        ooc_resp = get_multilingual_out_of_scope_redirect(customer_lang, current_user_name)
+        MultiIntentMemoryTracker.persist_customer_memory(phone_number, session)
+        return {
+            "response": ooc_resp,
+            "handover": True,
+            "intent": "OUT_OF_SCOPE",
+            "assignee_phone": IRENE_MAIN_PHONE,
+            "images_to_send": [],
+            "updated_session": session
+        }
+
+    if explicit_category == "seller":
+        seller_track["status"] = "active"
+        seller_track["last_active"] = datetime.datetime.utcnow().isoformat()
+        session["current_agent"] = "SELLER"
+        collected_data["customer_category"] = "seller"
+    elif explicit_category == "agent":
+        agent_track = session.setdefault("agent_track", {})
+        agent_track["status"] = "active"
+        agent_track["last_active"] = datetime.datetime.utcnow().isoformat()
+        session["current_agent"] = "AGENT"
+        collected_data["customer_category"] = "agent"
+    elif explicit_category == "buyer":
+        buyer_track["status"] = "active"
+        buyer_track["last_active"] = datetime.datetime.utcnow().isoformat()
+        session["current_agent"] = "BUYER"
+        collected_data["customer_category"] = "buyer"
+    elif turn_intent == "seller_intake" or (is_existing_seller and turn_intent not in ["buyer_search", "agent_inquiry", "agent"]):
         seller_track["status"] = "active"
         seller_track["last_active"] = datetime.datetime.utcnow().isoformat()
         if session.get("latest_document_extract"):
@@ -606,6 +683,61 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
         agent_track["last_active"] = datetime.datetime.utcnow().isoformat()
         session["current_agent"] = "AGENT"
         collected_data["customer_category"] = "agent"
+
+    # Step 2: Role assigned and NO property info provided -> ask premature questions
+    if explicit_category and not has_msg_property_info:
+        collected_data["introduced"] = True
+        session["introduced"] = True
+        session["collected_data"] = collected_data
+        session["current_agent"] = explicit_category.upper()
+        premature_msg = get_multilingual_premature_questions(explicit_category, customer_lang, current_user_name)
+        MultiIntentMemoryTracker.persist_customer_memory(phone_number, session)
+        return {
+            "response": premature_msg,
+            "handover": False,
+            "images_to_send": [],
+            "updated_session": session
+        }
+
+    # Step 1: Customer Ingress without prior introduction, category, or property info -> Greet & present Step 2 categories
+    has_assistant_in_history = bool(
+        conversation_history and (
+            "Assistant:" in conversation_history or
+            "AI:" in conversation_history or
+            "Agent:" in conversation_history or
+            "Irene Leong" in conversation_history or
+            "mecard.my" in conversation_history
+        )
+    )
+    is_fresh_ingress = not has_assistant_in_history and not session.get("introduced")
+    greeting_keywords = [
+        "hi", "hello", "hey", "halo", "salam", "selamat sejahtera", "selamat pagi",
+        "selamat petang", "selamat tengahari", "selamat malam", "hai", "good morning",
+        "good afternoon", "good evening", "good day", "您好", "你好", "早安", "午安", "晚安",
+        "pm", "pm me", "info", "test", "start", "menu"
+    ]
+    raw_cleaned = re.sub(r'[\s,!.?~]+', ' ', raw_lower).strip()
+    words = raw_cleaned.split()
+    action_keywords = ["check", "find", "look", "cari", "beli", "jual", "sewa", "buy", "sell", "rent", "want", "need", "nak", "ada", "mau", "想", "要", "问"]
+    is_pure_greeting = raw_cleaned in greeting_keywords or (
+        len(words) <= 3 and any(words[0] == kw or raw_cleaned.startswith(kw) for kw in greeting_keywords)
+        and not any(act in raw_lower for act in action_keywords)
+    )
+    is_greeting_or_vague = is_pure_greeting or (
+        turn_intent == "general" and len(words) <= 2 and not any(act in raw_lower for act in action_keywords)
+    )
+    if is_fresh_ingress and is_greeting_or_vague and not has_msg_property_info and not explicit_category:
+        collected_data["introduced"] = True
+        session["introduced"] = True
+        session["collected_data"] = collected_data
+        greeting_msg = get_multilingual_greeting(customer_lang, current_user_name)
+        MultiIntentMemoryTracker.persist_customer_memory(phone_number, session)
+        return {
+            "response": greeting_msg,
+            "handover": False,
+            "images_to_send": [],
+            "updated_session": session
+        }
 
     # Conversation 71 Protocol: Unidentified Listing & Advertisement Inquiry
     is_unidentified_inquiry = (turn_intent == "unidentified_listing") or (
@@ -741,18 +873,33 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
             collected_data[k] = v
 
     is_out_of_context = llm_analysis.get("is_out_of_context", False)
+
+    # Heuristic guard: Detect explicit out-of-scope queries (e.g. job vacancies, non-property queries)
+    has_known_property_info = bool(
+        matched_prop or _property_entity_detected or session.get("latest_document_extract")
+        or collected_data.get("buyer_property_type") or collected_data.get("property_type")
+        or collected_data.get("buyer_location") or collected_data.get("location")
+    )
+    ooc_keywords = [
+        "kerja kosong", "jawatan kosong", "job vacancy", "job offer", "hiring", "apply job",
+        "招聘", "找工作", "招人吗", "请人", "应聘", "cleaning service", "car wash", "personal loan",
+        "pinjaman wang", "insurance agent", "internship", "part time job", "兼职"
+    ]
+    if not has_known_property_info and any(kw in raw_text.lower() for kw in ooc_keywords):
+        is_out_of_context = True
+
     if is_out_of_context:
         session["state"] = "COMPLETED"
-        if customer_lang == "zh":
-            ooc_resp = f"感谢您联系 Home IHC。您的咨询已转交至我们的行政团队（{ADMIN_EMAIL}），专员将尽快跟进处理。"
-        elif customer_lang == "ms":
-            ooc_resp = f"Terima kasih kerana menghubungi Home IHC. Pertanyaan anda telah dimajukan kepada pasukan pentadbiran kami di {ADMIN_EMAIL}, dan pegawai kami akan menghubungi anda sebentar lagi."
-        else:
-            ooc_resp = f"Thank you for contacting Home IHC. I have forwarded your inquiry to our administration team at {ADMIN_EMAIL}, and a representative will follow up with you shortly."
+        session["handover"] = True
+        session["is_out_of_context"] = True
+        session["current_agent"] = "OUT_OF_SCOPE"
+        ooc_resp = get_multilingual_out_of_scope_redirect(customer_lang, current_user_name)
+        MultiIntentMemoryTracker.persist_customer_memory(phone_number, session)
         return {
             "response": ooc_resp,
             "handover": True,
-            "assignee_email": ADMIN_EMAIL,
+            "intent": "OUT_OF_SCOPE",
+            "assignee_phone": IRENE_MAIN_PHONE,
             "images_to_send": [],
             "updated_session": session
         }
@@ -871,6 +1018,30 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
         collected_data["scheduled_viewing_date"] = scheduled_viewing_dt.isoformat()
         collected_data["scheduled_property_title"] = prop_title
         session["viewing_scheduled"] = True
+
+    # Step 3: Qualified Handover Detection (sufficient information gathered)
+    current_role = collected_data.get("customer_category", "buyer").lower()
+    is_qualified_lead = False
+    if current_role == "buyer":
+        has_loc = bool(collected_data.get("buyer_location") or collected_data.get("location"))
+        has_type = bool(collected_data.get("buyer_property_type") or collected_data.get("property_type"))
+        has_budget = bool(collected_data.get("buyer_budget") or collected_data.get("budget"))
+        if has_loc and has_type and has_budget:
+            is_qualified_lead = True
+    elif current_role in ["seller", "owner"]:
+        has_loc = bool(collected_data.get("seller_location") or collected_data.get("location"))
+        has_type = bool(collected_data.get("seller_property_type") or collected_data.get("property_type"))
+        has_price = bool(collected_data.get("asking_price") or session.get("latest_document_extract"))
+        if (has_loc and has_type and has_price) or bool(session.get("latest_document_extract")):
+            is_qualified_lead = True
+    elif current_role in ["agent", "broker"]:
+        has_agent_info = bool(collected_data.get("company_name") or collected_data.get("ren_number"))
+        has_reqs = bool(collected_data.get("coverage_area") or collected_data.get("location") or collected_data.get("property_type"))
+        if has_agent_info and has_reqs:
+            is_qualified_lead = True
+
+    if is_qualified_lead:
+        session["is_qualified_lead"] = True
 
     handover_promised = is_handover_promised(response_text)
     promises_handover = bool(llm_analysis.get("promises_handover"))

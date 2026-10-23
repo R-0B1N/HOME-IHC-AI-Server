@@ -177,6 +177,48 @@ class LeadHandoverService:
         self.session_factory = session_factory or SessionLocal
         self.default_fallback_admins = default_fallback_admins or DEFAULT_FALLBACK_ADMIN_NUMBERS
 
+    def get_admin_recipients(self, db: Optional[Any] = None) -> List[Dict[str, str]]:
+        """
+        Dynamically resolves active admin recipients.
+        Irene Leong (+601165144931) is ALWAYS primary at index 0.
+        Followed by all other active admin users from crm_users (role == 'admin', is_active == True).
+        """
+        irene_phone = "+601165144931"
+        recipients = [
+            {"phone": irene_phone, "name": "Irene Leong (Main Number)"}
+        ]
+        
+        seen_phones = {"+601165144931", "601165144931", "01165144931"}
+        
+        if db is not None:
+            try:
+                db_admins = db.query(User).filter(
+                    User.is_active == True,
+                    User.role == "admin",
+                    User.phone_number.isnot(None),
+                    User.phone_number != "",
+                ).all()
+                for adm in db_admins:
+                    raw_phone = adm.phone_number.strip()
+                    norm_phone = raw_phone.replace(" ", "").replace("-", "")
+                    if norm_phone not in seen_phones:
+                        seen_phones.add(norm_phone)
+                        adm_name = (
+                            getattr(adm, "full_name", None)
+                            or getattr(adm, "username", "Admin")
+                        )
+                        recipients.append({"phone": raw_phone, "name": f"{adm_name} (Admin)"})
+            except Exception as e:
+                logger.warning(f"Could not query active admin users from DB: {e}")
+                
+        for fallback_phone in self.default_fallback_admins:
+            norm_fb = fallback_phone.replace(" ", "").replace("-", "")
+            if norm_fb not in seen_phones:
+                seen_phones.add(norm_fb)
+                recipients.append({"phone": fallback_phone, "name": f"Admin ({fallback_phone})"})
+                
+        return recipients
+
     def dispatch(
         self,
         conversation_id_or_data: Any = None,
@@ -191,10 +233,15 @@ class LeadHandoverService:
         inbox_id: int = 3,
         raw_inquiry_text: str = "",
         db: Optional[Any] = None,
+        conversation_id: Optional[int] = None,
+        **kwargs,
     ) -> Dict[str, Any]:
         """
         Executes dynamic hot lead handover.
         """
+        if conversation_id is not None and conversation_id_or_data is None:
+            conversation_id_or_data = conversation_id
+
         if isinstance(conversation_id_or_data, dict):
             lead_data = conversation_id_or_data
             conversation_id = lead_data.get("conversation_id", 0)
@@ -306,7 +353,18 @@ class LeadHandoverService:
             is_fallback = False
             is_tie = False
 
-            if intent and str(intent).strip().upper() in ["AGENT", "AGENT_INQUIRY", "BROKER"]:
+            if intent and str(intent).strip().upper() in ["OUT_OF_SCOPE", "OUT_OF_CONTEXT"]:
+                # Step 4: Out-of-scope redirection directly to Irene Leong (+601165144931) and active admins
+                admin_list = self.get_admin_recipients(db=db)
+                for adm in admin_list:
+                    routed_targets.append({
+                        "phone": adm["phone"],
+                        "name": adm["name"],
+                        "score": 100 if adm["phone"] == "+601165144931" else 90,
+                        "remark": "⚠️ Out of Scope Inquiry: Redirected to Irene Leong (+60 11-6514 4931) and Admin Team for clarification.",
+                    })
+                max_score = 100
+            elif intent and str(intent).strip().upper() in ["AGENT", "AGENT_INQUIRY", "BROKER"]:
                 # Co-broke agent/broker inquiry: Handled directly by Irene Leong (Main Number: +601165144931)
                 routed_targets.append({
                     "phone": "+601165144931",
@@ -343,10 +401,11 @@ class LeadHandoverService:
                         })
             else:
                 is_fallback = True
-                for admin_phone in self.default_fallback_admins:
+                admin_list = self.get_admin_recipients(db=db)
+                for adm in admin_list:
                     routed_targets.append({
-                        "phone": admin_phone,
-                        "name": f"Admin ({admin_phone})",
+                        "phone": adm["phone"],
+                        "name": adm["name"],
                         "score": 0,
                         "remark": "ℹ️ Handover Fallback: No matching agent specialization found.",
                     })
@@ -409,7 +468,11 @@ class LeadHandoverService:
                 )
 
             routing_notes = []
-            if intent and str(intent).strip().upper() in [
+            if intent and str(intent).strip().upper() in ["OUT_OF_SCOPE", "OUT_OF_CONTEXT"]:
+                routing_notes.append(
+                    "⚠️ Out of Scope Inquiry: Redirected to Irene Leong (+601165144931) and Active Admin Team"
+                )
+            elif intent and str(intent).strip().upper() in [
                 "AGENT", "AGENT_INQUIRY", "BROKER"
             ]:
                 routing_notes.append(
@@ -447,7 +510,12 @@ class LeadHandoverService:
                 except Exception as ne:
                     logger.error(f"Failed to post internal private note on handover: {ne}")
                 try:
-                    self.apply_label_func(conversation_id, ["human-handover", "hot-lead"])
+                    handover_labels = (
+                        ["out-of-scope", "human-handover"]
+                        if (intent and str(intent).strip().upper() in ["OUT_OF_SCOPE", "OUT_OF_CONTEXT"])
+                        else ["human-handover", "hot-lead"]
+                    )
+                    self.apply_label_func(conversation_id, handover_labels)
                     self.set_priority_func(conversation_id, "urgent")
                     self.update_status_func(conversation_id, "open")
                 except Exception as le:

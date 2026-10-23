@@ -749,11 +749,13 @@ class ConversationQueueProcessor:
             )
 
             if role not in ["admin", "employee", "agent"]:
+                is_qualified_handover = (completeness_ratio >= 0.8)
                 if (
                     handover_from_state
                     or user_wants_immediate_human
                     or user_books_inspection
                     or response_promises_handover
+                    or is_qualified_handover
                 ):
                     handover_initiated = True
                     if (
@@ -915,6 +917,13 @@ class ConversationQueueProcessor:
             f"https://inbox.bentongland.com.my/app/accounts/{CHATWOOT_ACCOUNT_ID}/inbox/"
             f"{inbox_id}/conversations/{conversation_id}"
         )
+
+        if (
+            session.get("is_out_of_context")
+            or session.get("current_agent") == "OUT_OF_SCOPE"
+            or str(intent).strip().lower() in ["out_of_scope", "out_of_context"]
+        ):
+            intent = "OUT_OF_SCOPE"
 
         try:
             handover_result = dispatch_hot_lead_handover(
