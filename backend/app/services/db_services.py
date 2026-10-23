@@ -160,13 +160,16 @@ def normalize_phone_variants(phone_number: str) -> list:
     return list(variants)
 
 
-def get_sender_role(phone_number: str) -> str:
+def get_sender_role(phone_number: str, db: Session = None) -> str:
     """
     Checks the phone number against crm_users (User), with legacy Admin and Employee tables as fallback.
     Returns 'admin', 'agent', 'employee', 'viewer', or 'customer'.
     Only active accounts (is_active=True) in crm_users are granted non-customer roles.
     """
-    db: Session = SessionLocal()
+    close_db = False
+    if db is None:
+        db = SessionLocal()
+        close_db = True
     try:
         if not phone_number:
             return "customer"
@@ -201,7 +204,8 @@ def get_sender_role(phone_number: str) -> str:
         logger.error(f"Error checking sender role for {phone_number}: {e}")
         return "customer"
     finally:
-        db.close()
+        if close_db:
+            db.close()
 
 
 def get_active_crm_user_by_phone(phone_number: str):

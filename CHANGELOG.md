@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] - Milestone 2 (v1.1.0-dev)
 
 ### Added
+- **Lead Handover Domain Service & Strategy (`app/services/lead_handover.py`)**:
+  - Extracted agent specialization scoring into `AgentSpecializationScorer` strategy class, evaluating assigned locations, property types, and inquiry keywords.
+  - Implemented `LeadHandoverService` managing candidate querying, winner routing, multi-agent ties with shared-case remarks, admin fallback lines, and WhatsApp/Chatwoot notifications.
+  - Preserved backward-compatible procedural facades in `app/worker/tasks.py` (`calculate_agent_specialization_score`, `dispatch_hot_lead_handover`).
+- **Modular Conversation Queue Processor (`app/services/conversation_processor.py`)**:
+  - Decomposed 742-line monolithic `process_conversation_queue` god function into discrete, testable stages: debounce checking, master AI toggle verification, multimodal ingestion (audio, images, PDFs), customer entity resolution, RBAC context generation, persona state machine execution, dynamic lead temperature scoring, AI interaction briefing, and outbound message/form dispatch.
+  - Reduced `app/worker/tasks.py` from 1,436 lines to 467 lines (~68% reduction in task file complexity).
+  - Added dedicated unit test suite in `tests/test_conversation_queue_processor.py` expanding test coverage to 124 tests (100% pass rate).
+- **Internal Staff Lead Follow-Up Suppression (`app/services/lead_nurturing.py`)**:
+  - Grounded lead follow-up evaluation in RBAC role verification (`get_sender_role`), suppressing automated follow-up messages for verified admins, agents, and employees.
 - **Clean Code & Object-Oriented Reporting Architecture (`app/services/reporting.py`)**:
   - Encapsulated low-level binary OpenXML and openpyxl packaging into a single `OpenXmlSpreadsheetBuilder` class with pure standard-library fallback.
   - Implemented Template Method pattern across `BaseExcelReportGenerator`, `BuyerReportGenerator`, and `OwnerReportGenerator`, eliminating 100% of duplicated customer and property extraction loops.

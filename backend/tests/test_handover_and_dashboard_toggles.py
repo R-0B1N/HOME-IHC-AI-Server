@@ -127,6 +127,51 @@ class TestHandoverAndDashboardToggles(unittest.TestCase):
         self.assertIn("/conversations/456/toggle_status", args[0])
         self.assertEqual(kwargs["json"], {"status": "open"})
 
+    @patch("app.services.db_services.get_sender_role")
+    def test_lead_nurturing_skips_internal_staff(self, mock_get_role):
+        """Validates that evaluate_customer suppresses follow-up messages for employees, agents, and admins."""
+        from datetime import datetime, timezone, timedelta
+        from app.db.models import Customer
+        
+        manager = LeadNurturingManager(
+            db_session=MagicMock(),
+            message_sender=MagicMock(),
+            note_sender=MagicMock()
+        )
+        now = datetime.now(timezone.utc)
+        
+        # Staff Employee Customer
+        emp_cust = MagicMock(spec=Customer)
+        emp_cust.id = "+60198765432"
+        emp_cust.phone_number = "+60198765432"
+        emp_cust.contact_name = "Staff Member"
+        emp_cust.created_at = now - timedelta(days=4)
+        emp_cust.updated_at = now - timedelta(days=4)
+        emp_cust.last_interaction = now - timedelta(days=4)
+        emp_cust.metadata_json = {"lead_temp": "warm", "conversation_id": 2001, "bypass_ai": False}
+        
+        # 1. Staff Employee: Suppressed
+        mock_get_role.return_value = "employee"
+        res_emp = manager.evaluate_customer(emp_cust, now=now)
+        self.assertIsNone(res_emp, "Employee must NEVER be evaluated for lead follow-up")
+        
+        # 2. Staff Agent: Suppressed
+        mock_get_role.return_value = "agent"
+        res_agent = manager.evaluate_customer(emp_cust, now=now)
+        self.assertIsNone(res_agent, "Internal agent must NEVER be evaluated for lead follow-up")
+        
+        # 3. Staff Admin: Suppressed
+        mock_get_role.return_value = "admin"
+        res_admin = manager.evaluate_customer(emp_cust, now=now)
+        self.assertIsNone(res_admin, "Admin must NEVER be evaluated for lead follow-up")
+        
+        # 4. Genuine Customer: Successfully evaluated
+        mock_get_role.return_value = "customer"
+        res_cust = manager.evaluate_customer(emp_cust, now=now)
+        self.assertIsNotNone(res_cust, "Genuine prospective customer must be evaluated for follow-up")
+        self.assertEqual(res_cust["conversation_id"], 2001)
+
 
 if __name__ == "__main__":
     unittest.main()
+
