@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] - Milestone 2 (v1.1.0-dev)
 
 ### Added
+- **Lead Handover Domain Service & Strategy (`app/services/lead_handover.py`)**:
+  - Extracted agent specialization scoring into `AgentSpecializationScorer` strategy class, evaluating assigned locations, property types, and inquiry keywords.
+  - Implemented `LeadHandoverService` managing candidate querying, winner routing, multi-agent ties with shared-case remarks, admin fallback lines, and WhatsApp/Chatwoot notifications.
+  - Preserved backward-compatible procedural facades in `app/worker/tasks.py` (`calculate_agent_specialization_score`, `dispatch_hot_lead_handover`).
+- **Modular Conversation Queue Processor (`app/services/conversation_processor.py`)**:
+  - Decomposed 742-line monolithic `process_conversation_queue` god function into discrete, testable stages: debounce checking, master AI toggle verification, multimodal ingestion (audio, images, PDFs), customer entity resolution, RBAC context generation, persona state machine execution, dynamic lead temperature scoring, AI interaction briefing, and outbound message/form dispatch.
+  - Reduced `app/worker/tasks.py` from 1,436 lines to 467 lines (~68% reduction in task file complexity).
+  - Added dedicated unit test suite in `tests/test_conversation_queue_processor.py` expanding test coverage to 124 tests (100% pass rate).
+- **Internal Staff Lead Follow-Up Suppression (`app/services/lead_nurturing.py`)**:
+  - Grounded lead follow-up evaluation in RBAC role verification (`get_sender_role`), suppressing automated follow-up messages for verified admins, agents, and employees.
+- **Clean Code & Object-Oriented Reporting Architecture (`app/services/reporting.py`)**:
+  - Encapsulated low-level binary OpenXML and openpyxl packaging into a single `OpenXmlSpreadsheetBuilder` class with pure standard-library fallback.
+  - Implemented Template Method pattern across `BaseExcelReportGenerator`, `BuyerReportGenerator`, and `OwnerReportGenerator`, eliminating 100% of duplicated customer and property extraction loops.
+  - Decomposed `AdminWhatsAppDispatcher` into focused, single-responsibility methods (`_dispatch_template_to_admin`, `_archive_report_in_chatwoot`), adhering to Uncle Bob's Stepdown rule.
+  - Maintained 100% backward-compatible procedural facades (`export_buyer_database_xlsx`, `export_owner_database_xlsx`, `generate_weekly_database_reports`), verifying all 115 unit and regression tests pass cleanly.
+- **Modern Timezone-Aware UTC Timestamping (`main.py`)**: Replaced deprecated `datetime.datetime.utcnow()` with `datetime.datetime.now(datetime.timezone.utc)` during startup lead synchronization.
 - **Multimodal Document Parsing & Ingestion (`DocumentParser` & `DocumentExtractor`)**:
   - Inbound media attachment handling for customer-submitted property documents, land titles, site photos, and raster drawings.
   - CAD Blueprint downscaling budget limiting rendering to max 3 sheets, JPEG format (<500KB/sheet), and sub-5s latency.
@@ -46,7 +62,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Purged 19 duplicate non-code document files (~12MB) and legacy `.planning/` notes from `Whatsapp AI` repository.
   - Formally linked repositories via `home-ihc.code-workspace`.
 
-### Fixed
+- **Bidirectional Webhook Inbox Isolation (INCIDENT-20261012-DOUBLE-REPLY)**: Enforced strict bidirectional environment filtering in `backend/app/api/webhooks.py`, dropping staging test inbox (Inbox 4) events when running in production to eliminate dual-worker processing and double replies.
+- **Production Outgoing Message Guard (INCIDENT-20261012-DOUBLE-REPLY)**: Added `[PRODUCTION SAFETY]` guard in `backend/app/services/chatwoot.py:send_message` preventing public message transmissions to staging inboxes from production instances.
+- **UTC Timestamp Generation Syntax (`tasks.py`)**: Replaced bare `datetime.utcnow()` with `datetime.datetime.now(datetime.timezone.utc)` at customer last interaction update, eliminating `AttributeError`.
 - **Mobile Document Proxy Content-Type Resolution (CR-005)**: Restored missing `content_type` variable extraction from upstream response headers in `proxy_document_inline` (`backend/app/api/documents.py`), eliminating 502 Bad Gateway regression and bringing unit test suite back to 100% pass rate.
 - **Workspace Topology & Concurrency Compliance (CR-006)**: Purged untracked physical `staging/` and `production/` directories to enforce Git-native branch isolation, established `docs/adr/0001-workspace-topology-and-monorepo-structure.md`, initialized `Sessions/Active-Sessions/` concurrency lock registry, and mapped `Requirements/TRACEABILITY_MATRIX.md`.
 - **Handover Suppression Bug**: Fixed issue where state machine failed to trigger human handover when assistant replies promised a senior agent would reach out.

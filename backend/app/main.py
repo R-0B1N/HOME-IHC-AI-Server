@@ -105,7 +105,7 @@ def on_startup():
                                 contact_name=contact.get("name") or "WhatsApp Lead",
                                 email=contact.get("email"),
                                 country="Malaysia",
-                                last_interaction=datetime.datetime.utcnow(),
+                                last_interaction=datetime.datetime.now(datetime.timezone.utc),
                                 metadata_json={"chatwoot_contact_id": contact.get("id"), "source": "chatwoot_startup_sync"}
                             ))
                 db.commit()

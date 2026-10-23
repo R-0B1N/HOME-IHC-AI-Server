@@ -72,6 +72,19 @@ def send_message(conversation_id: int, content: str):
                 conversation_id,
                 f"⚠️ [STAGING SAFETY] Automated message suppressed from production inbox {conv_inbox}:\n\n{content}"
             )
+    else:
+        staging_inbox_id = str(os.getenv("STAGING_INBOX_ID", "4"))
+        conv = get_conversation_details(conversation_id)
+        conv_inbox = str(conv.get("inbox_id", ""))
+        if conv_inbox and conv_inbox == staging_inbox_id:
+            logger.warning(
+                f"[PRODUCTION SAFETY] Suppressed public outgoing message to staging conversation {conversation_id} "
+                f"(inbox {conv_inbox} == staging inbox {staging_inbox_id}). Diverted to internal note."
+            )
+            return send_private_note(
+                conversation_id,
+                f"⚠️ [PRODUCTION SAFETY] Automated message suppressed from staging inbox {conv_inbox}:\n\n{content}"
+            )
 
     url = f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages"
     headers = {
@@ -363,7 +376,17 @@ def send_whatsapp_contact(inbox_id: int, to_phone: str, contact_name: str, conta
             logger.error(f"Response: {e.response.text}")
         return None
 
-def send_whatsapp_template(inbox_id: int, to_phone: str, template_name: str, parameters: list, language_code: str = "en_US", override_phone_number_id: str = None):
+def send_whatsapp_template(
+    inbox_id: int,
+    to_phone: str,
+    template_name: str,
+    parameters: list,
+    language_code: str = "en_US",
+    override_phone_number_id: str = None,
+    header_document_url: str = None,
+    header_document_filename: str = None,
+    header_text: str = None
+):
     """
     Sends a WhatsApp Template Message via the Graph API.
     parameters should be a list of strings mapping to {{1}}, {{2}}, etc.
@@ -371,6 +394,7 @@ def send_whatsapp_template(inbox_id: int, to_phone: str, template_name: str, par
     If override_phone_number_id is provided, it will be used instead of the inbox's
     phone_number_id. This is needed when the template is registered on a different WABA
     than the inbox's phone number.
+    Supports optional document or text header components.
     """
     api_key, phone_number_id = resolve_whatsapp_phone_number_id(inbox_id, override_phone_number_id)
     
@@ -387,6 +411,32 @@ def send_whatsapp_template(inbox_id: int, to_phone: str, template_name: str, par
     clean_to_phone = to_phone.replace("+", "").replace(" ", "").replace("-", "")
     
     # Construct template components
+    components = []
+    
+    if header_document_url:
+        components.append({
+            "type": "header",
+            "parameters": [
+                {
+                    "type": "document",
+                    "document": {
+                        "link": header_document_url,
+                        "filename": header_document_filename or "Document.xlsx"
+                    }
+                }
+            ]
+        })
+    elif header_text:
+        components.append({
+            "type": "header",
+            "parameters": [
+                {
+                    "type": "text",
+                    "text": str(header_text)
+                }
+            ]
+        })
+
     body_parameters = []
     for param in parameters:
         body_parameters.append({
@@ -394,6 +444,12 @@ def send_whatsapp_template(inbox_id: int, to_phone: str, template_name: str, par
             "text": str(param)
         })
         
+    if body_parameters:
+        components.append({
+            "type": "body",
+            "parameters": body_parameters
+        })
+
     payload = {
         "messaging_product": "whatsapp",
         "to": clean_to_phone,
@@ -403,12 +459,7 @@ def send_whatsapp_template(inbox_id: int, to_phone: str, template_name: str, par
             "language": {
                 "code": language_code
             },
-            "components": [
-                {
-                    "type": "body",
-                    "parameters": body_parameters
-                }
-            ]
+            "components": components
         }
     }
     
@@ -630,6 +681,40 @@ def create_conversation(contact_id: int, inbox_id: int) -> int:
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to create conversation in Chatwoot: {e}")
         return None
+
+def get_contact_conversations(contact_id: int) -> list:
+    """
+    Fetches conversations associated with a specific contact.
+    """
+    url = f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts/{contact_id}/conversations"
+    headers = {
+        "api_access_token": CHATWOOT_API_TOKEN,
+        "Content-Type": "application/json"
+    }
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        return data.get("payload", [])
+    except Exception as e:
+        logger.warning(f"Failed to fetch conversations for contact {contact_id}: {e}")
+        return []
+
+def get_or_create_conversation(contact_id: int, inbox_id: int) -> int:
+    """
+    Finds an existing open conversation for a contact in an inbox, or creates a new one if none exists.
+    Prevents thread fragmentation and conversation bloat.
+    """
+    existing = get_contact_conversations(contact_id)
+    if existing:
+        for conv in existing:
+            if conv.get("inbox_id") == inbox_id and conv.get("status") in ["open", "pending", "snoozed"]:
+                return conv.get("id")
+        inbox_convs = [c for c in existing if c.get("inbox_id") == inbox_id]
+        if inbox_convs:
+            return inbox_convs[0].get("id")
+            
+    return create_conversation(contact_id, inbox_id)
 
 def assign_agent(conversation_id: int, agent_id: int):
     """

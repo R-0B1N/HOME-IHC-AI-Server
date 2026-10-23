@@ -378,6 +378,21 @@ class LeadNurturingManager:
         if meta.get("bypass_ai") and not force_due:
             return None
 
+        # Respect RBAC: Never send automated lead follow-ups to internal staff (admin, employee, agent)
+        if not force_due:
+            phone_cand = getattr(customer, "id", None) or getattr(customer, "phone_number", None)
+            if phone_cand:
+                try:
+                    from app.services.db_services import get_sender_role
+                    sender_role = get_sender_role(str(phone_cand), db=self.db_session)
+                    if sender_role in ["admin", "employee", "agent"]:
+                        logger.info(
+                            f"[NURTURE SUPPRESSED] Customer {phone_cand} is verified staff ({sender_role}). Skipping lead follow-up."
+                        )
+                        return None
+                except Exception as role_err:
+                    logger.warning(f"Could not verify sender role for nurturing candidate {phone_cand}: {role_err}")
+
         # Check last nurtured timestamp (prevent duplicate pings within 24h unless force_due)
         last_nurtured_str = meta.get("last_nurtured_at")
         if last_nurtured_str and not force_due:
