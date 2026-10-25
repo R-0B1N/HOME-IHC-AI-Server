@@ -1,0 +1,133 @@
+name: Test Staging Environment
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test_staging:
+    name: Staging E2E Smoke & Health Tests
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: Execute Live Staging Environment Tests
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          command_timeout: 10m
+          timeout: 10m
+          script: |
+            set -e
+            echo "=========================================================="
+            echo "1. VERIFYING DOCKER CONTAINER INTEGRITY (STAGING)"
+            echo "=========================================================="
+            for container in whatsapp_ai_api_staging whatsapp_ai_worker_staging whatsapp_ai_beat_staging whatsapp_ai_frontend_staging whatsapp_ai_redis_staging; do
+              STATUS=$(docker inspect -f '{{.State.Status}}' "$container" 2>/dev/null || echo "missing")
+              if [ "$STATUS" != "running" ]; then
+                echo "❌ CRITICAL: Container $container is not running! Status: $STATUS"
+                exit 1
+              fi
+              echo "✅ Container $container is running."
+            done
+
+            echo "=========================================================="
+            echo "2. STAGING API HEALTH CHECK (PORT 8001)"
+            echo "=========================================================="
+            HEALTH_RESP=$(curl -s -f http://localhost:8001/health || { echo "Failed to connect to /health"; exit 1; })
+            echo "Response: $HEALTH_RESP"
+            if ! echo "$HEALTH_RESP" | grep -q '"status":"ok"'; then
+              echo "❌ Health check did not return status ok!"
+              exit 1
+            fi
+            echo "✅ Staging API /health responded with status: ok"
+
+            echo "=========================================================="
+            echo "3. STAGING SETTINGS & TOGGLES ENDPOINT"
+            echo "=========================================================="
+            TOGGLES_RESP=$(curl -s -f http://localhost:8001/api/v1/settings/toggles || { echo "Failed to connect to /api/v1/settings/toggles"; exit 1; })
+            echo "Toggles: $TOGGLES_RESP"
+            if ! echo "$TOGGLES_RESP" | grep -q 'master_ai_enabled'; then
+              echo "❌ Settings endpoint missing master_ai_enabled toggle!"
+              exit 1
+            fi
+            echo "✅ Staging Settings toggles endpoint verified."
+
+            echo "=========================================================="
+            echo "4. STAGING FRONTEND DASHBOARD (PORT 3001)"
+            echo "=========================================================="
+            FRONTEND_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3001/)
+            echo "Frontend HTTP Status Code: $FRONTEND_CODE"
+            if [ "$FRONTEND_CODE" != "200" ]; then
+              echo "❌ Frontend returned non-200 status code: $FRONTEND_CODE"
+              exit 1
+            fi
+            echo "✅ Staging Frontend dashboard responded with HTTP 200 OK."
+
+            echo "=========================================================="
+            echo "5. STAGING CELERY WORKER HEARTBEAT & TASK PING"
+            echo "=========================================================="
+            cd ~/whatsapp-ai-staging
+            PING_OUT=$(docker compose -f docker-compose.staging.yml exec -T worker_staging celery -A app.worker.celery_app inspect ping || echo "Ping failed")
+            echo "$PING_OUT"
+            if ! echo "$PING_OUT" | grep -q 'pong'; then
+              echo "❌ Celery worker did not respond to inspect ping!"
+              exit 1
+            fi
+            echo "✅ Celery worker active and responding with PONG."
+
+            echo "=========================================================="
+            echo "6. IN-CONTAINER RBAC & WORKFLOW VALIDATION"
+            echo "=========================================================="
+            docker compose -f docker-compose.staging.yml exec -T api_staging python -c '
+            import sys
+            from unittest.mock import MagicMock
+            from app.services.lead_nurturing import LeadNurturingManager
+            from app.services.agent_logic import process_persona_state_machine
+            from app.services.lead_handover import LeadHandoverService
+
+            print("Testing LeadNurturingManager staff suppression in container...")
+            mock_customer = MagicMock()
+            mock_customer.phone_number = "+60123456789"
+            mock_db = MagicMock()
+
+            # Mock staff user
+            mock_staff = MagicMock()
+            mock_staff.role = "employee"
+            mock_db.query.return_value.filter.return_value.first.return_value = mock_staff
+
+            manager = LeadNurturingManager(session_factory=lambda: mock_db)
+            suppressed_action = manager.evaluate_customer(mock_customer, db=mock_db)
+            assert suppressed_action is None, "Failed: Staff was not suppressed!"
+            print("✅ Verified: Staff nurturing follow-up is suppressed (returns None).")
+
+            print("Testing Step 1 Ingress greeting in container...")
+            res = process_persona_state_machine(
+                phone_number="+60199998888",
+                raw_text="Hi good morning",
+                session={},
+                conversation_history="",
+                contact_name="Testing User"
+            )
+            assert "Irene Leong" in res["response"], "Missing Irene Leong in greeting!"
+            assert "Personal Buyer" in res["response"], "Missing Personal Buyer in category prompt!"
+            print("✅ Verified: Step 1 Ingress greeting presents Irene Leong and Category selection.")
+
+            print("Testing dynamic admin recipients in LeadHandoverService...")
+            handover_svc = LeadHandoverService()
+            admins = handover_svc.get_admin_recipients(db=mock_db)
+            assert len(admins) >= 1, "No admin recipients found!"
+            assert admins[0]["phone"] == "+601165144931", "Irene Leong main number is not primary at index 0!"
+            print(f"✅ Verified: Handover recipient list resolved {len(admins)} admins with Irene primary: {admins[0]}")
+            '
+
+            echo "=========================================================="
+            echo "🎉 ALL STAGING ENVIRONMENT TESTS PASSED SUCCESSFULLY!"
+            echo "=========================================================="
