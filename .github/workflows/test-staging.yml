@@ -52,13 +52,13 @@ jobs:
             echo "=========================================================="
             echo "3. STAGING SETTINGS & TOGGLES ENDPOINT"
             echo "=========================================================="
-            TOGGLES_RESP=$(curl -s -f http://localhost:8001/api/v1/settings/toggles || { echo "Failed to connect to /api/v1/settings/toggles"; exit 1; })
-            echo "Toggles: $TOGGLES_RESP"
-            if ! echo "$TOGGLES_RESP" | grep -q 'master_ai_enabled'; then
-              echo "❌ Settings endpoint missing master_ai_enabled toggle!"
+            AI_STATUS_RESP=$(curl -s -f http://localhost:8001/api/v1/settings/ai-status || { echo "Failed to connect to /api/v1/settings/ai-status"; exit 1; })
+            echo "AI Status: $AI_STATUS_RESP"
+            if ! echo "$AI_STATUS_RESP" | grep -q '"enabled"'; then
+              echo "❌ Settings endpoint missing enabled field!"
               exit 1
             fi
-            echo "✅ Staging Settings toggles endpoint verified."
+            echo "✅ Staging Settings ai-status endpoint verified."
 
             echo "=========================================================="
             echo "4. STAGING FRONTEND DASHBOARD (PORT 3001)"
@@ -84,49 +84,9 @@ jobs:
             echo "✅ Celery worker active and responding with PONG."
 
             echo "=========================================================="
-            echo "6. IN-CONTAINER RBAC & WORKFLOW VALIDATION"
+            echo "6. IN-CONTAINER E2E STAGING SUITE VALIDATION"
             echo "=========================================================="
-            docker compose -f docker-compose.staging.yml exec -T api_staging python -c '
-            import sys
-            from unittest.mock import MagicMock
-            from app.services.lead_nurturing import LeadNurturingManager
-            from app.services.agent_logic import process_persona_state_machine
-            from app.services.lead_handover import LeadHandoverService
-
-            print("Testing LeadNurturingManager staff suppression in container...")
-            mock_customer = MagicMock()
-            mock_customer.phone_number = "+60123456789"
-            mock_db = MagicMock()
-
-            # Mock staff user
-            mock_staff = MagicMock()
-            mock_staff.role = "employee"
-            mock_db.query.return_value.filter.return_value.first.return_value = mock_staff
-
-            manager = LeadNurturingManager(session_factory=lambda: mock_db)
-            suppressed_action = manager.evaluate_customer(mock_customer, db=mock_db)
-            assert suppressed_action is None, "Failed: Staff was not suppressed!"
-            print("✅ Verified: Staff nurturing follow-up is suppressed (returns None).")
-
-            print("Testing Step 1 Ingress greeting in container...")
-            res = process_persona_state_machine(
-                phone_number="+60199998888",
-                raw_text="Hi good morning",
-                session={},
-                conversation_history="",
-                contact_name="Testing User"
-            )
-            assert "Irene Leong" in res["response"], "Missing Irene Leong in greeting!"
-            assert "Personal Buyer" in res["response"], "Missing Personal Buyer in category prompt!"
-            print("✅ Verified: Step 1 Ingress greeting presents Irene Leong and Category selection.")
-
-            print("Testing dynamic admin recipients in LeadHandoverService...")
-            handover_svc = LeadHandoverService()
-            admins = handover_svc.get_admin_recipients(db=mock_db)
-            assert len(admins) >= 1, "No admin recipients found!"
-            assert admins[0]["phone"] == "+601165144931", "Irene Leong main number is not primary at index 0!"
-            print(f"✅ Verified: Handover recipient list resolved {len(admins)} admins with Irene primary: {admins[0]}")
-            '
+            docker compose -f docker-compose.staging.yml exec -T api_staging python scripts/test_staging_e2e.py
 
             echo "=========================================================="
             echo "🎉 ALL STAGING ENVIRONMENT TESTS PASSED SUCCESSFULLY!"
