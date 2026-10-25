@@ -432,8 +432,11 @@ def _clean_search_tokens(text: str) -> list:
         cleaned = cleaned.replace(filler, " ")
     # Keep alphanumeric tokens with length >= 2
     tokens = re.findall(r'[a-zA-Z0-9\-]+', cleaned)
-    stop_words = {"the", "a", "an", "at", "in", "on", "of", "and", "or", "to", "for", "is", "it", "with", "this", "that", "some", "any", "test", "testing", "dummy", "sample"}
-    return [t for t in tokens if t not in stop_words and len(t) > 1]
+    stop_words = {
+        "the", "a", "an", "at", "in", "on", "of", "and", "or", "to", "for", "is", "it", "with", "this", "that", "some", "any", "test", "testing", "dummy", "sample",
+        "ada", "tak", "saya", "nak", "cari", "mau", "dia", "awak", "kami", "mereka", "ini", "itu", "ke", "di", "dari", "dan", "atau", "apa", "siapa", "bila", "mana", "bagaimana", "kerja", "kosong", "part", "time"
+    }
+    return [t for t in tokens if t not in stop_words and len(t) > 2]
 
 
 def _is_authentic_listing(p: Property) -> bool:

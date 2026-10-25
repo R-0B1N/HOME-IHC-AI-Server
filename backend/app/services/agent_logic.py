@@ -534,6 +534,29 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
         collected_data["name"] = contact_name.strip()
 
     current_user_name = collected_data.get("name") or (contact_name if is_valid_name(contact_name) else None)
+    raw_lower = raw_text.strip().lower()
+
+    # Step 4: Early Out-of-Scope Interception (Job vacancies, non-property queries, personal loans)
+    ooc_keywords = [
+        "kerja kosong", "jawatan kosong", "job vacancy", "job offer", "hiring", "apply job",
+        "招聘", "找工作", "招人吗", "请人", "应聘", "cleaning service", "car wash", "personal loan",
+        "pinjaman wang", "insurance agent", "internship", "part time job", "兼职"
+    ]
+    if any(kw in raw_lower for kw in ooc_keywords):
+        session["state"] = "COMPLETED"
+        session["handover"] = True
+        session["is_out_of_context"] = True
+        session["current_agent"] = "OUT_OF_SCOPE"
+        ooc_resp = get_multilingual_out_of_scope_redirect(customer_lang, current_user_name)
+        MultiIntentMemoryTracker.persist_customer_memory(phone_number, session)
+        return {
+            "response": ooc_resp,
+            "handover": True,
+            "intent": "OUT_OF_SCOPE",
+            "assignee_phone": IRENE_MAIN_PHONE,
+            "images_to_send": [],
+            "updated_session": session
+        }
 
     # 2. Match Specific Property in Database or Resolve from History
     matched_prop = find_matching_property(raw_text)
@@ -590,8 +613,6 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
         or session.get("current_agent") == "SELLER"
     )
 
-    raw_lower = raw_text.strip().lower()
-
     # Step 1 / 2 Category Selection Detection
     explicit_category = None
     if re.search(r'^(?:1|1\.|1\)|🙋?\s*(?:personal\s+buyer|buyer|pembeli|买家|个人买家))$', raw_lower) or any(
@@ -618,34 +639,6 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
             "房产", "产业", "地皮", "排屋", "店面", "租", "买", "卖", "buy", "sell", "rent"
         ])
     )
-
-    # Step 4: Early Out-of-Scope Interception (Job vacancies, non-property queries)
-    # If not enough property information was gathered and customer asks out of scope, redirect immediately
-    has_known_property_info = (
-        has_msg_property_info
-        or bool(collected_data.get("buyer_property_type") or collected_data.get("property_type"))
-        or bool(collected_data.get("buyer_location") or collected_data.get("location"))
-    )
-    ooc_keywords = [
-        "kerja kosong", "jawatan kosong", "job vacancy", "job offer", "hiring", "apply job",
-        "招聘", "找工作", "招人吗", "请人", "应聘", "cleaning service", "car wash", "personal loan",
-        "pinjaman wang", "insurance agent", "internship", "part time job", "兼职"
-    ]
-    if not has_known_property_info and any(kw in raw_lower for kw in ooc_keywords):
-        session["state"] = "COMPLETED"
-        session["handover"] = True
-        session["is_out_of_context"] = True
-        session["current_agent"] = "OUT_OF_SCOPE"
-        ooc_resp = get_multilingual_out_of_scope_redirect(customer_lang, current_user_name)
-        MultiIntentMemoryTracker.persist_customer_memory(phone_number, session)
-        return {
-            "response": ooc_resp,
-            "handover": True,
-            "intent": "OUT_OF_SCOPE",
-            "assignee_phone": IRENE_MAIN_PHONE,
-            "images_to_send": [],
-            "updated_session": session
-        }
 
     if explicit_category == "seller":
         seller_track["status"] = "active"
@@ -1138,18 +1131,20 @@ def generate_conversational_response(
     # 1. Dynamic Token Management (Guarantee prompt + completion <= 2048 limit)
     history_to_use = conversation_history or ""
     total_chars = len(system_prompt) + len(history_to_use) + len(text or "")
-    est_input_tokens = int(total_chars / 3.0)
+    est_input_tokens = int(total_chars / 2.5)
 
     # If approaching limit, prune history to most recent exchanges
-    if est_input_tokens > 1500 and history_to_use:
+    if est_input_tokens > 1300 and history_to_use:
         hist_lines = [l for l in history_to_use.split("\n") if l.strip()]
-        history_to_use = "\n".join(hist_lines[-4:])
+        history_to_use = "\n".join(hist_lines[-3:])
         total_chars = len(system_prompt) + len(history_to_use) + len(text or "")
-        est_input_tokens = int(total_chars / 3.0)
+        est_input_tokens = int(total_chars / 2.5)
 
     images = kwargs.get("images") or []
-    # Bounded output token budget (Ample completion room for complete response)
-    safe_max_tokens = max(350, min(550, 2035 - est_input_tokens)) if images else max(250, min(450, 2035 - est_input_tokens))
+    # Strict bounded output token budget ensuring prompt + completion never exceeds 2040 tokens
+    max_allowed = max(50, 2030 - est_input_tokens)
+    target_tokens = 450 if images else 350
+    safe_max_tokens = min(target_tokens, max_allowed)
 
     messages = [
         {"role": "system", "content": system_prompt}
