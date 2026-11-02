@@ -655,11 +655,8 @@ class LeadHandoverService:
                     pass
 
 
-_default_service = LeadHandoverService()
-
-
 def dispatch_hot_lead_handover(*args, **kwargs) -> Dict[str, Any]:
     """
     Convenience module-level facade for LeadHandoverService().dispatch(...).
     """
-    return _default_service.dispatch(*args, **kwargs)
+    return LeadHandoverService().dispatch(*args, **kwargs)

@@ -199,6 +199,19 @@ class TestAgentSpecializationScoring(unittest.TestCase):
 class TestDynamicHotLeadHandoverRouting(unittest.TestCase):
     """Test winner selection, multi-agent ties with shared case remark, and admin fallback."""
 
+    def setUp(self):
+        self.patch_contact = patch("app.services.lead_handover.get_or_create_contact", return_value=123)
+        self.patch_conv = patch("app.services.lead_handover.create_conversation", return_value=456)
+        self.patch_note = patch("app.services.lead_handover.send_private_note", return_value={"id": 789})
+        self.patch_contact.start()
+        self.patch_conv.start()
+        self.patch_note.start()
+
+    def tearDown(self):
+        self.patch_contact.stop()
+        self.patch_conv.stop()
+        self.patch_note.stop()
+
     @patch("app.worker.tasks.send_whatsapp_contact")
     @patch("app.worker.tasks.send_whatsapp_template")
     @patch("app.worker.tasks.get_active_agents_and_employees")
@@ -239,12 +252,12 @@ class TestDynamicHotLeadHandoverRouting(unittest.TestCase):
         self.assertEqual(result["assigned_agents"][0]["phone_number"], "+60121111111")
         self.assertEqual(result["winning_score"], 2)
 
-        # Verified template dispatch to winner
-        self.assertEqual(mock_send_template.call_count, 1)
-        template_call_args = mock_send_template.call_args[1]
-        self.assertEqual(template_call_args["to_phone"], "+60121111111")
+        # Verified template dispatch to winner + admin oversight copies (Irene + fallback admin)
+        self.assertEqual(mock_send_template.call_count, 3)
+        winner_call_args = mock_send_template.call_args_list[0][1]
+        self.assertEqual(winner_call_args["to_phone"], "+60121111111")
         # Ensure NO shared case warning is in parameters for single winner
-        param_7 = template_call_args["parameters"][6]
+        param_7 = winner_call_args["parameters"][6]
         self.assertNotIn("⚠️ Shared Case", param_7)
 
         # Verified customer contact card sent for the winner
@@ -292,8 +305,8 @@ class TestDynamicHotLeadHandoverRouting(unittest.TestCase):
         self.assertEqual(len(result["assigned_agents"]), 2)
         self.assertEqual(result["winning_score"], 2)
 
-        # Template must be sent to both agents
-        self.assertEqual(mock_send_template.call_count, 2)
+        # Template must be sent to both agents + admin oversight copies (4 total)
+        self.assertEqual(mock_send_template.call_count, 4)
 
         # Check remarks in parameter 7 of both template dispatches
         call_1_params = mock_send_template.call_args_list[0][1]["parameters"]
