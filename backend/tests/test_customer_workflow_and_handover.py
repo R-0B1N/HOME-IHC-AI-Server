@@ -207,7 +207,14 @@ class TestCustomerWorkflowStep3QualifiedHandover(unittest.TestCase):
 
         self.assertEqual(res["status"], "success")
         self.assertIn("+60129663589", res["routed_to"])
+        self.assertIn("+601165144931", res["routed_to"])  # Irene Leong admin copy
+        self.assertEqual(len(res["assigned_agents"]), 1)
         self.assertEqual(res["assigned_agents"][0]["name"], "Ah Tuck")
+        # Template dispatch to specialist agent and admin copy using approved template
+        self.assertEqual(mock_template.call_count, 3)
+        first_call_kwargs = mock_template.call_args_list[0][1]
+        self.assertEqual(first_call_kwargs["template_name"], "new_lead_alert_utility")
+        self.assertEqual(first_call_kwargs["language_code"], "en")
         # WhatsApp contact card of winner sent to customer
         mock_contact.assert_called_once_with(
             inbox_id=3,
@@ -388,6 +395,106 @@ class TestCustomerWorkflowStep4OutOfScopeRedirection(unittest.TestCase):
 
         # Labels include 'out-of-scope' and 'human-handover'
         mock_label.assert_called_once_with(555, ["out-of-scope", "human-handover"])
+
+
+class TestConversationProcessorAndReportingAttribution(unittest.TestCase):
+    """
+    Verifies that:
+    1. Customer state persistence preserves assigned agent attribution and bypass_ai.
+    2. Customer response text explicitly introduces the matched specialist agent.
+    3. BuyerReportGenerator extracts the assigned agent and fallback heuristic works.
+    """
+
+    @patch("app.services.conversation_processor.apply_label")
+    @patch("app.services.conversation_processor.set_priority")
+    @patch("app.services.conversation_processor.assign_agent")
+    def test_persist_state_and_labels_saves_assigned_agent(self, mock_assign, mock_priority, mock_label):
+        from app.services.conversation_processor import ConversationQueueProcessor
+
+        mock_customer = MagicMock()
+        mock_customer.id = "601116921383"
+
+        mock_db_customer = MagicMock()
+        mock_db_customer.id = "601116921383"
+        mock_db_customer.metadata_json = {}
+
+        mock_db = MagicMock()
+        mock_db.query.return_value.filter.return_value.first.return_value = mock_db_customer
+
+        processor = ConversationQueueProcessor(session_factory=lambda: mock_db)
+        processor.persist_state_and_labels(
+            conversation_id=202,
+            customer=mock_customer,
+            lead_temp="hot",
+            handover_initiated=True,
+            role="customer",
+            intent="tenant",
+            assignee_email="ahtat@bentongland.com.my",
+            assigned_agent="Ah Tat",
+            assigned_agent_phone="+60129663589",
+        )
+
+        self.assertTrue(mock_db_customer.metadata_json.get("bypass_ai"))
+        self.assertEqual(mock_db_customer.metadata_json.get("assigned_agent"), "Ah Tat")
+        self.assertEqual(mock_db_customer.metadata_json.get("assigned_agent_phone"), "+60129663589")
+        self.assertEqual(mock_db_customer.metadata_json.get("lead_temp"), "hot")
+        mock_db.commit.assert_called_once()
+        mock_label.assert_called_once()
+
+    def test_buyer_report_generator_formats_assigned_agent(self):
+        from app.services.reporting import BuyerReportGenerator
+
+        gen = BuyerReportGenerator()
+
+        c_assigned = MagicMock()
+        c_assigned.id = "601116921383"
+        c_assigned.contact_name = "Wong"
+        c_assigned.email = ""
+        c_assigned.phone_number = "+601116921383"
+        c_assigned.created_at = None
+        c_assigned.last_interaction = None
+        c_assigned.updated_at = None
+        c_assigned.metadata_json = {
+            "intent": "tenant",
+            "location": "Bentong",
+            "property_type": "Rental",
+            "budget": "RM 2,000",
+            "lead_temp": "hot",
+            "bypass_ai": True,
+            "assigned_agent": "Ah Tat",
+            "assigned_agent_phone": "+60129663589",
+        }
+
+        row = gen._format_buyer_row(c_assigned)
+        self.assertIsNotNone(row)
+        self.assertEqual(row[9], "Ah Tat (+60129663589)")
+        self.assertEqual(row[10], "Yes")
+
+    def test_buyer_report_generator_historical_fallback_for_bentong_tenant(self):
+        from app.services.reporting import BuyerReportGenerator
+
+        gen = BuyerReportGenerator()
+
+        c_historical = MagicMock()
+        c_historical.id = "601116921383"
+        c_historical.contact_name = "Tenant Lead"
+        c_historical.email = ""
+        c_historical.phone_number = "+601116921383"
+        c_historical.created_at = None
+        c_historical.last_interaction = None
+        c_historical.updated_at = None
+        c_historical.metadata_json = {
+            "intent": "tenant",
+            "location": "Bentong",
+            "property_type": "Property Inquiry",
+            "lead_temp": "hot",
+            "bypass_ai": True,
+        }
+
+        row = gen._format_buyer_row(c_historical)
+        self.assertIsNotNone(row)
+        # Should fallback to Ah Tat via Bentong + Tenant heuristic
+        self.assertEqual(row[9], "Ah Tat (+60129663589)")
 
 
 if __name__ == "__main__":

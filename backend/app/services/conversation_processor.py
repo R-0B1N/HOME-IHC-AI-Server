@@ -974,7 +974,10 @@ class ConversationQueueProcessor:
 
         # 2. Main response text
         logger.info(f"Sending response to conversation {conversation_id}")
-        send_message(conversation_id, response_text)
+        try:
+            send_message(conversation_id, response_text)
+        except Exception as me:
+            logger.error(f"Failed to send response message to conv {conversation_id}: {me}")
 
         # 3. Viewing Form Dispatch
         if agent_result.get("schedule_viewing") and customer:
@@ -1015,9 +1018,11 @@ class ConversationQueueProcessor:
         role: str,
         intent: str,
         assignee_email: Optional[str],
+        assigned_agent: Optional[str] = None,
+        assigned_agent_phone: Optional[str] = None,
     ) -> None:
         """
-        Persists customer lead temperature, bypass_ai toggle, and applies conversation priority/labels.
+        Persists customer lead temperature, bypass_ai toggle, assigned agent, and applies conversation priority/labels.
         """
         if customer:
             db = self.session_factory()
@@ -1028,6 +1033,10 @@ class ConversationQueueProcessor:
                     meta["lead_temp"] = lead_temp
                     if handover_initiated:
                         meta["bypass_ai"] = True
+                    if assigned_agent:
+                        meta["assigned_agent"] = assigned_agent
+                    if assigned_agent_phone:
+                        meta["assigned_agent_phone"] = assigned_agent_phone
                     db_cust.metadata_json = meta
                     db_cust.last_interaction = datetime.datetime.now(datetime.timezone.utc)
                     db.commit()
@@ -1176,8 +1185,9 @@ class ConversationQueueProcessor:
         )
 
         # 9. Dynamic Hot Lead Handover
+        handover_result = None
         if role not in ["admin", "employee", "agent"] and handover_initiated:
-            self.route_hot_lead(
+            handover_result = self.route_hot_lead(
                 conversation_id=conversation_id,
                 contact_name=contact_name,
                 phone_number=phone_number,
@@ -1188,6 +1198,25 @@ class ConversationQueueProcessor:
                 metadata=metadata,
                 final_prompt_text=final_prompt_text,
             )
+
+        assigned_agent_name = ""
+        assigned_agent_phone = ""
+        if handover_result and handover_result.get("assigned_agents"):
+            assigned_agent_name = handover_result["assigned_agents"][0].get("name", "")
+            assigned_agent_phone = handover_result["assigned_agents"][0].get("phone_number", "")
+        elif handover_result and handover_result.get("primary_agent_name"):
+            assigned_agent_name = handover_result.get("primary_agent_name", "")
+            assigned_agent_phone = handover_result.get("primary_agent_phone", "")
+
+        # If handover occurred, ensure customer response explicitly introduces the assigned specialist
+        if handover_initiated and assigned_agent_name:
+            agent_mention = f"{assigned_agent_name} ({assigned_agent_phone})" if assigned_agent_phone else assigned_agent_name
+            if assigned_agent_name.lower() not in (response_text or "").lower():
+                closing_note = (
+                    f"\n\nThank you, {contact_name}! 😊 We have connected your request with our senior specialist "
+                    f"{agent_mention}, who will assist you directly."
+                )
+                response_text = (response_text or "").rstrip() + closing_note
 
         # 10. Dispatch media, response text, and viewing forms
         self.dispatch_media_and_response(
@@ -1210,6 +1239,8 @@ class ConversationQueueProcessor:
             role=role,
             intent=intent,
             assignee_email=assignee_email,
+            assigned_agent=assigned_agent_name or None,
+            assigned_agent_phone=assigned_agent_phone or None,
         )
 
         return {

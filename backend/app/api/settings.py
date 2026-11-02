@@ -2,7 +2,9 @@ from __future__ import annotations
 import os
 import logging
 from typing import Optional, Dict, Any, List
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Query, status
+from fastapi.security import HTTPAuthorizationCredentials
+from sqlalchemy.orm import Session
 from pydantic import BaseModel
 import redis
 
@@ -15,7 +17,8 @@ router = APIRouter()
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
-from app.core.auth import require_admin
+from app.core.auth import require_admin, security_scheme, get_current_user, get_db
+from app.core.security import verify_report_download_token
 
 
 REDIS_STAGING_HOST = os.getenv("REDIS_STAGING_HOST", "whatsapp_ai_redis_staging")
@@ -222,11 +225,51 @@ def trigger_reporting_generation(send_whatsapp: bool = True, admin=Depends(requi
 
 
 @router.get("/reporting-download/{report_type}")
-def download_weekly_report(report_type: str, admin=Depends(require_admin)):
-    """Admin-only endpoint to download latest generated Excel report ('consolidated', 'buyer' or 'owner')."""
+def download_weekly_report(
+    report_type: str,
+    date: Optional[str] = Query(None, description="Report date in YYYYMMDD format"),
+    token: Optional[str] = Query(None, description="HMAC download authorization token"),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme),
+    db: Session = Depends(get_db)
+):
+    """
+    Secure endpoint to download Excel report ('consolidated', 'buyer' or 'owner').
+    Supports dual authorization:
+    1. Signed URL with ?date=...&token=... (for WhatsApp mobile one-tap access)
+    2. HTTP Bearer JWT token with admin role (for Web Dashboard)
+    """
     from fastapi.responses import FileResponse
     from app.services.reporting import DEFAULT_REPORTS_DIR, WeeklyDatabaseReportManager
-    
+
+    is_authorized = False
+
+    # Check Method 1: Tokenized query parameters
+    if token and date:
+        if verify_report_download_token(report_type, date, token):
+            is_authorized = True
+        else:
+            raise HTTPException(
+                status_code=403,
+                detail="Invalid or expired report download token."
+            )
+    # Check Method 2: Bearer JWT Admin
+    elif credentials:
+        user = get_current_user(credentials, db)
+        if user and user.role == "admin":
+            is_authorized = True
+        else:
+            raise HTTPException(
+                status_code=403,
+                detail="Administrative privileges required."
+            )
+
+    if not is_authorized:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication credentials or valid report token required.",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+
     reports_dir = DEFAULT_REPORTS_DIR
     os.makedirs(reports_dir, exist_ok=True)
 
@@ -237,25 +280,38 @@ def download_weekly_report(report_type: str, admin=Depends(require_admin)):
     else:
         keyword = "Owner_Database"
 
-    matching = [
+    all_matching = [
         f for f in sorted(os.listdir(reports_dir), reverse=True)
         if keyword in f and f.endswith(".xlsx")
     ]
+
+    matching = []
+    if date:
+        clean_date = date.replace("-", "").strip()
+        matching = [f for f in all_matching if clean_date in f]
+    if not matching:
+        matching = all_matching
+
     # If no report has been generated yet, automatically generate it on-the-fly!
     if not matching:
         logger.info(f"Report for {report_type} not found in {reports_dir}. Triggering on-demand generation...")
         try:
             mgr = WeeklyDatabaseReportManager(output_dir=reports_dir)
             mgr.generate_all()
-            matching = [
+            all_matching = [
                 f for f in sorted(os.listdir(reports_dir), reverse=True)
                 if keyword in f and f.endswith(".xlsx")
             ]
+            if date:
+                clean_date = date.replace("-", "").strip()
+                matching = [f for f in all_matching if clean_date in f]
+            if not matching:
+                matching = all_matching
         except Exception as gen_err:
             logger.error(f"Failed to generate report on the fly: {gen_err}")
 
     if not matching:
-        raise HTTPException(status_code=404, detail=f"No {report_type} report could be generated.")
+        raise HTTPException(status_code=404, detail=f"No {report_type} report could be found or generated.")
 
     target_file = os.path.join(reports_dir, matching[0])
     return FileResponse(

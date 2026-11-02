@@ -135,3 +135,23 @@ def decode_access_token(token: str) -> Optional[dict]:
             return None
     except Exception:
         return None
+
+
+def generate_report_download_token(report_type: str, date_str: str) -> str:
+    """
+    Generate a cryptographic HMAC-SHA256 token to allow one-click secure download 
+    of generated Excel reports directly from WhatsApp without requiring a JWT Bearer header.
+    """
+    clean_date = str(date_str).replace("-", "").strip()
+    message = f"report_download:{report_type.lower()}:{clean_date}".encode('utf-8')
+    return hmac.new(SECRET_KEY.encode('utf-8'), message, hashlib.sha256).hexdigest()[:32]
+
+
+def verify_report_download_token(report_type: str, date_str: str, token: str) -> bool:
+    """
+    Verify the report download HMAC signature using constant-time comparison.
+    """
+    if not token or not date_str:
+        return False
+    expected_token = generate_report_download_token(report_type, date_str)
+    return secrets.compare_digest(expected_token, str(token).strip())

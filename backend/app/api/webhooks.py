@@ -222,7 +222,9 @@ async def chatwoot_webhook(request: Request):
         content.startswith("/transcript") or 
         content.startswith("/reset") or
         content.startswith("/report") or
-        content.startswith("/nurture")
+        content.startswith("/nurture") or
+        content.startswith("/handover-test") or
+        content.startswith("/test-handover")
     ):
         logger.info(f"Agent command detected in private note for conv {conversation_id}: {content}")
         try:
@@ -370,7 +372,6 @@ async def chatwoot_webhook(request: Request):
                 args = content.split()
                 should_send_admins = "send" in args
                 
-                send_private_note(conversation_id, "⏳ **Generating Weekly Business Reports (Consolidated Multi-Tab Workbook)...**")
                 report_mgr = WeeklyDatabaseReportManager()
                 result = report_mgr.generate_and_dispatch(send_to_admins=should_send_admins)
                 
@@ -378,51 +379,49 @@ async def chatwoot_webhook(request: Request):
                 buyer_file = result.get("buyer_file")
                 owner_file = result.get("owner_file")
                 
+                dispatch_status = (
+                    "✅ Dispatched via Meta Template utility digest to admin WhatsApp numbers"
+                    if should_send_admins
+                    else "ℹ️ Private note view only (Use `/report send` to dispatch to WhatsApp)"
+                )
+                
+                full_summary = (
+                    f"📊 **Weekly Business Report & Executive Summary**\n\n"
+                    f"• 👥 **Active Buyers**: {result.get('buyers_count', 0)} ({result.get('hot_buyers_count', 0)} hot)\n"
+                    f"• 🏡 **Managed Listings**: {result.get('owners_count', 0)}\n"
+                    f"• 👤 **Assigned Agents**: {result.get('agent_distribution', 'N/A')}\n"
+                    f"• 📁 **Workbook**: `{os.path.basename(consolidated_file) if consolidated_file else 'N/A'}`\n"
+                    f"• 📲 **WhatsApp Dispatch**: {dispatch_status}\n\n"
+                    f"• Tab 1: Executive KPI Summary\n"
+                    f"• Tab 2: Buyer Database\n"
+                    f"• Tab 3: Owner & Seller Database"
+                )
+                
                 if consolidated_file and os.path.exists(consolidated_file):
                     with open(consolidated_file, "rb") as cf:
                         send_message_with_attachment(
                             conversation_id=conversation_id,
-                            content=(
-                                f"📊 **Weekly Business Report (Consolidated Executive Workbook)**\n"
-                                f"• Tab 1: Executive KPI Summary\n"
-                                f"• Tab 2: Buyer Database ({result.get('buyers_count', 0)} leads)\n"
-                                f"• Tab 3: Owner & Seller Database ({result.get('owners_count', 0)} listings)"
-                            ),
+                            content=full_summary,
                             file_name=os.path.basename(consolidated_file),
                             file_content=cf.read(),
                             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             is_private=True
                         )
                 else:
-                    if buyer_file and os.path.exists(buyer_file):
-                        with open(buyer_file, "rb") as bf:
+                    target_file = buyer_file if (buyer_file and os.path.exists(buyer_file)) else owner_file
+                    if target_file and os.path.exists(target_file):
+                        with open(target_file, "rb") as tf:
                             send_message_with_attachment(
                                 conversation_id=conversation_id,
-                                content=f"📊 **Weekly Buyer Database Report** ({result.get('buyers_count', 0)} leads indexed)",
-                                file_name=os.path.basename(buyer_file),
-                                file_content=bf.read(),
+                                content=full_summary,
+                                file_name=os.path.basename(target_file),
+                                file_content=tf.read(),
                                 content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                 is_private=True
                             )
-                    if owner_file and os.path.exists(owner_file):
-                        with open(owner_file, "rb") as of:
-                            send_message_with_attachment(
-                                conversation_id=conversation_id,
-                                content=f"📑 **Weekly Owner / Seller Database Report** ({result.get('owners_count', 0)} listings indexed)",
-                                file_name=os.path.basename(owner_file),
-                                file_content=of.read(),
-                                content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                is_private=True
-                            )
+                    else:
+                        send_private_note(conversation_id, full_summary)
                 
-                status_summary = (
-                    f"✅ **Weekly Business Reports Generated Successfully**\n\n"
-                    f"• **Consolidated Workbook**: `{os.path.basename(consolidated_file) if consolidated_file else 'N/A'}`\n"
-                    f"• **Buyers Indexed**: {result.get('buyers_count', 0)}\n"
-                    f"• **Owners Indexed**: {result.get('owners_count', 0)}\n"
-                    f"• **WhatsApp Admin Dispatch**: {'✅ Dispatched via Meta Template utility digest to admin WhatsApp numbers' if should_send_admins else 'ℹ️ Private note view only (Use `/report send` to dispatch to WhatsApp)'}\n"
-                )
-                send_private_note(conversation_id, status_summary)
                 return {"status": "command_executed", "command": "/report"}
 
             elif content.startswith("/nurture"):
@@ -572,6 +571,35 @@ async def chatwoot_webhook(request: Request):
                     "• Next customer message will trigger a completely fresh greeting."
                 )
                 return {"status": "command_executed", "command": "/reset"}
+
+            elif content.startswith("/handover-test") or content.startswith("/test-handover"):
+                from app.services.lead_handover import LeadHandoverService
+                from app.services.chatwoot import send_private_note
+                
+                service = LeadHandoverService()
+                test_lead = {
+                    "conversation_id": conversation_id,
+                    "customer_name": "[TEST] Verification Lead",
+                    "customer_phone": "",  # Empty to ensure zero contact cards dispatched to customers
+                    "intent": "TENANT",
+                    "city": "Bentong",
+                    "property_category": ["Rental / Commercial"],
+                    "budget": "RM 2,500 / month",
+                    "title": "Bentong Rental Inquiry (Simulation)",
+                    "inquiry_text": "🧪 Admin Handover Verification Test: Testing Meta WhatsApp Template 'new_lead_alert_utility'.",
+                    "admin_only": True,
+                }
+                result = service.dispatch(test_lead, admin_only=True)
+                
+                summary = (
+                    f"🧪 **Handover Simulation Dispatched**\n\n"
+                    f"• 📋 **Template**: `new_lead_alert_utility` (en)\n"
+                    f"• 📲 **Targeted Numbers**: {', '.join(result.get('routed_to', []))}\n"
+                    f"• ⚡ **Status**: `{result.get('status')}`\n"
+                    f"• ℹ️ **Safety**: Customer phone omitted; zero customer cards sent."
+                )
+                send_private_note(conversation_id, summary)
+                return {"status": "command_executed", "command": "/handover-test"}
 
         except Exception as cmd_err:
             logger.error(f"Failed to execute agent command '{content}': {cmd_err}")

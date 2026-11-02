@@ -44,6 +44,8 @@ services:
       - CHATWOOT_BASE_URL=http://crm-chatwoot-web:3000
       - CHATWOOT_API_TOKEN=E8wuqP3YDvyPXYwoQcTXLnTT
       - OLLAMA_BASE_URL=http://crm-vllm:8000
+      - API_PUBLIC_BASE_URL=https://database.bentongland.com.my
+      - BACKEND_PUBLIC_URL=https://database.bentongland.com.my
     depends_on:
       - redis_production
     networks:
@@ -75,6 +77,8 @@ services:
       - CHATWOOT_BASE_URL=http://crm-chatwoot-web:3000
       - CHATWOOT_API_TOKEN=E8wuqP3YDvyPXYwoQcTXLnTT
       - OLLAMA_BASE_URL=http://crm-vllm:8000
+      - API_PUBLIC_BASE_URL=https://database.bentongland.com.my
+      - BACKEND_PUBLIC_URL=https://database.bentongland.com.my
     depends_on:
       - redis_production
     networks:
@@ -101,6 +105,8 @@ services:
       - CHATWOOT_BASE_URL=http://crm-chatwoot-web:3000
       - CHATWOOT_API_TOKEN=E8wuqP3YDvyPXYwoQcTXLnTT
       - OLLAMA_BASE_URL=http://crm-vllm:8000
+      - API_PUBLIC_BASE_URL=https://database.bentongland.com.my
+      - BACKEND_PUBLIC_URL=https://database.bentongland.com.my
     depends_on:
       - redis_production
     networks:

@@ -18,6 +18,8 @@ from app.services.chatwoot import (
     send_whatsapp_contact,
     send_whatsapp_template,
     update_conversation_status,
+    assign_agent,
+    get_agent_id_by_email,
 )
 from app.services.db_services import get_active_agents_and_employees
 
@@ -163,6 +165,8 @@ class LeadHandoverService:
         create_conversation_func=None,
         session_factory=None,
         default_fallback_admins: Optional[List[str]] = None,
+        assign_agent_func=None,
+        get_agent_id_func=None,
     ):
         self.scorer = scorer or AgentSpecializationScorer()
         self.get_active_agents_func = get_active_agents_func or get_active_agents_and_employees
@@ -176,6 +180,8 @@ class LeadHandoverService:
         self.create_conversation_func = create_conversation_func or create_conversation
         self.session_factory = session_factory or SessionLocal
         self.default_fallback_admins = default_fallback_admins or DEFAULT_FALLBACK_ADMIN_NUMBERS
+        self.assign_agent_func = assign_agent_func or assign_agent
+        self.get_agent_id_func = get_agent_id_func or get_agent_id_by_email
 
     def get_admin_recipients(self, db: Optional[Any] = None) -> List[Dict[str, str]]:
         """
@@ -242,8 +248,12 @@ class LeadHandoverService:
         if conversation_id is not None and conversation_id_or_data is None:
             conversation_id_or_data = conversation_id
 
+        admin_only = kwargs.get("admin_only", False)
+
         if isinstance(conversation_id_or_data, dict):
             lead_data = conversation_id_or_data
+            if lead_data.get("admin_only"):
+                admin_only = True
             conversation_id = lead_data.get("conversation_id", 0)
             customer_name = lead_data.get("customer_name") or "Valued Customer"
             customer_phone = lead_data.get("customer_phone") or ""
@@ -373,6 +383,19 @@ class LeadHandoverService:
                     "remark": "🤝 Co-Broke Agent Inquiry: Handled directly by Main Number.",
                 })
                 max_score = 100
+            elif admin_only:
+                # Test Simulation: Route strictly to admin recipients only, bypassing specialist agents
+                admin_list = self.get_admin_recipients(db=db)
+                for adm in admin_list:
+                    routed_targets.append({
+                        "phone": adm["phone"],
+                        "name": adm["name"],
+                        "score": 100 if adm["phone"] == "+601165144931" else 90,
+                        "remark": "🧪 Simulation Test: Verification dispatch strictly to Admin line.",
+                        "agent": None,
+                        "is_primary": True,
+                    })
+                max_score = 100
             elif max_score > 0:
                 top_candidates = [c for c in scored_candidates if c["score"] == max_score]
                 if len(top_candidates) == 1:
@@ -382,6 +405,8 @@ class LeadHandoverService:
                         "name": winner["name"],
                         "score": winner["score"],
                         "remark": "",
+                        "agent": winner.get("agent"),
+                        "is_primary": True,
                     })
                 else:
                     is_tie = True
@@ -398,6 +423,30 @@ class LeadHandoverService:
                             "name": cand["name"],
                             "score": cand["score"],
                             "remark": shared_remark,
+                            "agent": cand.get("agent"),
+                            "is_primary": True,
+                        })
+
+                # Dual dispatch: Also notify admins (e.g. Irene Leong +601165144931) for administrative oversight
+                admin_list = self.get_admin_recipients(db=db)
+                primary_phones = {
+                    t["phone"].replace(" ", "").replace("-", "") for t in routed_targets
+                }
+                for adm in admin_list:
+                    adm_norm = adm["phone"].replace(" ", "").replace("-", "")
+                    if adm_norm not in primary_phones:
+                        if not is_tie:
+                            adm_remark = f"ℹ️ Admin Copy: Case assigned to Specialist Agent: {top_candidates[0]['name']} ({top_candidates[0]['phone']})."
+                        else:
+                            assigned_names = ", ".join(c["name"] for c in top_candidates)
+                            adm_remark = f"ℹ️ Admin Copy: Case shared among Specialist Agents: {assigned_names}."
+                        routed_targets.append({
+                            "phone": adm["phone"],
+                            "name": adm["name"],
+                            "score": max_score,
+                            "remark": adm_remark,
+                            "agent": None,
+                            "is_primary": False,
                         })
             else:
                 is_fallback = True
@@ -408,6 +457,8 @@ class LeadHandoverService:
                         "name": adm["name"],
                         "score": 0,
                         "remark": "ℹ️ Handover Fallback: No matching agent specialization found.",
+                        "agent": None,
+                        "is_primary": True,
                     })
 
             dispatched_phones = []
@@ -446,7 +497,7 @@ class LeadHandoverService:
                     inbox_id=inbox_id,
                     to_phone=target_phone,
                     template_name=os.getenv(
-                        "WHATSAPP_HANDOVER_TEMPLATE", "hot_lead_alert_utility"
+                        "WHATSAPP_HANDOVER_TEMPLATE", "new_lead_alert_utility"
                     ),
                     parameters=template_params,
                     language_code=os.getenv(
@@ -456,9 +507,13 @@ class LeadHandoverService:
                 )
                 dispatched_phones.append(target_phone)
 
+            primary_target = next(
+                (t for t in routed_targets if t.get("is_primary")),
+                (routed_targets[0] if routed_targets else None)
+            )
+
             # 2. Attach primary contact card to customer once
-            if customer_phone and routed_targets:
-                primary_target = routed_targets[0]
+            if customer_phone and primary_target:
                 self.send_contact_func(
                     inbox_id=inbox_id,
                     to_phone=customer_phone,
@@ -466,6 +521,47 @@ class LeadHandoverService:
                     contact_phone=primary_target["phone"],
                     override_phone_number_id=template_phone_number_id,
                 )
+
+            # 3. Assign conversation to primary agent in Chatwoot
+            if conversation_id and primary_target and not is_fallback:
+                try:
+                    agent_obj = primary_target.get("agent")
+                    agent_email = (
+                        getattr(agent_obj, "email", None)
+                        if agent_obj
+                        else None
+                    )
+                    if not agent_email and isinstance(agent_obj, dict):
+                        agent_email = agent_obj.get("email")
+                    if agent_email:
+                        cw_agent_id = self.get_agent_id_func(agent_email)
+                        if cw_agent_id:
+                            self.assign_agent_func(conversation_id, cw_agent_id)
+                            logger.info(
+                                f"Assigned conversation {conversation_id} to Chatwoot agent {cw_agent_id} ({agent_email})"
+                            )
+                except Exception as ae:
+                    logger.warning(f"Could not assign Chatwoot agent for conv {conversation_id}: {ae}")
+
+            # 4. Persist assigned agent to Customer metadata in DB if available
+            if customer_phone and primary_target and not is_fallback and db is not None:
+                try:
+                    from app.db.models import Customer
+                    clean_phone = customer_phone.replace("+", "").replace(" ", "").replace("-", "")
+                    cust = db.query(Customer).filter(
+                        (Customer.id == clean_phone) | (Customer.id.like(f"%{clean_phone}%"))
+                    ).first()
+                    if cust:
+                        c_meta = cust.metadata_json.copy() if cust.metadata_json else {}
+                        c_meta["assigned_agent"] = primary_target["name"]
+                        c_meta["assigned_agent_phone"] = primary_target["phone"]
+                        c_meta["lead_temp"] = "hot"
+                        c_meta["bypass_ai"] = True
+                        cust.metadata_json = c_meta
+                        db.commit()
+                        logger.info(f"Persisted assigned agent {primary_target['name']} to Customer {cust.id} metadata")
+                except Exception as cme:
+                    logger.warning(f"Could not persist assigned agent to Customer metadata in lead_handover: {cme}")
 
             routing_notes = []
             if intent and str(intent).strip().upper() in ["OUT_OF_SCOPE", "OUT_OF_CONTEXT"]:
@@ -483,15 +579,25 @@ class LeadHandoverService:
                     "⚠️ Routed to Main Admin Lines (Score: 0 - No specialization matches)"
                 )
             elif is_tie:
-                tied_names = [f"{t['name']} ({t['phone']})" for t in routed_targets]
+                primary_targets = [t for t in routed_targets if t.get("is_primary")]
+                tied_names = [f"{t['name']} ({t['phone']})" for t in primary_targets]
                 routing_notes.append(
                     f"⚠️ Multi-Agent Shared Tie (Score: {max_score}) dispatched to: {', '.join(tied_names)}"
                 )
+                if any(not t.get("is_primary") for t in routed_targets):
+                    routing_notes.append(
+                        "📢 Admin Notification: Dispatched copy to Irene Leong (+601165144931) and Admin Team"
+                    )
             else:
-                w = routed_targets[0]
+                primary_targets = [t for t in routed_targets if t.get("is_primary")]
+                w = primary_targets[0] if primary_targets else routed_targets[0]
                 routing_notes.append(
                     f"✅ Routed to Specialist Agent: {w['name']} ({w['phone']}) with Match Score: {w['score']}"
                 )
+                if any(not t.get("is_primary") for t in routed_targets):
+                    routing_notes.append(
+                        "📢 Admin Notification: Dispatched copy to Irene Leong (+601165144931) and Admin Team"
+                    )
 
             private_note_text = (
                 f"🔥 **HOT LEAD / HUMAN HANDOVER TRIGGERED**\n\n"
@@ -526,7 +632,7 @@ class LeadHandoverService:
             assigned_agent_list = [
                 {"name": t["name"], "phone_number": t["phone"], "score": t["score"]}
                 for t in routed_targets
-                if not is_fallback
+                if t.get("is_primary", True) and not is_fallback
             ]
 
             return {
@@ -538,6 +644,8 @@ class LeadHandoverService:
                 "is_tie": is_tie,
                 "top_score": max_score,
                 "targets": routed_targets,
+                "primary_agent_name": primary_target["name"] if primary_target else "",
+                "primary_agent_phone": primary_target["phone"] if primary_target else "",
             }
         finally:
             if close_db and db is not None:

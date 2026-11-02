@@ -278,7 +278,22 @@ class BuyerReportGenerator(BaseExcelReportGenerator):
         budget = meta.get("budget") or meta.get("buyer_budget") or ""
         temp = meta.get("lead_temp") or meta.get("temperature") or "Warm"
         bypass = "Yes" if meta.get("bypass_ai") else "No"
-        agent = meta.get("assigned_agent", "Irene Leong")
+        
+        agent = meta.get("assigned_agent") or meta.get("assigned_agent_name")
+        agent_phone = meta.get("assigned_agent_phone")
+        if not agent:
+            # Fallback heuristic for historical hot leads without explicit assigned_agent key
+            # If bentong tenant/rental inquiry was routed to Ah Tat
+            if "bentong" in str(loc).lower() and ("tenant" in str(intent).lower() or "rental" in str(ptypes).lower()):
+                agent = "Ah Tat"
+                agent_phone = "+60129663589"
+            else:
+                agent = "Irene Leong"
+
+        if agent_phone and agent_phone not in agent:
+            agent_display = f"{agent} ({agent_phone})"
+        else:
+            agent_display = agent
 
         created_at_dt = getattr(c, "created_at", None) or getattr(c, "last_interaction", None)
         created_str = created_at_dt.strftime("%Y-%m-%d %H:%M") if created_at_dt else ""
@@ -296,7 +311,7 @@ class BuyerReportGenerator(BaseExcelReportGenerator):
             str(loc),
             str(ptypes),
             str(budget),
-            agent,
+            agent_display,
             bypass,
             created_str,
             updated_str
@@ -347,11 +362,11 @@ class OwnerReportGenerator(BaseExcelReportGenerator):
             p.listing_status or "Available",
             cat_str,
             p.property_type_sub or "",
-            f"{p.asking_price_myr:,.2f}" if p.asking_price_myr else "0.00",
-            f"{p.price_per_acre_myr:,.2f}" if p.price_per_acre_myr else "",
-            f"{p.price_per_sqft_myr:,.2f}" if p.price_per_sqft_myr else "",
-            f"{p.land_area_acres:.2f}" if p.land_area_acres else "",
-            f"{p.land_area_sqft:.0f}" if p.land_area_sqft else "",
+            f"{p.asking_price_myr:,.2f}" if isinstance(p.asking_price_myr, (int, float)) else "0.00",
+            f"{p.price_per_acre_myr:,.2f}" if isinstance(p.price_per_acre_myr, (int, float)) else "",
+            f"{p.price_per_sqft_myr:,.2f}" if isinstance(p.price_per_sqft_myr, (int, float)) else "",
+            f"{p.land_area_acres:.2f}" if isinstance(p.land_area_acres, (int, float)) else "",
+            f"{p.land_area_sqft:.0f}" if isinstance(p.land_area_sqft, (int, float)) else "",
             p.state or "Pahang",
             p.city or p.area or "",
             p.tenure_type or "",
@@ -414,6 +429,7 @@ class ConsolidatedWeeklyReportGenerator:
                 "warm_buyers": metrics["warm_buyers"],
                 "total_owners": metrics["total_owners"],
                 "available_properties": metrics["available_properties"],
+                "agent_distribution": metrics.get("agent_distribution", "None"),
                 "date_display": now.strftime("%d %b %Y"),
                 "date_str": date_str
             }
@@ -429,11 +445,23 @@ class ConsolidatedWeeklyReportGenerator:
         warm_buyers = sum(1 for r in buyer_rows if len(r) > 5 and str(r[5]).lower() == "warm")
         available_properties = sum(1 for r in owner_rows if len(r) > 2 and "avail" in str(r[2]).lower())
 
+        agent_counts = {}
+        for r in buyer_rows:
+            if len(r) > 9 and r[9]:
+                ag = str(r[9]).strip()
+                agent_counts[ag] = agent_counts.get(ag, 0) + 1
+        agent_distribution_str = (
+            ", ".join(f"{ag}: {count}" for ag, count in sorted(agent_counts.items(), key=lambda x: -x[1]))
+            if agent_counts
+            else "None"
+        )
+
         summary_headers = ["Metric", "Count / Value", "Description"]
         summary_rows = [
             ["Total Registered Buyers", total_buyers, "Qualified prospects registered in CRM"],
             ["🔥 Hot Buyer Leads", hot_buyers, "High-temperature prospects requiring active follow-up"],
             ["⚡ Warm Buyer Leads", warm_buyers, "Engaged buyer prospects exploring listings"],
+            ["Agent Lead Attribution", agent_distribution_str, "Breakdown of assigned leads across specialist agents and admins"],
             ["Total Listings / Owners", total_owners, "Managed properties across Bentong, Raub & Temerloh"],
             ["Available Listings", available_properties, "Listings ready for immediate buyer matching"],
             ["Report Generated At", timestamp.strftime("%Y-%m-%d %H:%M MYT"), "Home IHC Automated Business Run"]
@@ -443,7 +471,8 @@ class ConsolidatedWeeklyReportGenerator:
             "total_owners": total_owners,
             "hot_buyers": hot_buyers,
             "warm_buyers": warm_buyers,
-            "available_properties": available_properties
+            "available_properties": available_properties,
+            "agent_distribution": agent_distribution_str,
         }
         return summary_headers, summary_rows, metrics
 
@@ -476,11 +505,15 @@ class AdminWhatsAppDispatcher:
                 os.getenv("SECONDARY_ADMIN_PHONE", "+14709202239")
             ]
 
+        self.primary_admin_phone = (
+            self.admin_phones[0] if self.admin_phones else os.getenv("PRIMARY_ADMIN_PHONE", "+601165144931")
+        ).strip()
+
         is_staging = os.getenv("ENVIRONMENT", "").lower() == "staging"
         self.inbox_id = inbox_id or int(os.getenv("STAGING_INBOX_ID" if is_staging else "WHATSAPP_INBOX_ID", "3" if not is_staging else "4"))
         self.template_name = template_name or stored_config.get("template_name") or os.getenv("WHATSAPP_WEEKLY_REPORT_TEMPLATE", "weekly_business_report_digest")
         self.template_lang = template_lang or stored_config.get("template_language") or os.getenv("WHATSAPP_WEEKLY_REPORT_TEMPLATE_LANGUAGE", "en_US")
-        self.download_base = os.getenv("API_PUBLIC_BASE_URL", "https://crm.bentongland.com.my")
+        self.download_base = os.getenv("API_PUBLIC_BASE_URL", "https://database.bentongland.com.my")
 
     @staticmethod
     def _load_stored_config() -> Dict[str, Any]:
@@ -501,7 +534,15 @@ class AdminWhatsAppDispatcher:
         Guarantee: Exactly ONE template message is dispatched per admin phone. Zero Error 131047.
         """
         results = {}
-        download_url = f"{self.download_base}/api/v1/settings/reporting-download/consolidated"
+        date_code = consolidated_info.get("date_str") or datetime.now().strftime("%Y%m%d")
+        try:
+            from app.core.security import generate_report_download_token
+            token = generate_report_download_token("consolidated", date_code)
+            download_url = f"{self.download_base}/api/v1/settings/reporting-download/consolidated?date={date_code}&token={token}"
+        except Exception as tok_err:
+            logger.warning(f"Failed to generate secure download token: {tok_err}")
+            download_url = f"{self.download_base}/api/v1/settings/reporting-download/consolidated"
+
         date_str = consolidated_info.get("date_display", datetime.now().strftime("%d %b %Y"))
 
         template_params = [
@@ -546,7 +587,10 @@ class AdminWhatsAppDispatcher:
             return {"status": "failed", "error": str(e)}
 
     def _archive_report_in_chatwoot(self, consolidated_info: Dict[str, Any], date_str: str, download_url: str):
-        """Archives the consolidated spreadsheet as an internal private note for each admin."""
+        """
+        Archives the consolidated spreadsheet as a single internal private note in Chatwoot.
+        Guarantee: Uses exactly ONE message and ONE conversation thread anchored to the primary admin.
+        """
         from app.services.chatwoot import (
             get_or_create_contact,
             get_or_create_conversation,
@@ -562,18 +606,21 @@ class AdminWhatsAppDispatcher:
             filename = consolidated_info.get("filename", os.path.basename(file_path))
 
             note_content = (
-                f"📊 **Weekly Business Report Digest** ({date_str})\n\n"
-                f"• 👥 **Active Buyers**: {consolidated_info.get('total_buyers', 0)} ({consolidated_info.get('hot_buyers', 0)} hot)\n"
-                f"• 🏡 **Managed Listings**: {consolidated_info.get('total_owners', 0)}\n"
-                f"• 🔗 **Download**: {download_url}"
+                f"📊 **Weekly Business Report & Executive Summary** ({date_str})\n\n"
+                f"• 👥 **Active Buyers**: {consolidated_info.get('total_buyers', 0)} ({consolidated_info.get('hot_buyers', 0)} hot, {consolidated_info.get('warm_buyers', 0)} warm)\n"
+                f"• 🏡 **Managed Listings**: {consolidated_info.get('total_owners', 0)} ({consolidated_info.get('available_properties', 0)} available)\n"
+                f"• 🔗 **Download Portal**: {download_url}\n\n"
+                f"• Tab 1: Executive KPI Summary\n"
+                f"• Tab 2: Buyer Database\n"
+                f"• Tab 3: Owner & Seller Database\n\n"
+                f"📁 Consolidated multi-tab workbook attached below."
             )
 
-            for phone in self.admin_phones:
-                clean_phone = phone.strip()
-                if not clean_phone:
-                    continue
+            # Single conversation guarantee: Anchor strictly to primary admin
+            target_phone = self.primary_admin_phone
+            if target_phone:
                 try:
-                    contact_id = get_or_create_contact(clean_phone, f"Staff/Admin ({clean_phone})")
+                    contact_id = get_or_create_contact(target_phone, f"Staff/Admin ({target_phone})")
                     if contact_id:
                         conv_id = get_or_create_conversation(contact_id, self.inbox_id)
                         if isinstance(conv_id, dict):
@@ -588,7 +635,7 @@ class AdminWhatsAppDispatcher:
                                 is_private=True
                             )
                 except Exception as arch_err:
-                    logger.warning(f"Failed to archive report attachment in Chatwoot for {clean_phone}: {arch_err}")
+                    logger.warning(f"Failed to archive report attachment in Chatwoot for {target_phone}: {arch_err}")
         except Exception as file_err:
             logger.warning(f"Chatwoot archival file reading error: {file_err}")
 
@@ -662,6 +709,7 @@ class WeeklyDatabaseReportManager:
             "buyers_count": consolidated_info.get("total_buyers", 0),
             "owners_count": consolidated_info.get("total_owners", 0),
             "hot_buyers_count": consolidated_info.get("hot_buyers", 0),
+            "agent_distribution": consolidated_info.get("agent_distribution", "N/A"),
             "consolidated_file": consolidated_info.get("file_path"),
             "buyer_file": reports.get("buyer_report"),
             "owner_file": reports.get("owner_report")
