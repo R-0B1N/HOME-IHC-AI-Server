@@ -177,14 +177,12 @@ async def chatwoot_webhook(request: Request):
         return {"status": "ignored", "reason": f"metadata event {event_name} not handled"}
 
     if event_name == "contact_updated":
-        # Sync bypass_ai flag from Chatwoot custom attributes
-        custom_attributes = payload.get("custom_attributes", {})
-        # If bypass_ai is not in custom_attributes, it means it's unchecked or unset
-        bypass_ai_val = custom_attributes.get("bypass_ai", False)
+        # Sync manual_bypass_ai flag from Chatwoot custom attributes ONLY if bypass_ai is explicitly present in payload
+        custom_attributes = payload.get("custom_attributes") or {}
         phone_number = payload.get("phone_number")
         
-        if phone_number:
-            # Clean phone number just in case
+        if phone_number and "bypass_ai" in custom_attributes:
+            bypass_ai_val = bool(custom_attributes.get("bypass_ai"))
             if phone_number.startswith('+'):
                 phone_number = phone_number[1:]
                 
@@ -193,12 +191,17 @@ async def chatwoot_webhook(request: Request):
             try:
                 customer = db.query(Customer).filter((Customer.id == phone_number) | (Customer.id.like(f"%{phone_number}%"))).first()
                 if customer:
-                    # Create a new dict to ensure SQLAlchemy detects the change
                     meta = dict(customer.metadata_json or {})
-                    meta["bypass_ai"] = bool(bypass_ai_val)
+                    meta["manual_bypass_ai"] = bypass_ai_val
+                    meta["bypass_ai"] = bypass_ai_val
                     customer.metadata_json = meta
+                    try:
+                        from sqlalchemy.orm.attributes import flag_modified
+                        flag_modified(customer, "metadata_json")
+                    except Exception:
+                        pass
                     db.commit()
-                    logger.info(f"Synced bypass_ai={meta['bypass_ai']} for {phone_number} from Chatwoot")
+                    logger.info(f"Synced manual_bypass_ai={bypass_ai_val} for {phone_number} from Chatwoot")
             except Exception as e:
                 logger.error(f"Failed to sync bypass_ai: {e}")
             finally:
@@ -543,6 +546,10 @@ async def chatwoot_webhook(request: Request):
                             SessionManager.reset_session(f"+{clean_cphone}")
                             meta = dict(cust.metadata_json or {})
                             meta["bypass_ai"] = False
+                            meta["manual_bypass_ai"] = False
+                            meta["handover_completed"] = False
+                            meta.pop("locked_intent", None)
+                            meta.pop("locked_lead_temp", None)
                             meta["introduced"] = False
                             meta["lead_temp"] = "Warm"
                             meta["collected_data"] = {}
@@ -555,6 +562,11 @@ async def chatwoot_webhook(request: Request):
                             meta["viewing_acknowledgement"] = None
                             meta["last_reset_at"] = datetime.now(timezone.utc).isoformat()
                             cust.metadata_json = meta
+                            try:
+                                from sqlalchemy.orm.attributes import flag_modified
+                                flag_modified(cust, "metadata_json")
+                            except Exception:
+                                pass
                             db.commit()
                             logger.info(f"Reset customer {cust.id} metadata for conversation {conversation_id}")
                     finally:

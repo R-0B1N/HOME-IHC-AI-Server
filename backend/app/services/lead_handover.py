@@ -602,13 +602,15 @@ class LeadHandoverService:
                 except Exception as ae:
                     logger.warning(f"Could not assign Chatwoot agent for conv {conversation_id}: {ae}")
 
-            # 4. Persist assigned agent to Customer metadata in DB if available
-            if customer_phone and primary_target and not is_fallback and db is not None:
+            # 4. Persist assigned agent & locked post-handover state to Customer metadata in DB if available
+            if customer_phone and primary_target and db is not None:
                 try:
                     from app.db.models import Customer
                     clean_phone = customer_phone.replace("+", "").replace(" ", "").replace("-", "")
                     cust = db.query(Customer).filter(
-                        (Customer.id == clean_phone) | (Customer.id.like(f"%{clean_phone}%"))
+                        (Customer.id == clean_phone)
+                        | (Customer.id == f"+{clean_phone}")
+                        | (Customer.id.like(f"%{clean_phone}%"))
                     ).first()
                     if cust:
                         c_meta = cust.metadata_json.copy() if cust.metadata_json else {}
@@ -616,7 +618,14 @@ class LeadHandoverService:
                         c_meta["assigned_agent_phone"] = primary_target["phone"]
                         c_meta["lead_temp"] = "hot"
                         c_meta["bypass_ai"] = True
+                        c_meta["handover_completed"] = True
+                        c_meta["locked_intent"] = str(intent or "buyer").strip().lower()
                         cust.metadata_json = c_meta
+                        try:
+                            from sqlalchemy.orm.attributes import flag_modified
+                            flag_modified(cust, "metadata_json")
+                        except Exception:
+                            pass
                         db.commit()
                         logger.info(f"Persisted assigned agent {primary_target['name']} to Customer {cust.id} metadata")
                 except Exception as cme:

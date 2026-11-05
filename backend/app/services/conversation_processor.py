@@ -71,17 +71,29 @@ REQUIRED_PERSONA_KEYS = {
 }
 
 PERSONA_ALIAS_MAP = {
-    "location": ["buyer_location", "seller_location", "current_location", "coverage_area"],
-    "current_location": ["location", "buyer_location", "seller_location", "coverage_area"],
-    "buyer_location": ["location", "current_location", "seller_location"],
-    "seller_location": ["location", "current_location"],
-    "property_type": ["buyer_property_type", "seller_property_type"],
-    "buyer_property_type": ["property_type", "seller_property_type"],
-    "seller_property_type": ["property_type", "buyer_property_type"],
-    "budget": ["buyer_budget", "asking_price", "expected_rental", "max_price"],
-    "buyer_budget": ["budget", "asking_price", "expected_rental", "max_price"],
-    "asking_price": ["budget", "buyer_budget", "expected_rental"],
-    "expected_rental": ["budget", "buyer_budget", "asking_price"],
+    "location": ["seller_location", "buyer_location", "current_location", "coverage_area"],
+    "current_location": ["location", "buyer_location", "coverage_area"],
+    "buyer_location": ["location", "current_location"],
+    "seller_location": ["location"],
+    "property_type": ["seller_property_type", "buyer_property_type"],
+    "buyer_property_type": ["property_type"],
+    "seller_property_type": ["property_type"],
+    "budget": ["buyer_budget", "expected_rental", "max_price"],
+    "buyer_budget": ["budget", "max_price"],
+    "asking_price": ["seller_asking_price"],
+    "expected_rental": ["budget", "asking_price"],
+}
+
+PLACEHOLDER_FIELD_VALUES = {
+    "property inquiry",
+    "to be advised",
+    "pahang (to be advised)",
+    "not specified",
+    "general inquiry",
+    "n/a",
+    "none",
+    "null",
+    "unknown",
 }
 
 
@@ -379,8 +391,10 @@ class ConversationQueueProcessor:
             except Exception as e:
                 logger.warning(f"Failed to persist intake property into customer metadata: {e}")
 
+        # Only hard-mute AI when manual_bypass_ai is explicitly toggled by an admin;
+        # automatic handovers enter Post-Handover Concierge Mode instead of complete silence.
         is_bypassed = bool(
-            customer and customer.metadata_json and customer.metadata_json.get("bypass_ai")
+            customer and customer.metadata_json and customer.metadata_json.get("manual_bypass_ai")
         )
         return customer, is_bypassed, phone_number, contact_name, metadata
 
@@ -656,6 +670,7 @@ class ConversationQueueProcessor:
         db_context: Dict[str, Any],
         is_seller_intent: bool,
         reset_cutoff_ts: float,
+        customer: Optional[Any] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any], str, str, bool, str, List[str]]:
         """
         Executes the persona state machine under distributed session lock,
@@ -671,10 +686,25 @@ class ConversationQueueProcessor:
             if is_fresh_convo:
                 session.clear()
                 session.update(SessionManager._new_session())
+            elif customer and getattr(customer, "metadata_json", None):
+                c_meta = customer.metadata_json or {}
+                if c_meta.get("handover_completed") or c_meta.get("bypass_ai"):
+                    session["handover_completed"] = True
+                    if c_meta.get("locked_intent") or c_meta.get("intent"):
+                        session["locked_intent"] = c_meta.get("locked_intent") or c_meta.get("intent")
+                    if c_meta.get("lead_temp"):
+                        session["locked_lead_temp"] = c_meta.get("lead_temp")
+                    if c_meta.get("assigned_agent"):
+                        session["assigned_agent_name"] = c_meta.get("assigned_agent")
+                    if c_meta.get("assigned_agent_phone"):
+                        session["assigned_agent_phone"] = c_meta.get("assigned_agent_phone")
+
+            was_already_handed_over = bool(session.get("handover_completed"))
 
             if latest_doc_struct:
                 session["latest_document_extract"] = latest_doc_struct
-            session["turn_intent"] = turn_intent
+            if not was_already_handed_over:
+                session["turn_intent"] = turn_intent
 
             agent_result = process_persona_state_machine(
                 phone_number,
@@ -687,6 +717,29 @@ class ConversationQueueProcessor:
                 images=combined_images,
             )
             session = agent_result.get("updated_session", session)
+
+            if was_already_handed_over or agent_result.get("post_handover_concierge"):
+                intent = str(
+                    session.get("locked_intent")
+                    or session.get("current_agent")
+                    or "buyer"
+                ).lower()
+                lead_temp = str(session.get("locked_lead_temp") or "Hot")
+                response_text = agent_result.get(
+                    "response", "Thank you for contacting Home IHC! Our specialist will assist you shortly."
+                )
+                handover_initiated = False
+                images_to_send = []
+                SessionManager.save_session(phone_number, session)
+                return (
+                    agent_result,
+                    session,
+                    intent,
+                    response_text,
+                    handover_initiated,
+                    lead_temp,
+                    images_to_send,
+                )
 
             intent = session.get("current_agent", "general").lower()
             response_text = agent_result.get(
@@ -702,15 +755,21 @@ class ConversationQueueProcessor:
             ):
                 images_to_send = []
 
-            # Dynamic lead temperature based on 80% persona data completeness
+            def _is_real_filled(val: Any) -> bool:
+                if not val:
+                    return False
+                s = str(val).strip()
+                return bool(s and s.lower() not in PLACEHOLDER_FIELD_VALUES)
+
+            # Dynamic lead temperature based on 80% real persona data completeness (excluding placeholders)
             collected = session.get("collected_data", {})
             req_keys = REQUIRED_PERSONA_KEYS.get(intent, ["name", "location", "property_type"])
             filled_count = 0
             for k in req_keys:
-                if collected.get(k):
+                if _is_real_filled(collected.get(k)):
                     filled_count += 1
                 elif k in PERSONA_ALIAS_MAP and any(
-                    collected.get(alt) for alt in PERSONA_ALIAS_MAP[k]
+                    _is_real_filled(collected.get(alt)) for alt in PERSONA_ALIAS_MAP[k]
                 ):
                     filled_count += 1
 
@@ -747,9 +806,16 @@ class ConversationQueueProcessor:
             response_promises_handover = (
                 llm_promises_handover or is_handover_promised(response_text)
             )
+            has_prior_assistant_turn = bool(
+                conversation_history
+                and (
+                    "Assistant:" in conversation_history
+                    or "Irene Leong" in conversation_history
+                )
+            )
 
             if role not in ["admin", "employee", "agent"]:
-                is_qualified_handover = (completeness_ratio >= 0.8)
+                is_qualified_handover = (completeness_ratio >= 0.8) and has_prior_assistant_turn
                 if (
                     handover_from_state
                     or user_wants_immediate_human
@@ -758,6 +824,10 @@ class ConversationQueueProcessor:
                     or is_qualified_handover
                 ):
                     handover_initiated = True
+                    lead_temp = "Hot"
+                    session["handover_completed"] = True
+                    session["locked_intent"] = intent
+                    session["locked_lead_temp"] = "Hot"
                     if (
                         not response_promises_handover
                         and "senior" not in response_text.lower()
@@ -1020,9 +1090,10 @@ class ConversationQueueProcessor:
         assignee_email: Optional[str],
         assigned_agent: Optional[str] = None,
         assigned_agent_phone: Optional[str] = None,
+        is_post_handover_concierge: bool = False,
     ) -> None:
         """
-        Persists customer lead temperature, bypass_ai toggle, assigned agent, and applies conversation priority/labels.
+        Persists customer lead temperature, handover_completed/bypass_ai state, assigned agent, and applies conversation priority/labels.
         """
         if customer:
             db = self.session_factory()
@@ -1030,21 +1101,33 @@ class ConversationQueueProcessor:
                 db_cust = db.query(Customer).filter(Customer.id == customer.id).first()
                 if db_cust:
                     meta = db_cust.metadata_json.copy() if db_cust.metadata_json else {}
-                    meta["lead_temp"] = lead_temp
+                    if not is_post_handover_concierge:
+                        meta["lead_temp"] = lead_temp
                     if handover_initiated:
                         meta["bypass_ai"] = True
+                        meta["handover_completed"] = True
+                        meta["locked_intent"] = intent
+                        meta["lead_temp"] = lead_temp or "hot"
                     if assigned_agent:
                         meta["assigned_agent"] = assigned_agent
                     if assigned_agent_phone:
                         meta["assigned_agent_phone"] = assigned_agent_phone
                     db_cust.metadata_json = meta
-                    db_cust.last_interaction = datetime.datetime.now(datetime.timezone.utc)
+                    try:
+                        from sqlalchemy.orm.attributes import flag_modified
+                        flag_modified(db_cust, "metadata_json")
+                    except Exception:
+                        pass
+                    db_cust.last_interaction = datetime.datetime.utcnow()
                     db.commit()
             except Exception as e:
                 logger.error(f"Failed to update customer metadata/lead_temp: {e}")
                 db.rollback()
             finally:
                 db.close()
+
+        if is_post_handover_concierge:
+            return
 
         labels_to_apply = []
         if role in ["admin", "employee", "agent"]:
@@ -1122,7 +1205,7 @@ class ConversationQueueProcessor:
         ) = self.resolve_customer(conversation_id, contact_info, messages, latest_doc_struct)
 
         if is_bypassed:
-            logger.info(f"Customer {customer.id} has bypass_ai set. Skipping AI response.")
+            logger.info(f"Customer {customer.id} has manual_bypass_ai set. Skipping AI response.")
             try:
                 toggle_typing_status(conversation_id, "off")
             except Exception:
@@ -1167,26 +1250,32 @@ class ConversationQueueProcessor:
             db_context=db_context,
             is_seller_intent=is_seller_intent,
             reset_cutoff_ts=reset_cutoff_ts,
+            customer=customer,
         )
 
-        # 8. AI Briefing Summary & Bank Valuer extraction
-        (
-            conversation_summary_text,
-            valuer_data,
-        ) = self.generate_summary_and_handle_valuer(
-            customer=customer,
-            phone_number=phone_number,
-            contact_name=contact_name,
-            final_prompt_text=final_prompt_text,
-            session=session,
-            intent=intent,
-            handover_initiated=handover_initiated,
-            conversation_history=conversation_history,
-        )
+        is_post_handover_concierge = bool(agent_result.get("post_handover_concierge"))
+
+        # 8. AI Briefing Summary & Bank Valuer extraction (skip during post-handover concierge turns)
+        conversation_summary_text = ""
+        valuer_data = None
+        if not is_post_handover_concierge:
+            (
+                conversation_summary_text,
+                valuer_data,
+            ) = self.generate_summary_and_handle_valuer(
+                customer=customer,
+                phone_number=phone_number,
+                contact_name=contact_name,
+                final_prompt_text=final_prompt_text,
+                session=session,
+                intent=intent,
+                handover_initiated=handover_initiated,
+                conversation_history=conversation_history,
+            )
 
         # 9. Dynamic Hot Lead Handover
         handover_result = None
-        if role not in ["admin", "employee", "agent"] and handover_initiated:
+        if role not in ["admin", "employee", "agent"] and handover_initiated and not is_post_handover_concierge:
             handover_result = self.route_hot_lead(
                 conversation_id=conversation_id,
                 contact_name=contact_name,
@@ -1208,12 +1297,21 @@ class ConversationQueueProcessor:
             assigned_agent_name = handover_result.get("primary_agent_name", "")
             assigned_agent_phone = handover_result.get("primary_agent_phone", "")
 
+        if handover_initiated and (assigned_agent_name or assigned_agent_phone):
+            session["assigned_agent_name"] = assigned_agent_name
+            session["assigned_agent_phone"] = assigned_agent_phone
+            try:
+                SessionManager.save_session(phone_number, session)
+            except Exception:
+                pass
+
         # If handover occurred, ensure customer response explicitly introduces the assigned specialist
         if handover_initiated and assigned_agent_name:
+            display_name = session.get("collected_data", {}).get("name") or contact_name
             agent_mention = f"{assigned_agent_name} ({assigned_agent_phone})" if assigned_agent_phone else assigned_agent_name
             if assigned_agent_name.lower() not in (response_text or "").lower():
                 closing_note = (
-                    f"\n\nThank you, {contact_name}! 😊 We have connected your request with our senior specialist "
+                    f"\n\nThank you, {display_name}! 😊 We have connected your request with our senior specialist "
                     f"{agent_mention}, who will assist you directly."
                 )
                 response_text = (response_text or "").rstrip() + closing_note
@@ -1241,6 +1339,7 @@ class ConversationQueueProcessor:
             assignee_email=assignee_email,
             assigned_agent=assigned_agent_name or None,
             assigned_agent_phone=assigned_agent_phone or None,
+            is_post_handover_concierge=is_post_handover_concierge,
         )
 
         return {

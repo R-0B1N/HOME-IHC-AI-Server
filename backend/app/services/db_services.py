@@ -425,7 +425,8 @@ def _clean_search_tokens(text: str) -> list:
         "do you have some pictures for it", "do you have pictures for", "do you have photos for",
         "i would like some pictures for it", "send me photos of", "send me pictures of",
         "is this still available", "is it available", "how much is", "what is the price of",
-        "good day", "hello", "hi", "for sale", "for rent", "please", "thank you", "thanks"
+        "good day", "good morning", "good afternoon", "good evening", "gd afternoon", "gd morning",
+        "hello", "hi", "for sale", "for rent", "please", "thank you", "thanks"
     ]
     cleaned = text.lower()
     for filler in fillers:
@@ -433,8 +434,24 @@ def _clean_search_tokens(text: str) -> list:
     # Keep alphanumeric tokens with length >= 2
     tokens = re.findall(r'[a-zA-Z0-9\-]+', cleaned)
     stop_words = {
-        "the", "a", "an", "at", "in", "on", "of", "and", "or", "to", "for", "is", "it", "with", "this", "that", "some", "any", "test", "testing", "dummy", "sample",
-        "ada", "tak", "saya", "nak", "cari", "mau", "dia", "awak", "kami", "mereka", "ini", "itu", "ke", "di", "dari", "dan", "atau", "apa", "siapa", "bila", "mana", "bagaimana", "kerja", "kosong", "part", "time"
+        "the", "a", "an", "at", "in", "on", "of", "and", "or", "to", "for", "is", "it", "with",
+        "this", "that", "some", "any", "test", "testing", "dummy", "sample", "are", "you", "your",
+        "from", "have", "has", "had", "not", "but", "what", "which", "who", "whom", "whose", "where",
+        "when", "why", "how", "all", "each", "every", "both", "few", "more", "most", "other", "such",
+        "only", "own", "same", "than", "too", "very", "can", "will", "just", "should", "now", "also",
+        "agent", "agents", "broker", "brokers", "property", "properties", "hartanah", "ejen",
+        "land", "tanah", "house", "rumah", "shop", "kedai", "unit", "units", "lot", "lots",
+        "info", "information", "details", "detail", "talked", "send", "sent", "piece", "about",
+        "morning", "afternoon", "evening", "night", "day", "today", "tomorrow", "yesterday",
+        "irene", "leong", "miss", "mrs", "mr", "ms", "mdm", "encik", "puan", "tuan", "dato", "datuk",
+        "owner", "seller", "buyer", "tenant", "landlord", "client", "customer", "person", "personal",
+        "buy", "buying", "sell", "selling", "rent", "renting", "lease", "leasing", "looking", "want",
+        "need", "help", "ask", "asking", "price", "harga", "budget", "bajet", "rm", "myr",
+        "bentong", "pahang", "raub", "karak", "kuantan", "temerloh", "mentakab", "cheroh", "tras",
+        "lanchang", "maran", "triang", "janda", "baik", "bukit", "tinggi", "kota", "bharu", "kelantan",
+        "geran", "grant", "title", "document", "photo", "photos", "picture", "pictures", "image", "images",
+        "ada", "tak", "saya", "nak", "cari", "mau", "dia", "awak", "kami", "mereka", "ini", "itu",
+        "ke", "di", "dari", "dan", "atau", "apa", "siapa", "bila", "mana", "bagaimana", "kerja", "kosong", "part", "time"
     }
     return [t for t in tokens if t not in stop_words and len(t) > 2]
 
@@ -489,8 +506,12 @@ def find_matching_property(text: str) -> dict:
         if exact_match and _is_authentic_listing(exact_match):
             return _format_property_dict(exact_match)
 
-        # 3. Substring Title Match
-        if len(raw_text) >= 8:
+        # Extract meaningful specific tokens (excluding generic conversational/location/role words)
+        tokens = _clean_search_tokens(raw_text)
+        unique_tokens = list(dict.fromkeys(tokens))
+
+        # 3. Substring Title Match (only if message is a specific listing phrase with >= 2 meaningful tokens)
+        if len(raw_text) >= 15 and len(unique_tokens) >= 2 and "\n" not in raw_text:
             substr_match = db.query(Property).filter(
                 or_(
                     Property.title.ilike(f"%{raw_text}%"),
@@ -500,18 +521,18 @@ def find_matching_property(text: str) -> dict:
             if substr_match and _is_authentic_listing(substr_match):
                 return _format_property_dict(substr_match)
 
-        # 4. Token Overlap Scoring
-        tokens = _clean_search_tokens(raw_text)
-        if not tokens or len(tokens) < 2:
+        # 4. Word-Boundary Token Overlap Scoring
+        if not unique_tokens or len(unique_tokens) < 2:
             return None
 
         # Build query for properties containing any of the major tokens
-        token_filters = [Property.title.ilike(f"%{token}%") for token in tokens]
+        token_filters = [Property.title.ilike(f"%{token}%") for token in unique_tokens]
         candidates = db.query(Property).filter(or_(*token_filters)).all()
         candidates = [p for p in candidates if _is_authentic_listing(p)]
 
         best_prop = None
         highest_score = 0
+        best_title_hits = 0
 
         for prop in candidates:
             title_lower = (prop.title or "").lower()
@@ -521,23 +542,28 @@ def find_matching_property(text: str) -> dict:
             corpus_lower = (prop.search_corpus_markdown or "").lower()
 
             score = 0
-            for token in tokens:
-                if token in title_lower:
+            title_hits = 0
+            for token in unique_tokens:
+                word_pat = rf'\b{re.escape(token)}\b'
+                if re.search(word_pat, title_lower):
                     score += 4
+                    title_hits += 1
                 elif token in prop_url:
                     score += 3
-                elif token in street_lower or token in city_lower:
+                    title_hits += 1
+                elif re.search(word_pat, street_lower) or re.search(word_pat, city_lower):
                     score += 2
-                elif token in corpus_lower:
+                elif re.search(word_pat, corpus_lower):
                     score += 1
 
-            if score > highest_score:
+            if (score > highest_score) or (score == highest_score and title_hits > best_title_hits):
                 highest_score = score
+                best_title_hits = title_hits
                 best_prop = prop
 
-        # Require a solid threshold of token matches
-        min_required_score = min(len(tokens) * 2, 6)
-        if highest_score >= min_required_score and best_prop:
+        # Require at least 2 distinct specific title/URL token matches and score >= 8
+        min_required_score = max(8, min(len(unique_tokens) * 3, 10))
+        if highest_score >= min_required_score and best_title_hits >= 2 and best_prop:
             return _format_property_dict(best_prop)
 
         return None

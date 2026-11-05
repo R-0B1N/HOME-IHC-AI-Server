@@ -565,6 +565,130 @@ class TestConversationProcessorAndReportingAttribution(unittest.TestCase):
         self.assertEqual(res["routed_to"], [])
         self.assertEqual(res["delivery_details"]["+601165144931"]["status"], "failed")
 
+    def test_conv_228_property_agent_ingress_does_not_hallucinate_or_route_to_ah_tat(self):
+        """
+        Regression test for Conversation 228:
+        Customer sends 'Hi gd afternoon\\nAre U agent\\nProperty agent'.
+        Must classify as AGENT, ask Step 2 agent qualification questions, NOT match any inventory listing,
+        NOT default location to Bentong, and NOT trigger premature Turn-1 handover.
+        """
+        from app.services.db_services import _clean_search_tokens
+
+        raw_msg = "Hi gd afternoon\nAre U agent\nProperty agent"
+        self.assertEqual(_clean_search_tokens(raw_msg), [])
+
+        session = {}
+        result = process_persona_state_machine(
+            phone_number="+601111109680",
+            raw_text=raw_msg,
+            session=session,
+            conversation_history="",
+            contact_name="Choo Keang",
+        )
+        up_sess = result.get("updated_session", {})
+        collected = up_sess.get("collected_data", {})
+        self.assertEqual(up_sess.get("current_agent"), "AGENT")
+        self.assertEqual(collected.get("customer_category"), "agent")
+        self.assertIsNone(collected.get("buyer_budget"))
+        self.assertIsNone(collected.get("buyer_location"))
+        self.assertFalse(result.get("handover", True))
+        self.assertIn("Irene Leong", result.get("response", ""))
+
+    @patch("app.services.agent_logic.generate_conversational_response")
+    def test_conv_216_seller_with_geran_extracts_miss_lee_and_skips_inventory_match(self, mock_llm_gen):
+        """
+        Regression test for Conversation 216:
+        Customer WhatsApp profile name is 'Yes!!!', sends 'Hi Irene.I am Miss Lee talked to you just now.
+        I will send u the piece of land and the 1 residence info in Kuantan.\\nBentong Pahang land' with 3 images.
+        Must extract name 'Miss Lee' (rejecting 'Yes!!!'), classify as SELLER, and NOT inject RM 7,000,000 buyer_budget.
+        """
+        mock_llm_gen.return_value = {
+            "response": "Thank you Miss Lee! Could you share your asking price for the Bentong land and Kuantan residence?",
+            "intent": "seller",
+            "promises_handover": False,
+            "extracted_data": {"location": "Bentong, Kuantan", "property_type": "Land & Residence"},
+        }
+        session = {}
+        raw_msg = (
+            "Hi Irene.I am Miss Lee talked to you just now."
+            "I will send u the piece of land and the 1 residence info in Kuantan.\n"
+            "Bentong Pahang land"
+        )
+        result = process_persona_state_machine(
+            phone_number="+60126676263",
+            raw_text=raw_msg,
+            session=session,
+            conversation_history="",
+            contact_name="Yes!!!",
+            images=["img1_b64", "img2_b64", "img3_b64"],
+        )
+        up_sess = result.get("updated_session", {})
+        collected = up_sess.get("collected_data", {})
+        self.assertEqual(collected.get("name"), "Miss Lee")
+        self.assertEqual(up_sess.get("current_agent"), "SELLER")
+        self.assertEqual(collected.get("customer_category"), "seller")
+        self.assertIsNone(collected.get("buyer_budget"))
+        self.assertFalse(result.get("handover", True))
+
+    @patch("app.services.agent_logic.generate_conversational_response")
+    def test_post_handover_concierge_mode_locks_intent_state_and_temp(self, mock_llm_gen):
+        """
+        Verifies the 3-step Post-Handover Concierge lifecycle:
+        Once handover_completed=True, follow-up customer messages must NOT change intent, state, or temperature,
+        must NOT re-trigger handover, and must either politely thank the customer or answer their question.
+        """
+        session = {
+            "handover_completed": True,
+            "locked_intent": "seller",
+            "locked_lead_temp": "Hot",
+            "current_agent": "SELLER",
+            "state": "HANDED_OVER",
+            "assigned_agent_name": "Ah Tat",
+            "assigned_agent_phone": "+60129663589",
+            "collected_data": {
+                "name": "Miss Lee",
+                "customer_category": "seller",
+                "location": "Bentong",
+            },
+        }
+
+        # 1. Customer sends follow-up note / acknowledgement (not a question)
+        res_thanks = process_persona_state_machine(
+            phone_number="+60126676263",
+            raw_text="Ok noted, I have also sent the condo photos above.",
+            session=session,
+            conversation_history="User: Hi\nAssistant: Connected with Ah Tat.",
+            contact_name="Yes!!!",
+        )
+        self.assertFalse(res_thanks.get("handover"))
+        self.assertTrue(res_thanks.get("post_handover_concierge"))
+        self.assertEqual(res_thanks["updated_session"]["current_agent"], "SELLER")
+        self.assertEqual(res_thanks["updated_session"]["state"], "HANDED_OVER")
+        self.assertIn("Thank you for contacting Home IHC", res_thanks.get("response", ""))
+        self.assertIn("Ah Tat (+60129663589)", res_thanks.get("response", ""))
+        mock_llm_gen.assert_not_called()
+
+        # 2. Customer asks a follow-up question after handover
+        mock_llm_gen.return_value = {
+            "response": "Our standard agency commission follows the LPPEH scale, and Ah Tat (+60129663589) will walk you through the details shortly.",
+            "intent": "buyer",  # Even if LLM outputs a different intent, state lock must preserve SELLER!
+            "promises_handover": True,
+            "extracted_data": {},
+        }
+        res_question = process_persona_state_machine(
+            phone_number="+60126676263",
+            raw_text="By the way, what is the standard commission rate?",
+            session=session,
+            conversation_history="User: Hi\nAssistant: Connected with Ah Tat.",
+            contact_name="Yes!!!",
+        )
+        self.assertFalse(res_question.get("handover"))
+        self.assertTrue(res_question.get("post_handover_concierge"))
+        self.assertEqual(res_question["updated_session"]["current_agent"], "SELLER")
+        self.assertEqual(res_question["updated_session"]["collected_data"]["customer_category"], "seller")
+        self.assertEqual(res_question["updated_session"]["state"], "HANDED_OVER")
+        self.assertIn("LPPEH", res_question.get("response", ""))
+
 
 if __name__ == "__main__":
     unittest.main()
