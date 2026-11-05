@@ -605,14 +605,19 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
             else assigned_specialist
         )
 
-        question_indicators = [
-            "?", "？", "what", "how", "where", "when", "which", "who", "can ", "could ", "would ",
-            "is there", "are there", "do you", "does it", "tell me", "more info", "detail", "details",
-            "price", "size", "location", "address", "photo", "picture", "viewing", "berapa",
-            "macam mana", "mana", "bila", "boleh", "ada ", "apa ", "gambar", "harga", "keluasan",
-            "什么", "多少", "怎么", "哪里", "请问", "吗", "呢", "几多", "详情", "照片", "图片", "价格", "地点"
-        ]
-        is_asking_for_more_info = any(q in raw_lower for q in question_indicators)
+        has_question_mark = ("?" in raw_lower or "？" in raw_lower)
+        interrogative_pattern = re.compile(
+            r"\b(?:what|how|where|when|which|who|why|can\s+you|could\s+you|would\s+you|"
+            r"do\s+you|does\s+it|is\s+there|are\s+there|is\s+it|may\s+i|can\s+i|"
+            r"tell\s+me|more\s+info|send\s+me|show\s+me|share\s+the|any\s+update|"
+            r"berapa|macam\s+mana|bila|boleh\s+tanya|ada\s+tak|apa\s+itu)\b"
+        )
+        zh_interrogatives = ["什么", "多少", "怎么", "哪里", "请问", "吗", "呢", "几多", "有没有", "可不可以", "能不能"]
+        is_asking_for_more_info = (
+            has_question_mark
+            or bool(interrogative_pattern.search(raw_lower))
+            or any(q in raw_lower for q in zh_interrogatives)
+        )
 
         if is_asking_for_more_info:
             cached_prop = session.get("interested_property")

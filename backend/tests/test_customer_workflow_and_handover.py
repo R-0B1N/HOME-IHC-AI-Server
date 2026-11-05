@@ -592,7 +592,7 @@ class TestConversationProcessorAndReportingAttribution(unittest.TestCase):
         self.assertIsNone(collected.get("buyer_budget"))
         self.assertIsNone(collected.get("buyer_location"))
         self.assertFalse(result.get("handover", True))
-        self.assertIn("Irene Leong", result.get("response", ""))
+        self.assertIn("co-broking", result.get("response", "").lower())
 
     @patch("app.services.agent_logic.generate_conversational_response")
     def test_conv_216_seller_with_geran_extracts_miss_lee_and_skips_inventory_match(self, mock_llm_gen):
