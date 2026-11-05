@@ -27,7 +27,7 @@ def main():
     test_lead = {
         "conversation_id": 202,
         "customer_name": "[TEST] Admin Verification Lead",
-        "customer_phone": "",  # Empty: No customer contact card dispatched
+        "customer_phone": "N/A (Admin Simulation)",
         "intent": "TENANT",
         "city": "Bentong",
         "property_category": ["Rental / Commercial"],
@@ -42,6 +42,7 @@ def main():
     print("\nResult:")
     print(f"Status: {result.get('status')}")
     print(f"Routed To: {result.get('routed_to')}")
+    print(f"Delivery Details: {result.get('delivery_details')}")
     print(f"Winning Score: {result.get('winning_score')}")
     print("================================================================================")
 

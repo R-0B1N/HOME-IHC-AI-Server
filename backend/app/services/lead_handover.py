@@ -207,6 +207,8 @@ class LeadHandoverService:
                 for adm in db_admins:
                     raw_phone = adm.phone_number.strip()
                     norm_phone = raw_phone.replace(" ", "").replace("-", "")
+                    if "123456789" in norm_phone or "0000000" in norm_phone:
+                        continue
                     if norm_phone not in seen_phones:
                         seen_phones.add(norm_phone)
                         adm_name = (
@@ -462,6 +464,7 @@ class LeadHandoverService:
                     })
 
             dispatched_phones = []
+            delivery_details = {}
             for target in routed_targets:
                 target_phone = target["phone"]
                 try:
@@ -475,25 +478,46 @@ class LeadHandoverService:
                         f"Could not prepare chatwoot contact for {target_phone}: {ce}"
                     )
 
-                summary_with_remark = conversation_summary
+                summary_with_remark = conversation_summary or "Inquiry Details"
                 if target.get("remark"):
-                    summary_with_remark = f"{conversation_summary}\n\n{target['remark']}"
+                    summary_with_remark = f"{summary_with_remark} | {target['remark']}"
+                summary_with_remark = (
+                    summary_with_remark.replace("\r", " ")
+                    .replace("\n", " ")
+                    .replace("\t", " ")
+                    .strip()
+                )
                 if len(summary_with_remark) > 500:
                     summary_with_remark = summary_with_remark[:497] + "..."
 
+                safe_customer_name = (customer_name or "").strip() or "Valued Customer"
+                safe_customer_phone = (
+                    (customer_phone or "").strip()
+                    if (customer_phone and customer_phone.strip())
+                    else "N/A (Admin Simulation)"
+                )
+                safe_intent = (intent or "").strip().upper() or "BUYER"
+                safe_location = str(location or "").strip() or "Not Specified"
+                safe_property_type = str(property_type or "").strip() or "General Inquiry"
+                safe_budget = str(budget or "").strip() or "Not Specified"
+                safe_cw_link = (
+                    (cw_link or "").strip()
+                    or f"https://inbox.bentongland.com.my/app/accounts/1/conversations/{conversation_id}"
+                )
+
                 template_params = [
-                    customer_name,
-                    customer_phone,
-                    intent.upper(),
-                    str(location),
-                    str(property_type),
-                    str(budget),
+                    safe_customer_name,
+                    safe_customer_phone,
+                    safe_intent,
+                    safe_location,
+                    safe_property_type,
+                    safe_budget,
                     summary_with_remark,
-                    cw_link,
+                    safe_cw_link,
                 ]
 
                 # 1. Send WhatsApp Template to staff / admin
-                self.send_template_func(
+                res = self.send_template_func(
                     inbox_id=inbox_id,
                     to_phone=target_phone,
                     template_name=os.getenv(
@@ -505,15 +529,50 @@ class LeadHandoverService:
                     ),
                     override_phone_number_id=template_phone_number_id,
                 )
-                dispatched_phones.append(target_phone)
+
+                is_delivered = False
+                if res is not None:
+                    if isinstance(res, dict):
+                        is_delivered = bool(res.get("messages") or res.get("id") or not res.get("error"))
+                    else:
+                        is_delivered = True
+
+                if is_delivered:
+                    dispatched_phones.append(target_phone)
+                    msg_id = "wamid.ok"
+                    if isinstance(res, dict) and res.get("messages"):
+                        msg_id = res["messages"][0].get("id", "wamid.ok")
+                    delivery_details[target_phone] = {
+                        "status": "sent",
+                        "message_id": msg_id,
+                    }
+                else:
+                    err_info = "Meta API delivery rejected or credentials missing"
+                    try:
+                        from app.services.chatwoot import get_last_whatsapp_error
+                        last_err = get_last_whatsapp_error()
+                        if last_err:
+                            err_info = last_err
+                    except Exception:
+                        pass
+                    delivery_details[target_phone] = {
+                        "status": "failed",
+                        "error": err_info,
+                    }
 
             primary_target = next(
                 (t for t in routed_targets if t.get("is_primary")),
                 (routed_targets[0] if routed_targets else None)
             )
 
-            # 2. Attach primary contact card to customer once
-            if customer_phone and primary_target:
+            # 2. Attach primary contact card to customer once (skip for simulation / non-phone)
+            clean_cust_digits = "".join(ch for ch in str(customer_phone or "") if ch.isdigit())
+            is_real_customer_phone = (
+                len(clean_cust_digits) >= 8
+                and not admin_only
+                and "simulation" not in str(customer_phone or "").lower()
+            )
+            if is_real_customer_phone and primary_target:
                 self.send_contact_func(
                     inbox_id=inbox_id,
                     to_phone=customer_phone,
@@ -610,7 +669,7 @@ class LeadHandoverService:
                 f"📝 **AI Summary**: {conversation_summary}\n\n"
                 f"⚡ **Status**: AI response paused (`bypass_ai=True`). Handed over to human agent."
             )
-            if conversation_id:
+            if conversation_id and not admin_only:
                 try:
                     self.send_private_note_func(conversation_id, private_note_text)
                 except Exception as ne:
@@ -635,11 +694,22 @@ class LeadHandoverService:
                 if t.get("is_primary", True) and not is_fallback
             ]
 
+            if not dispatched_phones and routed_targets:
+                overall_status = "failed"
+            elif is_fallback:
+                overall_status = "fallback_to_admin"
+            elif len(dispatched_phones) < len(routed_targets):
+                overall_status = "partial_success"
+            else:
+                overall_status = "success"
+
             return {
-                "status": "fallback_to_admin" if is_fallback else "success",
+                "status": overall_status,
                 "assigned_agents": assigned_agent_list,
                 "winning_score": max_score,
                 "routed_to": dispatched_phones,
+                "targeted_numbers": [t["phone"] for t in routed_targets],
+                "delivery_details": delivery_details,
                 "is_fallback": is_fallback,
                 "is_tie": is_tie,
                 "top_score": max_score,

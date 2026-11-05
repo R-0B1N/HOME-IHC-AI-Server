@@ -580,7 +580,7 @@ async def chatwoot_webhook(request: Request):
                 test_lead = {
                     "conversation_id": conversation_id,
                     "customer_name": "[TEST] Verification Lead",
-                    "customer_phone": "",  # Empty to ensure zero contact cards dispatched to customers
+                    "customer_phone": "N/A (Admin Simulation)",
                     "intent": "TENANT",
                     "city": "Bentong",
                     "property_category": ["Rental / Commercial"],
@@ -591,11 +591,21 @@ async def chatwoot_webhook(request: Request):
                 }
                 result = service.dispatch(test_lead, admin_only=True)
                 
+                delivery_details = result.get("delivery_details") or {}
+                breakdown_lines = []
+                for phone, det in delivery_details.items():
+                    if det.get("status") == "sent":
+                        breakdown_lines.append(f"  - `{phone}`: ✅ Sent (`{det.get('message_id', 'wamid.ok')}`)")
+                    else:
+                        breakdown_lines.append(f"  - `{phone}`: ❌ Failed ({det.get('error', 'Error')})")
+                breakdown_str = "\n".join(breakdown_lines) if breakdown_lines else f"  - {', '.join(result.get('routed_to', [])) or 'None'}"
+
                 summary = (
                     f"🧪 **Handover Simulation Dispatched**\n\n"
                     f"• 📋 **Template**: `new_lead_alert_utility` (en)\n"
-                    f"• 📲 **Targeted Numbers**: {', '.join(result.get('routed_to', []))}\n"
+                    f"• 📲 **Targeted Numbers**: {', '.join(result.get('targeted_numbers', result.get('routed_to', [])))}\n"
                     f"• ⚡ **Status**: `{result.get('status')}`\n"
+                    f"• 📡 **Delivery Breakdown**:\n{breakdown_str}\n"
                     f"• ℹ️ **Safety**: Customer phone omitted; zero customer cards sent."
                 )
                 send_private_note(conversation_id, summary)

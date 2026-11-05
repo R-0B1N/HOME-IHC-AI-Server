@@ -496,6 +496,75 @@ class TestConversationProcessorAndReportingAttribution(unittest.TestCase):
         # Should fallback to Ah Tat via Bentong + Tenant heuristic
         self.assertEqual(row[9], "Ah Tat (+60129663589)")
 
+    def test_handover_simulation_sanitizes_empty_phone_and_omits_contact_card(self):
+        mock_template = MagicMock(return_value={"messages": [{"id": "wamid.sim123"}]})
+        mock_contact = MagicMock()
+        mock_note = MagicMock()
+
+        service = LeadHandoverService(
+            get_active_agents_func=lambda: [],
+            send_template_func=mock_template,
+            send_contact_func=mock_contact,
+            send_private_note_func=mock_note,
+            apply_label_func=MagicMock(),
+            set_priority_func=MagicMock(),
+            update_status_func=MagicMock(),
+            get_or_create_contact_func=MagicMock(return_value=123),
+            create_conversation_func=MagicMock(return_value=456),
+            default_fallback_admins=["+601165144931"],
+        )
+
+        test_lead = {
+            "conversation_id": 202,
+            "customer_name": "[TEST] Verification Lead",
+            "customer_phone": "",
+            "intent": "TENANT",
+            "city": "Bentong",
+            "property_category": ["Rental / Commercial"],
+            "budget": "RM 2,500 / month",
+            "title": "Bentong Rental Inquiry (Simulation)",
+            "admin_only": True,
+        }
+
+        res = service.dispatch(test_lead, admin_only=True, db=None)
+        self.assertEqual(res["status"], "success")
+        self.assertIn("+601165144931", res["routed_to"])
+        # Parameter 2 must NEVER be empty string
+        call_params = mock_template.call_args[1]["parameters"]
+        self.assertEqual(call_params[1], "N/A (Admin Simulation)")
+        # Customer contact card must NOT be sent during simulation
+        mock_contact.assert_not_called()
+        # Duplicate hot lead private note must NOT be sent during admin_only simulation
+        mock_note.assert_not_called()
+
+    def test_handover_reports_failed_status_when_meta_rejects_template(self):
+        mock_template = MagicMock(return_value=None)
+        mock_contact = MagicMock()
+
+        service = LeadHandoverService(
+            get_active_agents_func=lambda: [],
+            send_template_func=mock_template,
+            send_contact_func=mock_contact,
+            send_private_note_func=MagicMock(),
+            apply_label_func=MagicMock(),
+            set_priority_func=MagicMock(),
+            update_status_func=MagicMock(),
+            get_or_create_contact_func=MagicMock(return_value=123),
+            create_conversation_func=MagicMock(return_value=456),
+            default_fallback_admins=["+601165144931"],
+        )
+
+        res = service.dispatch(
+            conversation_id=202,
+            customer_name="Test Lead",
+            customer_phone="N/A (Admin Simulation)",
+            admin_only=True,
+            db=None,
+        )
+        self.assertEqual(res["status"], "failed")
+        self.assertEqual(res["routed_to"], [])
+        self.assertEqual(res["delivery_details"]["+601165144931"]["status"], "failed")
+
 
 if __name__ == "__main__":
     unittest.main()

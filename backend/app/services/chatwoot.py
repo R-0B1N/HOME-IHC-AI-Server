@@ -376,6 +376,13 @@ def send_whatsapp_contact(inbox_id: int, to_phone: str, contact_name: str, conta
             logger.error(f"Response: {e.response.text}")
         return None
 
+_LAST_WHATSAPP_ERROR = None
+
+def get_last_whatsapp_error():
+    """Returns the most recent Meta WhatsApp Cloud API error string for diagnostic reporting."""
+    return _LAST_WHATSAPP_ERROR
+
+
 def send_whatsapp_template(
     inbox_id: int,
     to_phone: str,
@@ -396,10 +403,13 @@ def send_whatsapp_template(
     than the inbox's phone number.
     Supports optional document or text header components.
     """
+    global _LAST_WHATSAPP_ERROR
     api_key, phone_number_id = resolve_whatsapp_phone_number_id(inbox_id, override_phone_number_id)
     
     if not api_key or not phone_number_id:
-        logger.error(f"Missing API key or phone number ID in inbox {inbox_id} for sending template")
+        err_msg = f"Missing API key or phone number ID in inbox {inbox_id} for sending template"
+        logger.error(err_msg)
+        _LAST_WHATSAPP_ERROR = err_msg
         return None
         
     url = f"https://graph.facebook.com/v21.0/{phone_number_id}/messages"
@@ -432,17 +442,24 @@ def send_whatsapp_template(
             "parameters": [
                 {
                     "type": "text",
-                    "text": str(header_text)
+                    "text": str(header_text).strip() or "Update"
                 }
             ]
         })
 
-    body_parameters = []
-    for param in parameters:
-        body_parameters.append({
-            "type": "text",
-            "text": str(param)
-        })
+    def _build_body_params(param_list):
+        items = []
+        for p in param_list:
+            clean_val = str(p if p is not None else "").replace("\r", " ").replace("\n", " ").replace("\t", " ").strip()
+            if not clean_val:
+                clean_val = "N/A"
+            items.append({
+                "type": "text",
+                "text": clean_val
+            })
+        return items
+
+    body_parameters = _build_body_params(parameters)
         
     if body_parameters:
         components.append({
@@ -466,6 +483,7 @@ def send_whatsapp_template(
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=15)
         response.raise_for_status()
+        _LAST_WHATSAPP_ERROR = None
         logger.info(f"Successfully sent WhatsApp template '{template_name}' ({language_code}) to {clean_to_phone}")
         return response.json()
     except requests.exceptions.RequestException as e:
@@ -474,8 +492,9 @@ def send_whatsapp_template(
         if hasattr(e, 'response') and e.response is not None:
             resp_text = e.response.text
             logger.error(f"Response: {resp_text}")
+        _LAST_WHATSAPP_ERROR = resp_text or str(e)
             
-        # Automatic fallback for common English translation mismatch (error 132001)
+        # 1. Automatic fallback for common English translation mismatch (error 132001)
         if "132001" in resp_text:
             alt_lang = "en" if language_code == "en_US" else "en_US"
             logger.info(f"Retrying template '{template_name}' with alternative language code '{alt_lang}'...")
@@ -483,12 +502,42 @@ def send_whatsapp_template(
             try:
                 retry_resp = requests.post(url, headers=headers, json=payload, timeout=15)
                 retry_resp.raise_for_status()
+                _LAST_WHATSAPP_ERROR = None
                 logger.info(f"Successfully sent WhatsApp template '{template_name}' with fallback language '{alt_lang}' to {clean_to_phone}")
                 return retry_resp.json()
             except Exception as retry_err:
                 logger.error(f"Fallback retry with '{alt_lang}' also failed: {retry_err}")
                 if hasattr(retry_err, 'response') and retry_err.response is not None:
-                    logger.error(f"Fallback response: {retry_err.response.text}")
+                    resp_text = retry_err.response.text
+                    logger.error(f"Fallback response: {resp_text}")
+                _LAST_WHATSAPP_ERROR = resp_text or str(retry_err)
+
+        # 2. Automatic fallback for 8 -> 6 parameter count mismatch (error 132000 / error 100)
+        if len(parameters) == 8 and ("132000" in resp_text or "number of parameters" in resp_text.lower() or "parameter" in resp_text.lower()):
+            logger.info(f"Retrying template '{template_name}' with consolidated 6-parameter schema...")
+            p_clean = [x["text"] for x in body_parameters]
+            consolidated_6 = [
+                p_clean[0],
+                p_clean[1],
+                p_clean[2],
+                f"Location: {p_clean[3]} | Property Type: {p_clean[4]} | Budget: {p_clean[5]}",
+                p_clean[6],
+                p_clean[7],
+            ]
+            for comp in payload["template"]["components"]:
+                if comp.get("type") == "body":
+                    comp["parameters"] = _build_body_params(consolidated_6)
+            try:
+                retry6_resp = requests.post(url, headers=headers, json=payload, timeout=15)
+                retry6_resp.raise_for_status()
+                _LAST_WHATSAPP_ERROR = None
+                logger.info(f"Successfully sent WhatsApp template '{template_name}' with 6-param fallback to {clean_to_phone}")
+                return retry6_resp.json()
+            except Exception as retry6_err:
+                logger.error(f"6-param fallback retry also failed: {retry6_err}")
+                if hasattr(retry6_err, 'response') and retry6_err.response is not None:
+                    _LAST_WHATSAPP_ERROR = retry6_err.response.text
+
         return None
 
 def get_conversation_details(conversation_id: int) -> dict:
