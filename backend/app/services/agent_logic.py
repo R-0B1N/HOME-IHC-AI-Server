@@ -29,6 +29,18 @@ from app.services.system_prompts import (
 
 logger = logging.getLogger(__name__)
 
+# vLLM on this stack is started with a 2048-token context. chars/2.5 is the
+# conservative input estimate used after real overflows (a looser divisor
+# produced HTTP 400s). The full system prompt is ~7.2k characters, so that
+# estimate exceeds the budget and the old floor of 50 completion tokens cut
+# seller Turn-1 replies mid-sentence (conversation 233: "...Kuantan and Bentong").
+CONTEXT_TOKEN_BUDGET = 2030
+MIN_COMPLETION_TOKENS = 400
+MAX_COMPLETION_TOKENS = 480
+IMAGE_TOKEN_RESERVE = 512
+_CHARS_PER_TOKEN = 2.5
+_SENTENCE_ENDINGS = (".", "!", "?", "。", "！", "？", "😊", "🤝")
+
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
@@ -1271,6 +1283,198 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
     }
 
 
+def estimate_text_tokens(text: str) -> int:
+    """Conservative token estimate. Intentionally high so a fitted reply still fits vLLM."""
+    return int(len(text or "") / _CHARS_PER_TOKEN)
+
+
+def completion_token_room(system_prompt: str, history: str, user_text: str, image_count: int) -> int:
+    """Tokens left for the completion after the conservative input estimate."""
+    estimated_input = (
+        estimate_text_tokens(system_prompt)
+        + estimate_text_tokens(history)
+        + estimate_text_tokens(user_text)
+        + (IMAGE_TOKEN_RESERVE if image_count else 0)
+    )
+    return CONTEXT_TOKEN_BUDGET - estimated_input
+
+
+def fit_conversational_token_budget(
+    base_prompt: str,
+    compact_prompt: str,
+    minimal_prompt: str,
+    history: str,
+    user_text: str,
+    image_count: int,
+) -> dict:
+    """
+    Pick the richest prompt that still leaves MIN_COMPLETION_TOKENS for a finished reply.
+
+    The previous allocator did `max_tokens = min(350, max(50, 2030 - est_input))`.
+    For the standard prompt that expression is 50, and the unfinished JSON string
+    was delivered on WhatsApp.
+    """
+    history = history or ""
+    user_text = user_text or ""
+    history_lines = [line for line in history.split("\n") if line.strip()]
+    pruned_history = "\n".join(history_lines[-3:]) if history_lines else ""
+    trimmed_user = user_text[-600:] if len(user_text) > 600 else user_text
+
+    candidates = [
+        ("full", base_prompt, history, user_text),
+        ("full", base_prompt, pruned_history, user_text),
+        ("compact", compact_prompt, pruned_history, user_text),
+        ("compact", compact_prompt, "", user_text),
+        ("minimal", minimal_prompt, "", user_text),
+        ("minimal", minimal_prompt, "", trimmed_user),
+    ]
+    seen = set()
+    for tier, prompt, hist, user in candidates:
+        key = (tier, prompt, hist, user)
+        if key in seen:
+            continue
+        seen.add(key)
+        room = completion_token_room(prompt, hist, user, image_count)
+        if room >= MIN_COMPLETION_TOKENS:
+            return {
+                "system_prompt": prompt,
+                "history": hist,
+                "user_text": user,
+                "max_tokens": min(MAX_COMPLETION_TOKENS, room),
+                "tier": tier,
+            }
+
+    # Last resort: never request a completion the estimate says cannot fit.
+    room = max(1, completion_token_room(minimal_prompt, "", trimmed_user, image_count))
+    return {
+        "system_prompt": minimal_prompt,
+        "history": "",
+        "user_text": trimmed_user,
+        "max_tokens": min(MAX_COMPLETION_TOKENS, room),
+        "tier": "minimal",
+    }
+
+
+def _sentence_is_complete(text: str) -> bool:
+    tail = (text or "").rstrip()
+    return len(tail) >= 8 and tail.endswith(_SENTENCE_ENDINGS)
+
+
+def _strip_json_fence(content: str) -> str:
+    text = (content or "").strip()
+    if not text.startswith("```"):
+        return text
+    text = re.sub(r"^```(?:json)?", "", text).strip()
+    if text.endswith("```"):
+        text = text[:-3].strip()
+    return text.strip()
+
+
+def _hit_length_limit(finish_reason: str = None) -> bool:
+    return finish_reason in {"length", "max_tokens"}
+
+
+def _raw_completion_truncated(content: str, finish_reason: str = None) -> bool:
+    """True when the model stopped inside the response string."""
+    text = _strip_json_fence(content)
+    if not text:
+        return _hit_length_limit(finish_reason)
+    if '"response"' in text and not text.endswith("}"):
+        return True
+    if _hit_length_limit(finish_reason) and not text.endswith("}"):
+        return True
+    return False
+
+
+def _normalize_parsed_reply(parsed: dict) -> dict:
+    if isinstance(parsed.get("response"), str) and "\\n" in parsed["response"] and "\n" not in parsed["response"]:
+        parsed["response"] = parsed["response"].replace("\\n", "\n").replace('\\"', '"')
+    parsed.setdefault("intent", "general")
+    parsed.setdefault("asked_photos", False)
+    parsed.setdefault("asked_specs", False)
+    parsed.setdefault("asked_meeting", False)
+    parsed.setdefault("promises_handover", False)
+    parsed.setdefault("asked_alternatives", False)
+    parsed.setdefault("is_out_of_context", False)
+    parsed.setdefault("new_constraints", {})
+    parsed.setdefault("extracted_data", parsed.get("extracted", {}))
+    return parsed
+
+
+def _interpret_llm_content(content: str, finish_reason: str = None) -> dict:
+    """
+    Parse a conversational completion. Returns None when the text is an
+    unfinished sentence so the caller can retry or send a complete fallback.
+    """
+    if _raw_completion_truncated(content, finish_reason):
+        logger.warning("Discarding truncated LLM completion (finish_reason=%s)", finish_reason)
+        return None
+
+    parsed = _parse_json_from_llm(content)
+    if not parsed and content:
+        match = re.search(r'"response"\s*:\s*"((?:[^"\\]|\\.)*)', content, re.DOTALL)
+        if match and match.end() < len(content) and content[match.end()] == '"':
+            raw_str = match.group(1)
+            try:
+                decoded_resp = json.loads(f'"{raw_str}"')
+            except Exception:
+                decoded_resp = raw_str.replace("\\n", "\n").replace('\\"', '"').replace("\\\\", "\\")
+            parsed = {"response": decoded_resp.strip()}
+
+    if not parsed or not isinstance(parsed, dict) or not parsed.get("response"):
+        return None
+
+    parsed = _normalize_parsed_reply(parsed)
+    if _hit_length_limit(finish_reason) and not _sentence_is_complete(parsed.get("response") or ""):
+        logger.warning("Discarding length-capped reply that does not finish a sentence")
+        return None
+    return parsed
+
+
+def _minimal_reply_prompt(customer_language: str, customer_name: str = None, is_seller: bool = False) -> str:
+    who = f" The customer's name is {customer_name}." if customer_name else ""
+    if is_seller:
+        track = (
+            "They are a seller or landowner. Acknowledge the property they described and ask only for "
+            "missing location, size, or asking price. Do not pitch buyer listings and do not promise a callback."
+        )
+    else:
+        track = "Answer their latest property question using only facts you were given."
+    lang = (customer_language or "en").upper()
+    return (
+        f"You are Irene Leong of ERA Realtor / Home IHC.{who} Reply only in {lang}. {track} "
+        "Write at most 4 complete sentences and end with punctuation. "
+        'Output JSON only: {"response": "...", "intent": "seller"}'
+    )
+
+
+def _public_fallback_reply(
+    language: str,
+    conversation_history: str,
+    is_seller: bool,
+    role: str,
+    customer_name: str = None,
+) -> str:
+    """Complete customer-facing sentence used when the model cannot finish a reply."""
+    role_clean = (role or ("seller" if is_seller else "buyer")).lower()
+    seller_track = is_seller or role_clean in {"seller", "owner", "landlord"}
+    has_assistant = bool(
+        conversation_history and (
+            "Assistant:" in conversation_history
+            or "AI:" in conversation_history
+            or "Agent:" in conversation_history
+            or "Irene Leong" in conversation_history
+            or "mecard.my" in conversation_history
+        )
+    )
+    if seller_track and not has_assistant:
+        return get_multilingual_premature_questions("seller", language, customer_name)
+
+    assistant_spoke = bool(seller_track or (conversation_history and has_assistant))
+    effective_history = (conversation_history or "Active inquiry") if assistant_spoke else None
+    return get_multilingual_fallback(language, effective_history, is_seller=seller_track, role=role)
+
+
 def generate_conversational_response(
     text: str = "",
     cached_property: dict = None,
@@ -1297,7 +1501,7 @@ def generate_conversational_response(
     hybrid_properties = kwargs.get("hybrid_properties") or []
     customer_lang = kwargs.get("customer_language") or detect_customer_language(text)
 
-    system_prompt = build_system_prompt(
+    prompt_kwargs = dict(
         cached_property=cached_property,
         available_properties=available_properties if not cached_property else [],
         unlisted_property_text=unlisted_property_text,
@@ -1308,142 +1512,89 @@ def generate_conversational_response(
         role=role,
         db_context=db_context,
         memory_context=memory_context,
-        hybrid_properties=hybrid_properties
+        hybrid_properties=hybrid_properties,
+    )
+    images = kwargs.get("images") or []
+    is_seller_flag = bool(kwargs.get("is_seller")) or str(collected_data.get("customer_category") or "").lower() in {
+        "seller", "owner", "landlord"
+    }
+    base_prompt = build_system_prompt(**prompt_kwargs)
+    compact_prompt = build_system_prompt(**prompt_kwargs, compact=True)
+    minimal_prompt = _minimal_reply_prompt(customer_lang, customer_name, is_seller=is_seller_flag)
+    plan = fit_conversational_token_budget(
+        base_prompt=base_prompt,
+        compact_prompt=compact_prompt,
+        minimal_prompt=minimal_prompt,
+        history=conversation_history or "",
+        user_text=text or "",
+        image_count=1 if images else 0,
+    )
+    minimal_plan = fit_conversational_token_budget(
+        base_prompt=minimal_prompt,
+        compact_prompt=minimal_prompt,
+        minimal_prompt=minimal_prompt,
+        history="",
+        user_text=text or "",
+        image_count=1 if images else 0,
+    )
+    logger.info(
+        "Conversational reply budget: tier=%s max_tokens=%s prompt_chars=%s",
+        plan["tier"],
+        plan["max_tokens"],
+        len(plan["system_prompt"]),
     )
 
-    # 1. Dynamic Token Management (Guarantee prompt + completion <= 2048 limit)
-    history_to_use = conversation_history or ""
-    total_chars = len(system_prompt) + len(history_to_use) + len(text or "")
-    est_input_tokens = int(total_chars / 2.5)
+    def _messages_for(active_plan: dict, include_images: bool) -> list:
+        messages = [{"role": "system", "content": active_plan["system_prompt"]}]
+        if active_plan["history"]:
+            messages.append({
+                "role": "system",
+                "content": f"Recent Conversation History:\n{active_plan['history']}",
+            })
+        user_text = active_plan["user_text"]
+        if include_images and images:
+            user_content = []
+            user_prompt_text = (user_text or "").strip() or (
+                "Please analyze the attached property document / land title / image and advise."
+            )
+            user_content.append({"type": "text", "text": user_prompt_text})
+            # One image per call. Vision tokens are reserved in the completion budget above.
+            for img in images[:1]:
+                if isinstance(img, str):
+                    if img.startswith("http://") or img.startswith("https://") or img.startswith("data:"):
+                        user_content.append({"type": "image_url", "image_url": {"url": img}})
+                    else:
+                        user_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img}"}})
+                elif isinstance(img, dict) and img.get("url"):
+                    user_content.append({"type": "image_url", "image_url": {"url": img["url"]}})
+            messages.append({"role": "user", "content": user_content})
+        else:
+            messages.append({"role": "user", "content": user_text or ""})
+        return messages
 
-    # If approaching limit, prune history to most recent exchanges
-    if est_input_tokens > 1300 and history_to_use:
-        hist_lines = [l for l in history_to_use.split("\n") if l.strip()]
-        history_to_use = "\n".join(hist_lines[-3:])
-        total_chars = len(system_prompt) + len(history_to_use) + len(text or "")
-        est_input_tokens = int(total_chars / 2.5)
-
-    images = kwargs.get("images") or []
-    # Strict bounded output token budget ensuring prompt + completion never exceeds 2040 tokens
-    max_allowed = max(50, 2030 - est_input_tokens)
-    target_tokens = 450 if images else 350
-    safe_max_tokens = min(target_tokens, max_allowed)
-
-    messages = [
-        {"role": "system", "content": system_prompt}
-    ]
-    if history_to_use:
-        messages.append({"role": "system", "content": f"Recent Conversation History:\n{history_to_use}"})
-    
-    if images:
-        user_content = []
-        user_prompt_text = (text or "").strip() or "Please analyze the attached property document / land title / image and advise."
-        user_content.append({"type": "text", "text": user_prompt_text})
-        # Cap vision payload to 1 image per completion call to prevent vLLM 2048-token context overflow on multi-photo batches
-        for img in images[:1]:
-            if isinstance(img, str):
-                if img.startswith("http://") or img.startswith("https://") or img.startswith("data:"):
-                    user_content.append({"type": "image_url", "image_url": {"url": img}})
-                else:
-                    user_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img}"}})
-            elif isinstance(img, dict) and img.get("url"):
-                user_content.append({"type": "image_url", "image_url": {"url": img["url"]}})
-        messages.append({"role": "user", "content": user_content})
-    else:
-        messages.append({"role": "user", "content": text or ""})
-
-    try:
+    def _attempt(active_plan: dict, include_images: bool = True):
         response = llm_client.chat.completions.create(
             model=LLM_MODEL_NAME,
-            messages=messages,
+            messages=_messages_for(active_plan, include_images),
             response_format={"type": "json_object"},
             temperature=0.0,
-            max_tokens=safe_max_tokens,
-            timeout=30.0
+            max_tokens=active_plan["max_tokens"],
+            timeout=30.0,
         )
-        content = response.choices[0].message.content
-        parsed = _parse_json_from_llm(content)
-        if not parsed:
-            try:
-                parsed = json.loads(content, strict=False)
-            except Exception:
-                match = re.search(r'"response"\s*:\s*"((?:[^"\\]|\\.)*)', content, re.DOTALL)
-                if match:
-                    raw_str = match.group(1)
-                    try:
-                        decoded_resp = json.loads(f'"{raw_str}"')
-                    except Exception:
-                        decoded_resp = raw_str.replace('\\n', '\n').replace('\\"', '"').replace('\\\\', '\\')
-                    parsed = {"response": decoded_resp.strip()}
-        
-        if parsed and isinstance(parsed, dict) and parsed.get("response"):
-            # Unescape raw newlines if somehow present in string
-            if isinstance(parsed["response"], str) and "\\n" in parsed["response"] and "\n" not in parsed["response"]:
-                parsed["response"] = parsed["response"].replace("\\n", "\n").replace('\\"', '"')
-            # Normalize sparse keys with safe defaults
-            parsed.setdefault("intent", "general")
-            parsed.setdefault("asked_photos", False)
-            parsed.setdefault("asked_specs", False)
-            parsed.setdefault("asked_meeting", False)
-            parsed.setdefault("promises_handover", False)
-            parsed.setdefault("asked_alternatives", False)
-            parsed.setdefault("is_out_of_context", False)
-            parsed.setdefault("new_constraints", {})
-            parsed.setdefault("extracted_data", parsed.get("extracted", {}))
-            return parsed
-        raise ValueError(f"Failed to parse valid JSON response from LLM content: {content[:100] if content else 'empty'}")
-    except Exception as e:
-        logger.error(f"Error calling LLM for conversational response: {e}")
-        # Auto-retry with minimal prompt if 400 Bad Request or token context overflow occurs
-        if "400" in str(e) or "maximum context length" in str(e).lower():
-            logger.warning("Attempting emergency retry with minimal context...")
-            try:
-                emergency_messages = [
-                    {"role": "system", "content": system_prompt[:2000]},
-                    {"role": "user", "content": text}
-                ]
-                retry_resp = llm_client.chat.completions.create(
-                    model=LLM_MODEL_NAME,
-                    messages=emergency_messages,
-                    response_format={"type": "json_object"},
-                    temperature=0.0,
-                    max_tokens=250,
-                    timeout=20.0
-                )
-                retry_content = retry_resp.choices[0].message.content
-                retry_parsed = _parse_json_from_llm(retry_content)
-                if retry_parsed and isinstance(retry_parsed, dict) and retry_parsed.get("response"):
-                    if isinstance(retry_parsed["response"], str) and "\\n" in retry_parsed["response"] and "\n" not in retry_parsed["response"]:
-                        retry_parsed["response"] = retry_parsed["response"].replace("\\n", "\n").replace('\\"', '"')
-                    retry_parsed.setdefault("intent", "general")
-                    retry_parsed.setdefault("asked_photos", False)
-                    retry_parsed.setdefault("asked_specs", False)
-                    retry_parsed.setdefault("asked_meeting", False)
-                    retry_parsed.setdefault("promises_handover", False)
-                    retry_parsed.setdefault("asked_alternatives", False)
-                    retry_parsed.setdefault("is_out_of_context", False)
-                    retry_parsed.setdefault("new_constraints", {})
-                    retry_parsed.setdefault("extracted_data", retry_parsed.get("extracted", {}))
-                    return retry_parsed
-            except Exception as retry_err:
-                logger.error(f"Emergency retry also failed: {retry_err}")
+        choice = response.choices[0]
+        finish_reason = getattr(choice, "finish_reason", None)
+        if not isinstance(finish_reason, str):
+            finish_reason = None
+        return _interpret_llm_content(choice.message.content, finish_reason)
 
-        lang = kwargs.get("customer_language") or detect_customer_language(text)
-        # Resilient fallback: Treat as ongoing conversation if assistant spoke OR if role/images/property already provided
-        is_seller_flag = kwargs.get("is_seller", False)
-        assistant_spoke = bool(
-            is_seller_flag or images or collected_data.get("customer_category") or (
-                conversation_history and (
-                    "Assistant:" in conversation_history or
-                    "AI:" in conversation_history or
-                    "Agent:" in conversation_history or
-                    "Irene Leong" in conversation_history or
-                    "mecard.my" in conversation_history
-                )
-            )
+    def _fallback_payload() -> dict:
+        fallback_msg = _public_fallback_reply(
+            customer_lang,
+            conversation_history,
+            is_seller=is_seller_flag,
+            role=role,
+            customer_name=customer_name,
         )
-        effective_history = (conversation_history or "Active inquiry") if assistant_spoke else None
-        fallback_msg = get_multilingual_fallback(lang, effective_history, is_seller=is_seller_flag)
         return {
             "intent": "general",
             "asked_photos": False,
@@ -1456,5 +1607,32 @@ def generate_conversational_response(
             "new_constraints": {},
             "is_out_of_context": False,
             "extracted_data": {},
-            "response": fallback_msg
+            "response": fallback_msg,
         }
+
+    try:
+        parsed = _attempt(plan, include_images=True)
+        if not parsed and plan["tier"] != "minimal":
+            logger.warning(
+                "Conversational reply incomplete on %s prompt; retrying with minimal prompt",
+                plan["tier"],
+            )
+            # Drop the photo on the retry. A land-title image can consume the
+            # context window; the customer's words are enough to finish the reply.
+            parsed = _attempt(minimal_plan, include_images=False)
+        if parsed and parsed.get("response"):
+            return parsed
+        logger.error("LLM conversational reply stayed truncated after retry; sending a complete fallback")
+        return _fallback_payload()
+    except Exception as e:
+        logger.error(f"Error calling LLM for conversational response: {e}")
+        overflow = "400" in str(e) or "maximum context length" in str(e).lower()
+        if overflow and plan["tier"] != "minimal":
+            logger.warning("Attempting emergency retry with minimal context...")
+            try:
+                parsed = _attempt(minimal_plan, include_images=False)
+                if parsed and parsed.get("response"):
+                    return parsed
+            except Exception as retry_err:
+                logger.error(f"Emergency retry also failed: {retry_err}")
+        return _fallback_payload()
