@@ -26,7 +26,7 @@ import redis
 import requests
 
 from app.db.models import Customer, Order, Property, SessionLocal, User
-from app.services.agent_logic import process_persona_state_machine
+from app.services.agent_logic import premature_seller_hot_lead, process_persona_state_machine
 from app.services.chatwoot import (
     CHATWOOT_ACCOUNT_ID,
     apply_label,
@@ -815,6 +815,22 @@ class ConversationQueueProcessor:
             )
 
             if role not in ["admin", "employee", "agent"]:
+                # Conv 234: a finished Turn-1 seller reply set promises_handover and the
+                # hot-lead note fired. AgentSpecializationScorer was not changed; it only
+                # ran because this gate treated the model flag as an immediate handover.
+                if premature_seller_hot_lead(
+                    collected,
+                    conversation_history,
+                    final_prompt_text,
+                    role=intent,
+                ):
+                    handover_from_state = False
+                    response_promises_handover = False
+                    session["handover"] = False
+                    if session.get("state") == "COMPLETED":
+                        session["state"] = "IN_PROGRESS"
+                    if lead_temp == "Hot":
+                        lead_temp = "Warm"
                 is_qualified_handover = (completeness_ratio >= 0.8) and has_prior_assistant_turn
                 if (
                     handover_from_state

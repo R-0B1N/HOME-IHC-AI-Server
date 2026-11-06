@@ -488,8 +488,8 @@ Stage: {stage}
 {prop_block}Known customer context: {known}
 
 Write ONE complete WhatsApp reply of at most 90 words. Finish every sentence. Never stop mid-sentence.
-Never invent listings, prices, sizes, or addresses. If the sender is a seller or landowner, acknowledge their land or home and ask only for missing location, size, title, or asking price. Do not pitch buyer listings to a seller, and do not say a specialist will call unless they asked for a human or already gave location, property type, and price.
-Set "promises_handover" and "asked_meeting" to true only in that handover case.
+Never invent listings, prices, sizes, or addresses. If the sender is a seller or landowner, acknowledge their land or home and ask only for missing land size, title type, and asking price. Do not pitch buyer listings to a seller.
+On a first seller message, leave "promises_handover" and "asked_meeting" unset, and do not say a specialist will call. Asking for those missing details is not a handover. Set those flags only after an asking price is known, or the customer asks for a human or a viewing.
 
 Output JSON only, with "response" written FIRST and fully closed:
 {{
