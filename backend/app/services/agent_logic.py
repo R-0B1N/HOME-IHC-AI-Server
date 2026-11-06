@@ -88,6 +88,77 @@ def extract_self_introduced_name(text: str) -> str:
     return None
 
 
+_ASKING_PRICE_PLACEHOLDERS = {
+    "property inquiry",
+    "to be advised",
+    "pahang (to be advised)",
+    "not specified",
+    "general inquiry",
+    "n/a",
+    "none",
+    "null",
+    "unknown",
+    "to be discussed in meeting",
+}
+
+
+def _has_real_asking_price(collected_data: dict) -> bool:
+    collected = collected_data or {}
+    for key in ("asking_price", "seller_asking_price", "expected_rental"):
+        value = collected.get(key)
+        if value and str(value).strip().lower() not in _ASKING_PRICE_PLACEHOLDERS:
+            return True
+    return False
+
+
+def _customer_stated_price(raw_text: str) -> bool:
+    """True when this message itself contains a price, not a model-extracted one."""
+    text = raw_text or ""
+    if re.search(r"\b(?:rm|myr|ringgit)\b", text, re.IGNORECASE):
+        return True
+    if re.search(r"\b\d[\d,.]*(?:\s*(?:k|juta|million|mil))\b", text, re.IGNORECASE):
+        return True
+    if re.search(r"\d", text) and re.search(
+        r"(?:harga|asking|bajet|budget|售价|叫价|预期售价)", text, re.IGNORECASE
+    ):
+        return True
+    return False
+
+
+def premature_seller_hot_lead(
+    collected_data: dict,
+    conversation_history: str = "",
+    raw_text: str = "",
+    role: str = None,
+) -> bool:
+    """
+    Seller Turn-1 that names land and a town is not a hot lead yet.
+
+    Conversation 233 stayed quiet only because the reply was cut off before
+    promises_handover / asked_meeting were generated. A finished reply (PR #8)
+    lets those flags through. Location plus property type, without an asking
+    price or an explicit request for a human, must not open HOT LEAD.
+    """
+    collected = collected_data or {}
+    role_clean = str(role or collected.get("customer_category") or "").strip().lower()
+    if role_clean not in {"seller", "owner", "landlord"}:
+        return False
+    if is_explicit_handover_request(raw_text or ""):
+        return False
+    raw_lower = (raw_text or "").lower()
+    if any(marker in raw_lower for marker in (
+        "安排看房", "预约看房", "睇楼", "tengok rumah", "tengok tanah",
+        "arrange viewing", "schedule viewing", "book viewing",
+    )):
+        return False
+    history = conversation_history or ""
+    if any(marker in history for marker in ("Assistant:", "AI:", "Agent:")):
+        return False
+    if _has_real_asking_price(collected) and _customer_stated_price(raw_text):
+        return False
+    return True
+
+
 def check_completeness(persona: str, collected_data: dict) -> float:
     """Calculates data completeness ratio for lead scoring."""
     required_keys = {
@@ -1232,6 +1303,18 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
 
     handover_promised = is_handover_promised(response_text)
     promises_handover = bool(llm_analysis.get("promises_handover"))
+    # A finished seller Turn-1 reply can now carry promises_handover / asked_meeting
+    # (those keys sit after the response text and used to be truncated away).
+    # Land and a town are not enough. Keep the full reply and do not hand over.
+    if premature_seller_hot_lead(
+        collected_data,
+        conversation_history,
+        raw_text,
+        role=current_role,
+    ):
+        asked_meeting = False
+        handover_promised = False
+        promises_handover = False
     if user_wants_immediate_human:
         handover = True
         name_str = f" {current_user_name}" if current_user_name else ""

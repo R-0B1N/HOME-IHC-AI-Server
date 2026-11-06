@@ -441,6 +441,86 @@ class TestConversationProcessorAndReportingAttribution(unittest.TestCase):
         mock_db.commit.assert_called_once()
         mock_label.assert_called_once()
 
+    @patch("app.services.conversation_processor.SessionManager.save_session")
+    @patch("app.services.conversation_processor.SessionManager.get_session", return_value={})
+    @patch("app.services.conversation_processor.SessionManager.lock_session")
+    @patch("app.services.conversation_processor.process_persona_state_machine")
+    def test_conv_234_processor_does_not_open_hot_lead(
+        self, mock_persona, mock_lock, mock_get, mock_save
+    ):
+        """
+        The private HOT LEAD note, bypass_ai, and hot label are decided here.
+        A finished Turn-1 reply that only asks for size, title, and price must
+        not set handover_initiated even if the model sets promises_handover.
+        """
+        from contextlib import contextmanager
+        from app.services.conversation_processor import ConversationQueueProcessor
+
+        @contextmanager
+        def _lock(*args, **kwargs):
+            yield
+
+        mock_lock.side_effect = _lock
+        reply = (
+            "Hi Miss Lee! Thanks for telling me about the land and the residence in "
+            "Kuantan and Bentong. Could you share the land size, the type of title, "
+            "and your asking price?"
+        )
+        mock_persona.return_value = {
+            "response": reply,
+            "handover": True,
+            "promises_handover": True,
+            "images_to_send": [],
+            "updated_session": {
+                "current_agent": "SELLER",
+                "state": "COMPLETED",
+                "handover": True,
+                "collected_data": {
+                    "name": "Miss Lee",
+                    "customer_category": "seller",
+                    "location": "Kuantan and Bentong",
+                    "property_type": "Land and residence",
+                    "is_owner": True,
+                },
+                "seller_track": {"status": "active"},
+            },
+        }
+        processor = ConversationQueueProcessor(
+            redis_client=MagicMock(), session_factory=MagicMock()
+        )
+        (
+            _agent_result,
+            session,
+            intent,
+            response_text,
+            handover_initiated,
+            lead_temp,
+            _images,
+        ) = processor.execute_persona_state_machine(
+            phone_number="+60126676263",
+            contact_name="Miss Lee",
+            role="customer",
+            final_prompt_text=(
+                "Hi Irene. I am Miss Lee. I have land and 1 residence in Kuantan / "
+                "Bentong Pahang land"
+            ),
+            conversation_history="",
+            latest_doc_struct=None,
+            turn_intent="seller_intake",
+            combined_images=[],
+            db_context={"role": "customer", "data": {}},
+            is_seller_intent=True,
+            reset_cutoff_ts=0.0,
+        )
+        self.assertEqual(intent, "seller")
+        self.assertFalse(handover_initiated)
+        self.assertNotEqual(lead_temp, "Hot")
+        self.assertEqual(response_text, reply)
+        self.assertNotIn("senior property specialist", response_text.lower())
+        self.assertFalse(session.get("handover"))
+        self.assertFalse(session.get("handover_completed", False))
+        self.assertNotEqual(session.get("state"), "COMPLETED")
+
     def test_buyer_report_generator_formats_assigned_agent(self):
         from app.services.reporting import BuyerReportGenerator
 
@@ -629,6 +709,89 @@ class TestConversationProcessorAndReportingAttribution(unittest.TestCase):
         self.assertEqual(collected.get("customer_category"), "seller")
         self.assertIsNone(collected.get("buyer_budget"))
         self.assertFalse(result.get("handover", True))
+
+    @patch("app.services.agent_logic.classify_turn_intent", return_value="seller_intake")
+    @patch("app.services.agent_logic.generate_conversational_response")
+    def test_conv_234_seller_turn1_with_land_and_location_is_not_a_hot_lead(self, mock_llm_gen, _mock_cls):
+        """
+        Conversation 234 regression: the same Miss Lee Turn-1 that stayed quiet on
+        a82f1dc fired HOT LEAD once the reply was allowed to finish. A completed
+        reply may set promises_handover / asked_meeting. Land plus a town, with no
+        asking price and no request for a human, must not hand over.
+        """
+        full_reply = (
+            "Hi Miss Lee! Thank you for telling me about the land and the residence in "
+            "Kuantan and Bentong. Could you share the land size, the type of title, and "
+            "your asking price for each?"
+        )
+        mock_llm_gen.return_value = {
+            "response": full_reply,
+            "intent": "seller",
+            "promises_handover": True,
+            "asked_meeting": True,
+            "extracted_data": {
+                "location": "Kuantan and Bentong",
+                "property_type": "Land and residence",
+                "is_owner": True,
+            },
+        }
+        result = process_persona_state_machine(
+            phone_number="+60126676263",
+            raw_text=(
+                "Hi Irene. I am Miss Lee. I have land and 1 residence in Kuantan / "
+                "Bentong Pahang land"
+            ),
+            session={},
+            conversation_history="",
+            contact_name="Miss Lee",
+        )
+        self.assertEqual(result["updated_session"].get("current_agent"), "SELLER")
+        self.assertFalse(result.get("handover"))
+        self.assertFalse(result.get("promises_handover"))
+        self.assertEqual(result.get("response"), full_reply)
+        self.assertTrue(result["response"].rstrip().endswith("?"))
+        self.assertNotEqual(result["updated_session"].get("state"), "COMPLETED")
+        self.assertIsNone(result["updated_session"]["collected_data"].get("asking_price"))
+        self.assertIsNone(result["updated_session"]["collected_data"].get("buyer_budget"))
+
+    @patch("app.services.agent_logic.generate_conversational_response")
+    def test_seller_turn1_explicit_call_request_still_hands_over(self, mock_llm_gen):
+        mock_llm_gen.return_value = {
+            "response": "Sure, I will ask a colleague to call you.",
+            "intent": "seller",
+            "promises_handover": True,
+            "extracted_data": {"location": "Bentong", "property_type": "Land"},
+        }
+        result = process_persona_state_machine(
+            phone_number="+60126676263",
+            raw_text="I have land in Bentong. Please call me.",
+            session={},
+            conversation_history="",
+            contact_name="Miss Lee",
+        )
+        self.assertTrue(result.get("handover"))
+
+    @patch("app.services.agent_logic.generate_conversational_response")
+    def test_seller_turn1_with_stated_asking_price_can_still_hand_over(self, mock_llm_gen):
+        mock_llm_gen.return_value = {
+            "response": "Thank you Miss Lee. I have noted RM 500,000 for the Bentong land and will have a specialist follow up.",
+            "intent": "seller",
+            "promises_handover": True,
+            "extracted_data": {
+                "location": "Bentong",
+                "property_type": "Land",
+                "asking_price": "RM 500,000",
+            },
+        }
+        result = process_persona_state_machine(
+            phone_number="+60126676263",
+            raw_text="I want to sell my Bentong land. Asking price is RM 500,000.",
+            session={},
+            conversation_history="",
+            contact_name="Miss Lee",
+        )
+        self.assertTrue(result.get("handover"))
+        self.assertTrue(result.get("promises_handover"))
 
     @patch("app.services.agent_logic.generate_conversational_response")
     def test_post_handover_concierge_mode_locks_intent_state_and_temp(self, mock_llm_gen):
