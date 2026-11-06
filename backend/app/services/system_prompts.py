@@ -433,6 +433,72 @@ def get_multilingual_ah_tuck_handover(language: str, customer_name: str = None) 
 
 
 
+def _cap_prompt_fragment(text: str, limit: int = 500) -> str:
+    """Keeps optional prompt context inside the completion-token budget."""
+    if not text:
+        return ""
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3].rstrip() + "..."
+
+
+def _assemble_compact_system_prompt(
+    customer_language: str,
+    customer_name: str,
+    name_instruction: str,
+    has_prior_intro: bool,
+    role_clean: str,
+    prop_context: str,
+    collected_data: dict,
+) -> str:
+    """
+    Short system prompt used when the full directive prompt cannot leave enough
+    completion tokens inside the 2048-token vLLM window.
+
+    The full prompt is about 7k characters. Estimated at chars/2.5 that exceeds
+    the context budget and collapses max_tokens to 50, which cuts the public
+    WhatsApp reply mid-sentence (conversation 233).
+    """
+    lang = (customer_language or "en").upper()
+    if role_clean == "admin":
+        role_line = "Administrator. Keep the customer-facing reply short and complete."
+    elif role_clean in ["agent", "employee"]:
+        role_line = "Home IHC agent. Operational details are allowed. Keep the reply complete."
+    else:
+        role_line = (
+            "Customer. Share public property facts only. Never reveal internal customer lists, "
+            "leads, owner private contacts, or agency commissions."
+        )
+    if has_prior_intro:
+        stage = "ONGOING CHAT: do not repeat your introduction or name-card link."
+    else:
+        stage = (
+            f"FIRST CONTACT: introduce yourself once as Irene Leong, ERA Realtor representing Home IHC, "
+            f"and include {DIGITAL_NAME_CARD_URL}."
+        )
+    known = _cap_prompt_fragment(json.dumps(collected_data or {}, ensure_ascii=False), 400)
+    prop_short = _cap_prompt_fragment(prop_context, 400)
+    prop_block = f"\n{prop_short}\n" if prop_short else "\n"
+    return f"""You are Irene Leong, Senior Property Agent at ERA Realtor representing Home IHC ({COMPANY_FULL_NAME}).
+Role: {role_line}
+Language: reply only in {lang}.
+{name_instruction}
+Stage: {stage}
+{prop_block}Known customer context: {known}
+
+Write ONE complete WhatsApp reply of at most 90 words. Finish every sentence. Never stop mid-sentence.
+Never invent listings, prices, sizes, or addresses. If the sender is a seller or landowner, acknowledge their land or home and ask only for missing land size, title type, and asking price. Do not pitch buyer listings to a seller.
+On a first seller message, leave "promises_handover" and "asked_meeting" unset, and do not say a specialist will call. Asking for those missing details is not a handover. Set those flags only after an asking price is known, or the customer asks for a human or a viewing.
+
+Output JSON only, with "response" written FIRST and fully closed:
+{{
+  "response": "Complete reply ending with punctuation.",
+  "intent": "buyer" | "seller" | "tenant" | "agent" | "general",
+  "extracted_data": {{}}
+}}"""
+
+
 def build_system_prompt(
     cached_property: dict = None,
     available_properties: list = None,
@@ -444,7 +510,8 @@ def build_system_prompt(
     role: str = "customer",
     db_context: dict = None,
     memory_context: dict = None,
-    hybrid_properties: list = None
+    hybrid_properties: list = None,
+    compact: bool = False,
 ) -> str:
     """
     Constructs the master system prompt for Irene Leong with strict behavioral guardrails,
@@ -568,6 +635,17 @@ CRITICAL ANTI-REPETITION RULE:
         f"The customer's name is '{customer_name}'. Greet them naturally by name (e.g. 'Hi {customer_name}! 😊'). DO NOT interrogate them for their name."
         if customer_name else "If the customer mentions their name, address them by name. Do not interrogate."
     )
+
+    if compact:
+        return _assemble_compact_system_prompt(
+            customer_language=customer_language,
+            customer_name=customer_name,
+            name_instruction=name_instruction,
+            has_prior_intro=has_prior_intro,
+            role_clean=role_clean,
+            prop_context=prop_context,
+            collected_data=collected_data,
+        )
 
     # 5. Master Prompt Assembly
     prompt = f"""You are Irene Leong, a Senior Property Agent from ERA Realtor representing Home IHC ({COMPANY_FULL_NAME}).
