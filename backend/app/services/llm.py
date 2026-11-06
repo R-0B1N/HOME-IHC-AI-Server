@@ -115,12 +115,18 @@ def _parse_json_from_llm(raw_text: str) -> dict:
             except Exception:
                 pass
         
-        # Regex extraction fallback for response and intent
+        # Regex extraction fallback for a CLOSED response string (unescaped newlines, etc.).
+        # An unclosed value means max_tokens cut the reply mid-sentence. Do not return
+        # that fragment — callers would send it to the customer as a finished message.
         resp_match = re.search(r'"response"\s*:\s*"([^"]*)', raw_text, re.DOTALL)
         if resp_match:
-            intent_match = re.search(r'"intent"\s*:\s*"([^"]*)', raw_text)
-            intent = intent_match.group(1) if intent_match else "general"
-            return {"intent": intent, "response": resp_match.group(1).strip()}
+            end = resp_match.end()
+            if end < len(raw_text) and raw_text[end] == '"':
+                intent_match = re.search(r'"intent"\s*:\s*"([^"]*)"', raw_text)
+                intent = intent_match.group(1) if intent_match else "general"
+                return {"intent": intent, "response": resp_match.group(1).strip()}
+            logger.error("Discarding truncated unclosed LLM response string")
+            return None
 
         logger.error(f"Failed to parse LLM JSON: {raw_text[:200]}...")
         return None
