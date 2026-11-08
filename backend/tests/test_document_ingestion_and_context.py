@@ -205,7 +205,7 @@ class TestDocumentIngestionAndContext(unittest.TestCase):
             "Turn 1 did not execute Listing Disambiguation Protocol"
         )
 
-        # Turn 2: Audio/Ambiguous follow-up without identifying listing
+        # Turn 2: still unidentified. Ask again. Do not hand over to Ah Tuck.
         t2_text = "一个月多少钱？你们是代理还是屋主？"
         history = f"User: {t1_text}\nAssistant: {res1['response']}"
         res2 = process_persona_state_machine(
@@ -217,13 +217,12 @@ class TestDocumentIngestionAndContext(unittest.TestCase):
             role="customer"
         )
         s2 = res2["updated_session"]
-        
-        # Anti-Looping Handover Guard asserts
-        self.assertTrue(res2.get("handover"), "Turn 2 failed to trigger anti-looping handover")
-        self.assertEqual(s2.get("unidentified_listing_turns"), 2)
-        self.assertIn("阿Tuck", res2["response"])
-        self.assertIn("012-9663589", res2["response"])
-        self.assertEqual(res2.get("assignee_email"), AH_TUCK_EMAIL)
+
+        self.assertFalse(res2.get("handover"), "A second unidentified ask is not a hot lead")
+        self.assertNotIn("阿Tuck", res2.get("response") or "")
+        self.assertNotIn("012-9663589", res2.get("response") or "")
+        self.assertNotIn("right away", (res2.get("response") or "").lower())
+        self.assertIsNone(res2.get("assignee_email"))
 
     def test_proxy_streaming(self):
         """Verifies GET /api/v1/documents/proxy handles Range byte-streaming with inline headers."""

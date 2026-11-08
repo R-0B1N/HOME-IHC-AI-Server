@@ -6,6 +6,7 @@ and multi-channel WhatsApp / Chatwoot notification dispatch.
 
 import os
 import logging
+import re
 from typing import Any, Dict, List, Optional, Union
 
 from app.db.models import SessionLocal, User
@@ -36,6 +37,73 @@ CONFIGURED_PROPERTY_TYPES = [
 ]
 
 DEFAULT_FALLBACK_ADMIN_NUMBERS = ["+601165144931", "+14709202239"]
+
+_SCORE_PLACEHOLDERS = {
+    "",
+    "to be advised",
+    "pahang (to be advised)",
+    "not specified",
+    "general inquiry",
+    "n/a",
+    "none",
+    "null",
+    "unknown",
+    "to be discussed in meeting",
+    "commercial / residential / land",
+}
+
+_SALE_TYPES = {
+    "residential",
+    "commercial",
+    "land / agriculture",
+    "industrial",
+    "durian land",
+    "factory",
+    "land",
+    "agriculture",
+}
+
+
+def _strip_score_placeholders(location, property_type, raw_text):
+    """Defaults such as 'Pahang (To be advised)' must not earn a routing point."""
+    def _clean(value):
+        text = str(value or "").strip()
+        if text.lower() in _SCORE_PLACEHOLDERS:
+            return ""
+        return text
+
+    location = _clean(location)
+    property_type = _clean(property_type)
+    raw_text = str(raw_text or "")
+    for placeholder in _SCORE_PLACEHOLDERS:
+        if placeholder and placeholder in raw_text.lower():
+            raw_text = re.sub(re.escape(placeholder), " ", raw_text, flags=re.IGNORECASE)
+    return location, property_type, raw_text
+
+
+def _agent_types(agent):
+    if isinstance(agent, dict):
+        return agent.get("assigned_property_types") or []
+    return (
+        getattr(agent, "assigned_property_types", None)
+        or getattr(agent, "specialization_property_types", None)
+        or []
+    )
+
+
+def intent_compatible(intent: str, agent) -> bool:
+    """A rental-only agent does not take a seller or a buyer. A sale-only agent does not take a renter."""
+    types = {str(item or "").strip().lower() for item in _agent_types(agent) if item}
+    intent_clean = (intent or "").strip().lower()
+    has_sale = bool(types & _SALE_TYPES)
+    has_rental = "rental" in types
+    if intent_clean in {"renter", "tenant"}:
+        return has_rental
+    if intent_clean in {"landlord"}:
+        return has_rental or has_sale
+    if intent_clean in {"seller", "owner", "buyer"}:
+        return has_sale
+    return False
 
 
 class AgentSpecializationScorer:
@@ -104,41 +172,59 @@ class AgentSpecializationScorer:
         else:
             lead_location = lead_location_or_data or ""
 
-        score = 0
+        lead_location, lead_property_type, raw_inquiry_text = _strip_score_placeholders(
+            lead_location, lead_property_type, raw_inquiry_text
+        )
+
+        location_hits, type_hits = self.score_parts(
+            assigned_locs,
+            assigned_ptypes,
+            lead_location,
+            lead_property_type,
+            raw_inquiry_text,
+        )
+        return location_hits + type_hits
+
+    @staticmethod
+    def score_parts(assigned_locs, assigned_ptypes, lead_location, lead_property_type, raw_inquiry_text):
+        """Separate town hits from property-type hits. A single town hit is not enough to assign."""
+        lead_location, lead_property_type, raw_inquiry_text = _strip_score_placeholders(
+            lead_location, lead_property_type, raw_inquiry_text
+        )
         searchable_text = (
             f"{lead_location or ''} {lead_property_type or ''} {raw_inquiry_text or ''}".lower()
         )
-
-        # Match locations
-        for loc in assigned_locs:
+        location_hits = 0
+        type_hits = 0
+        for loc in assigned_locs or []:
             if not loc or not isinstance(loc, str):
                 continue
             loc_clean = loc.strip().lower()
-            if not loc_clean:
+            if not loc_clean or loc_clean in _SCORE_PLACEHOLDERS:
                 continue
             if (lead_location and loc_clean in lead_location.lower()) or (loc_clean in searchable_text):
-                score += 1
-
-        # Match property types & domain heuristics
-        for ptype in assigned_ptypes:
+                location_hits += 1
+        for ptype in assigned_ptypes or []:
             if not ptype or not isinstance(ptype, str):
                 continue
             ptype_clean = ptype.strip().lower()
-            if not ptype_clean:
+            if not ptype_clean or ptype_clean in _SCORE_PLACEHOLDERS:
                 continue
+            matched = False
             if (lead_property_type and ptype_clean in lead_property_type.lower()) or (ptype_clean in searchable_text):
-                score += 1
+                matched = True
             elif ptype_clean == "land / agriculture" and (
                 any(k in searchable_text for k in ["agriculture", "tanah", "kebun", "ladang", "pertanian"])
                 or ("land" in searchable_text and "durian" not in searchable_text)
             ):
-                score += 1
+                matched = True
             elif ptype_clean == "durian land" and any(
                 k in searchable_text for k in ["durian", "musang king", "black thorn", "d24"]
             ):
-                score += 1
-
-        return score
+                matched = True
+            if matched:
+                type_hits += 1
+        return location_hits, type_hits
 
 
 class LeadHandoverService:
@@ -226,6 +312,62 @@ class LeadHandoverService:
                 recipients.append({"phone": fallback_phone, "name": f"Admin ({fallback_phone})"})
                 
         return recipients
+
+    def _assign_verified(self, conversation_id, agent) -> bool:
+        """True only when Chatwoot resolved the agent's email and assign_agent succeeded."""
+        if not conversation_id or agent is None:
+            return False
+        email = agent.get("email") if isinstance(agent, dict) else getattr(agent, "email", None)
+        if not email:
+            return False
+        try:
+            agent_id = self.get_agent_id_func(email)
+        except Exception as exc:
+            logger.warning(f"Chatwoot agent lookup failed for {email}: {exc}")
+            return False
+        if not agent_id:
+            return False
+        try:
+            return bool(self.assign_agent_func(conversation_id, agent_id))
+        except Exception as exc:
+            logger.warning(f"Chatwoot assign_agent failed for {email}: {exc}")
+            return False
+
+    def _diagnostic_result(
+        self,
+        conversation_id,
+        reason: str,
+        score: int,
+        admin_only: bool = False,
+        candidate_name: str = "",
+    ) -> Dict[str, Any]:
+        """No customer promise, no admin invention, no AI pause. A private note records why."""
+        note = (
+            f"Handover not completed ({reason}, score {score}). "
+            "AI continues. No specialist was named and no immediate contact was promised."
+        )
+        if candidate_name:
+            note += f" Candidate {candidate_name} was not assigned in Chatwoot."
+        if conversation_id and not admin_only:
+            try:
+                self.send_private_note_func(conversation_id, note)
+            except Exception as exc:
+                logger.warning(f"Could not post handover diagnostic: {exc}")
+        return {
+            "status": reason,
+            "assigned_agents": [],
+            "winning_score": score,
+            "routed_to": [],
+            "targeted_numbers": [],
+            "delivery_details": {},
+            "is_fallback": False,
+            "is_tie": reason == "tie",
+            "assignment_verified": False,
+            "public_promise": False,
+            "diagnostic": note,
+            "primary_agent_name": "",
+            "primary_agent_phone": "",
+        }
 
     def dispatch(
         self,
@@ -327,6 +469,23 @@ class LeadHandoverService:
                     lead_property_type=property_type,
                     raw_inquiry_text=raw_inquiry_text,
                 )
+                location_hits, type_hits = AgentSpecializationScorer.score_parts(
+                    agent.get("assigned_locations") if isinstance(agent, dict) else (
+                        getattr(agent, "assigned_locations", None) or []
+                    ),
+                    _agent_types(agent),
+                    location,
+                    property_type,
+                    raw_inquiry_text,
+                )
+                if (
+                    str(intent or "").strip().lower() in {"renter", "tenant"}
+                    and type_hits == 0
+                    and "rental" in {str(t or "").strip().lower() for t in _agent_types(agent)}
+                    and (property_type or "rent" in (raw_inquiry_text or "").lower())
+                ):
+                    type_hits = 1
+                    score = location_hits + type_hits
                 agent_name = (
                     agent.get("name")
                     if isinstance(agent, dict)
@@ -338,6 +497,9 @@ class LeadHandoverService:
                 scored_candidates.append({
                     "agent": agent,
                     "score": score,
+                    "location_hits": location_hits,
+                    "type_hits": type_hits,
+                    "compatible": intent_compatible(intent, agent),
                     "phone": agent_phone,
                     "name": agent_name,
                 })
@@ -398,38 +560,51 @@ class LeadHandoverService:
                         "is_primary": True,
                     })
                 max_score = 100
-            elif max_score > 0:
-                top_candidates = [c for c in scored_candidates if c["score"] == max_score]
-                if len(top_candidates) == 1:
-                    winner = top_candidates[0]
-                    routed_targets.append({
-                        "phone": winner["phone"],
-                        "name": winner["name"],
-                        "score": winner["score"],
-                        "remark": "",
-                        "agent": winner.get("agent"),
-                        "is_primary": True,
-                    })
-                else:
-                    is_tie = True
-                    for cand in top_candidates:
-                        other_agents = [
-                            f"{o['name']} ({o['phone']})"
-                            for o in top_candidates
-                            if o["phone"] != cand["phone"]
-                        ]
-                        others_str = ", ".join(other_agents)
-                        shared_remark = f"⚠️ Shared Case: This inquiry is also shared with Agent {others_str}."
-                        routed_targets.append({
-                            "phone": cand["phone"],
-                            "name": cand["name"],
-                            "score": cand["score"],
-                            "remark": shared_remark,
-                            "agent": cand.get("agent"),
-                            "is_primary": True,
-                        })
-
-                # Dual dispatch: Also notify admins (e.g. Irene Leong +601165144931) for administrative oversight
+            else:
+                eligible = [
+                    c for c in scored_candidates
+                    if c.get("compatible")
+                    and c.get("location_hits", 0) >= 1
+                    and c.get("type_hits", 0) >= 1
+                ]
+                if not eligible:
+                    incompatible = [c for c in scored_candidates if c.get("score", 0) > 0 and not c.get("compatible")]
+                    reason = "intent_incompatible" if incompatible and not any(
+                        c.get("compatible") for c in scored_candidates
+                    ) else "below_threshold"
+                    return self._diagnostic_result(
+                        conversation_id,
+                        reason,
+                        max_score,
+                        admin_only=admin_only,
+                    )
+                top_score = max(c["score"] for c in eligible)
+                top_candidates = [c for c in eligible if c["score"] == top_score]
+                if len(top_candidates) != 1 or top_score < 2:
+                    return self._diagnostic_result(
+                        conversation_id,
+                        "tie" if len(top_candidates) != 1 else "below_threshold",
+                        top_score,
+                        admin_only=admin_only,
+                    )
+                winner = top_candidates[0]
+                verified = self._assign_verified(conversation_id, winner.get("agent"))
+                if not verified:
+                    return self._diagnostic_result(
+                        conversation_id,
+                        "assignment_failed",
+                        winner["score"],
+                        admin_only=admin_only,
+                        candidate_name=winner["name"],
+                    )
+                routed_targets.append({
+                    "phone": winner["phone"],
+                    "name": winner["name"],
+                    "score": winner["score"],
+                    "remark": "",
+                    "agent": winner.get("agent"),
+                    "is_primary": True,
+                })
                 admin_list = self.get_admin_recipients(db=db)
                 primary_phones = {
                     t["phone"].replace(" ", "").replace("-", "") for t in routed_targets
@@ -437,31 +612,18 @@ class LeadHandoverService:
                 for adm in admin_list:
                     adm_norm = adm["phone"].replace(" ", "").replace("-", "")
                     if adm_norm not in primary_phones:
-                        if not is_tie:
-                            adm_remark = f"ℹ️ Admin Copy: Case assigned to Specialist Agent: {top_candidates[0]['name']} ({top_candidates[0]['phone']})."
-                        else:
-                            assigned_names = ", ".join(c["name"] for c in top_candidates)
-                            adm_remark = f"ℹ️ Admin Copy: Case shared among Specialist Agents: {assigned_names}."
                         routed_targets.append({
                             "phone": adm["phone"],
                             "name": adm["name"],
-                            "score": max_score,
-                            "remark": adm_remark,
+                            "score": winner["score"],
+                            "remark": (
+                                f"ℹ️ Admin Copy: Case assigned to Specialist Agent: "
+                                f"{winner['name']} ({winner['phone']})."
+                            ),
                             "agent": None,
                             "is_primary": False,
                         })
-            else:
-                is_fallback = True
-                admin_list = self.get_admin_recipients(db=db)
-                for adm in admin_list:
-                    routed_targets.append({
-                        "phone": adm["phone"],
-                        "name": adm["name"],
-                        "score": 0,
-                        "remark": "ℹ️ Handover Fallback: No matching agent specialization found.",
-                        "agent": None,
-                        "is_primary": True,
-                    })
+                max_score = winner["score"]
 
             dispatched_phones = []
             delivery_details = {}
@@ -715,6 +877,8 @@ class LeadHandoverService:
             return {
                 "status": overall_status,
                 "assigned_agents": assigned_agent_list,
+                "assignment_verified": True,
+                "public_promise": True,
                 "winning_score": max_score,
                 "routed_to": dispatched_phones,
                 "targeted_numbers": [t["phone"] for t in routed_targets],
