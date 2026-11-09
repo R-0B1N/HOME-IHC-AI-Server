@@ -27,6 +27,10 @@ celery_app.conf.update(
     result_serializer="json",
     timezone="UTC",
     enable_utc=True,
+    task_routes={
+        "app.worker.tasks.run_recategorize_job": {"queue": "recategorize"},
+    },
+    worker_prefetch_multiplier=1,
     beat_schedule={
         "run-lead-nurturing-daemon-hourly": {
             "task": "app.worker.tasks.run_lead_nurturing_daemon",

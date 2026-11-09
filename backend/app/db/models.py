@@ -3,7 +3,7 @@ import os
 import datetime
 import uuid
 from urllib.parse import quote_plus
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, JSON, Float, ForeignKey, Boolean
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, JSON, Float, ForeignKey, Boolean, UniqueConstraint, Text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.dialects.postgresql import UUID, ARRAY
@@ -336,6 +336,51 @@ class User(Base):
         self.assigned_property_types = val or []
 
 
+class RecategorizeJob(Base):
+    """One dry-run or apply batch. Progress is updated by the recategorize worker."""
+
+    __tablename__ = "recategorize_jobs"
+
+    batch_id = Column(String, primary_key=True)
+    mode = Column(String, nullable=False, default="dry_run")
+    status = Column(String, nullable=False, default="queued")
+    done = Column(Integer, default=0)
+    total = Column(Integer, default=0)
+    output_csv = Column(String, nullable=True)
+    output_xlsx = Column(String, nullable=True)
+    checkpoint_json = Column(JSON, default=list)
+    accepted_ids = Column(JSON, default=list)
+    summary_json = Column(JSON, default=dict)
+    error = Column(Text, nullable=True)
+    rate = Column(Float, default=1.0)
+    conversation_limit = Column(Integer, nullable=True)
+    conversation_id = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class RecategorizeSnapshot(Base):
+    """Prior metadata and the full Chatwoot label list, taken before an apply write."""
+
+    __tablename__ = "recategorize_snapshots"
+    __table_args__ = (
+        UniqueConstraint("batch_id", "conversation_id", name="uq_recategorize_snapshot_batch_conv"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    batch_id = Column(String, nullable=False, index=True)
+    conversation_id = Column(String, nullable=False, index=True)
+    customer_id = Column(String, nullable=True)
+    previous_metadata = Column(JSON, default=dict)
+    previous_labels = Column(JSON, default=list)
+    proposed_category = Column(String, nullable=True)
+    proposed_temperature = Column(String, nullable=True)
+    transcript_hash = Column(String, nullable=True)
+    applied = Column(Boolean, default=False)
+    rolled_back = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
 def run_schema_migrations(eng):
     """Ensures pgvector extension and all 12-category columns exist in properties table."""
     from sqlalchemy import text
@@ -431,6 +476,39 @@ def run_schema_migrations(eng):
                     metadata_json JSONB DEFAULT '{}',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );""",
+                """CREATE TABLE IF NOT EXISTS recategorize_jobs (
+                    batch_id VARCHAR PRIMARY KEY,
+                    mode VARCHAR NOT NULL DEFAULT 'dry_run',
+                    status VARCHAR NOT NULL DEFAULT 'queued',
+                    done INTEGER DEFAULT 0,
+                    total INTEGER DEFAULT 0,
+                    output_csv VARCHAR,
+                    output_xlsx VARCHAR,
+                    checkpoint_json JSONB DEFAULT '[]',
+                    accepted_ids JSONB DEFAULT '[]',
+                    summary_json JSONB DEFAULT '{}',
+                    error TEXT,
+                    rate DOUBLE PRECISION DEFAULT 1.0,
+                    conversation_limit INTEGER,
+                    conversation_id VARCHAR,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );""",
+                """CREATE TABLE IF NOT EXISTS recategorize_snapshots (
+                    id SERIAL PRIMARY KEY,
+                    batch_id VARCHAR NOT NULL,
+                    conversation_id VARCHAR NOT NULL,
+                    customer_id VARCHAR,
+                    previous_metadata JSONB DEFAULT '{}',
+                    previous_labels JSONB DEFAULT '[]',
+                    proposed_category VARCHAR,
+                    proposed_temperature VARCHAR,
+                    transcript_hash VARCHAR,
+                    applied BOOLEAN DEFAULT FALSE,
+                    rolled_back BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT uq_recategorize_snapshot_batch_conv UNIQUE (batch_id, conversation_id)
                 );"""
             ]
             for query in migrations:
