@@ -46,6 +46,7 @@ services:
       - OLLAMA_BASE_URL=http://crm-vllm:8000
       - API_PUBLIC_BASE_URL=https://database.bentongland.com.my
       - BACKEND_PUBLIC_URL=https://database.bentongland.com.my
+      - REPORT_USE_LEGACY_TEMPLATE=1
     depends_on:
       - redis_production
     networks:
@@ -79,6 +80,7 @@ services:
       - OLLAMA_BASE_URL=http://crm-vllm:8000
       - API_PUBLIC_BASE_URL=https://database.bentongland.com.my
       - BACKEND_PUBLIC_URL=https://database.bentongland.com.my
+      - REPORT_USE_LEGACY_TEMPLATE=1
     depends_on:
       - redis_production
     networks:
@@ -137,6 +139,7 @@ services:
       - OLLAMA_BASE_URL=http://crm-vllm:8000
       - API_PUBLIC_BASE_URL=https://database.bentongland.com.my
       - BACKEND_PUBLIC_URL=https://database.bentongland.com.my
+      - REPORT_USE_LEGACY_TEMPLATE=1
     depends_on:
       - redis_production
     networks:
