@@ -550,6 +550,8 @@ class MultiIntentMemoryTracker:
             try:
                 cust = db.query(Customer).filter(Customer.id == phone_number).first()
                 if cust:
+                    from app.services.customer_classification import enforce_classification_lock
+                    enforce_classification_lock(session)
                     meta = dict(cust.metadata_json or {})
                     meta["requirements_profile"] = session.get("requirements_profile")
                     meta["intent_progression"] = session.get("intent_progression")
@@ -567,6 +569,18 @@ class MultiIntentMemoryTracker:
                         meta["intent_category"] = session.get("current_agent").lower()
                     if session.get("lead_temp"):
                         meta["intention_tag"] = session.get("lead_temp")
+                    if session.get("previous_role"):
+                        meta["previous_role"] = session.get("previous_role")
+                        meta["previous_role_at"] = session.get("previous_role_at")
+                        meta["previous_role_source"] = session.get("previous_role_source")
+                    if session.get("role_override"):
+                        meta["customer_category"] = meta.get("intent_category")
+                        meta["locked_intent"] = meta.get("intent_category")
+                        meta["locked_category"] = meta.get("intent_category")
+                        meta["classification_source"] = "live"
+                        meta["classification_locked"] = True
+                    elif session.get("role_override_queued"):
+                        meta["role_override_queued"] = session.get("role_override_queued")
                     cust.metadata_json = meta
                     db.commit()
             finally:
@@ -651,6 +665,7 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
         session = {}
     actual_text = (text or raw_text or "").strip()
     raw_text = actual_text
+    session["last_customer_text"] = raw_text
     collected_data = session.setdefault("collected_data", {})
 
     # Detect and track customer language

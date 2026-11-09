@@ -685,9 +685,15 @@ class ConversationQueueProcessor:
             if is_fresh_convo:
                 session.clear()
                 session.update(SessionManager._new_session())
-            elif customer and getattr(customer, "metadata_json", None):
+            if customer and getattr(customer, "metadata_json", None):
                 c_meta = customer.metadata_json or {}
-                if c_meta.get("handover_completed") or c_meta.get("bypass_ai"):
+                if c_meta.get("classification_locked"):
+                    from app.services.customer_classification import canonical_category_name, stored_category
+                    session["classification_locked"] = True
+                    session["locked_category"] = canonical_category_name(stored_category(c_meta))
+                    session["classification_source"] = c_meta.get("classification_source") or "backfill"
+                    session["locked_metadata"] = c_meta
+                if (not is_fresh_convo) and (c_meta.get("handover_completed") or c_meta.get("bypass_ai")):
                     session["handover_completed"] = True
                     if c_meta.get("locked_intent") or c_meta.get("intent"):
                         session["locked_intent"] = c_meta.get("locked_intent") or c_meta.get("intent")

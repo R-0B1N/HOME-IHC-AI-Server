@@ -15,6 +15,7 @@ from app.api.users import router as users_router
 from app.api.transcripts import router as transcripts_router
 from app.api.acknowledgements import router as acknowledgements_router
 from app.api.documents import router as documents_router
+from app.api.recategorize import router as recategorize_router
 from app.db.models import Base, engine, SessionLocal, User, WorkflowTemplate, Customer, Property, run_schema_migrations
 from app.core.security import get_password_hash
 
@@ -131,6 +132,7 @@ app.include_router(admin_router, prefix="/api/v1/admin", tags=["Workflows & Admi
 app.include_router(transcripts_router)
 app.include_router(acknowledgements_router, prefix="/api/v1/acknowledgements", tags=["Viewing Acknowledgements"])
 app.include_router(documents_router)
+app.include_router(recategorize_router, prefix="/api/v1/recategorize", tags=["Recategorize"])
 
 @app.get("/health")
 def health_check():

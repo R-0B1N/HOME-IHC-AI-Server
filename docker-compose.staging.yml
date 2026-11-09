@@ -81,6 +81,33 @@ services:
       - staging_net
       - crm_network
 
+  worker_recategorize_staging:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: whatsapp_ai_worker_recategorize_staging
+    restart: unless-stopped
+    command: celery -A app.worker.celery_app worker -Q recategorize --pool=threads --concurrency=1 --loglevel=info
+    environment:
+      - PYTHONPATH=/app
+      - ENVIRONMENT=staging
+      - STAGING_INBOX_ID=4
+      - REDIS_HOST=whatsapp_ai_redis_staging
+      - REDIS_PORT=6379
+      - DB_HOST=whatsapp_ai_db_staging
+      - DB_USER=${POSTGRES_USER:-postgres}
+      - DB_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - DB_NAME=whatsapp_ai
+      - CHATWOOT_BASE_URL=http://crm-chatwoot-web:3000
+      - CHATWOOT_API_TOKEN=${CHATWOOT_API_TOKEN}
+      - OLLAMA_BASE_URL=http://crm-vllm:8000
+    depends_on:
+      - redis_staging
+      - db_staging
+    networks:
+      - staging_net
+      - crm_network
+
   beat_staging:
     build:
       context: ./backend
