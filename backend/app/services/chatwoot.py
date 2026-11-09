@@ -392,7 +392,8 @@ def send_whatsapp_template(
     override_phone_number_id: str = None,
     header_document_url: str = None,
     header_document_filename: str = None,
-    header_text: str = None
+    header_text: str = None,
+    button_url_suffix: str = None,
 ):
     """
     Sends a WhatsApp Template Message via the Graph API.
@@ -465,6 +466,14 @@ def send_whatsapp_template(
         components.append({
             "type": "body",
             "parameters": body_parameters
+        })
+
+    if button_url_suffix:
+        components.append({
+            "type": "button",
+            "sub_type": "url",
+            "index": "0",
+            "parameters": [{"type": "text", "text": str(button_url_suffix)}],
         })
 
     payload = {
