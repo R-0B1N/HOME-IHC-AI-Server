@@ -221,6 +221,7 @@ class TestDynamicHotLeadHandoverRouting(unittest.TestCase):
             {
                 "id": "1",
                 "name": "Agent Bentong Specialist",
+                "email": "bentong@homeihc.com",
                 "phone_number": "+60121111111",
                 "role": "agent",
                 "assigned_locations": ["Bentong", "Karak"],
@@ -237,6 +238,7 @@ class TestDynamicHotLeadHandoverRouting(unittest.TestCase):
         ]
 
         lead_data = {
+            "conversation_id": 501,
             "customer_phone": "+60170000001",
             "customer_name": "Tan Sri Lim",
             "city": "Bentong",
@@ -245,9 +247,12 @@ class TestDynamicHotLeadHandoverRouting(unittest.TestCase):
             "inquiry_text": "Interested in viewing the Bentong Musang King farm"
         }
 
-        result = dispatch_hot_lead_handover(lead_data)
+        with patch("app.services.lead_handover.get_agent_id_by_email", return_value=15), \
+             patch("app.services.lead_handover.assign_agent", return_value=True):
+            result = dispatch_hot_lead_handover(lead_data)
 
         self.assertEqual(result["status"], "success")
+        self.assertTrue(result["assignment_verified"])
         self.assertEqual(len(result["assigned_agents"]), 1)
         self.assertEqual(result["assigned_agents"][0]["phone_number"], "+60121111111")
         self.assertEqual(result["winning_score"], 2)
@@ -299,31 +304,16 @@ class TestDynamicHotLeadHandoverRouting(unittest.TestCase):
             "inquiry_text": "Requesting details on Bentong agricultural land"
         }
 
-        result = dispatch_hot_lead_handover(lead_data)
+        with patch("app.worker.tasks.send_private_note", return_value={"id": 1}):
+            result = dispatch_hot_lead_handover(lead_data)
 
-        self.assertEqual(result["status"], "success")
-        self.assertEqual(len(result["assigned_agents"]), 2)
+        self.assertEqual(result["status"], "tie")
+        self.assertFalse(result["assignment_verified"])
+        self.assertEqual(result["assigned_agents"], [])
         self.assertEqual(result["winning_score"], 2)
-
-        # Template must be sent to both agents + admin oversight copies (4 total)
-        self.assertEqual(mock_send_template.call_count, 4)
-
-        # Check remarks in parameter 7 of both template dispatches
-        call_1_params = mock_send_template.call_args_list[0][1]["parameters"]
-        call_2_params = mock_send_template.call_args_list[1][1]["parameters"]
-
-        # Param 7 is index 6
-        param_7_call_1 = call_1_params[6]
-        param_7_call_2 = call_2_params[6]
-
-        self.assertIn("⚠️ Shared Case: This inquiry is also shared with Agent", param_7_call_1)
-        self.assertIn("⚠️ Shared Case: This inquiry is also shared with Agent", param_7_call_2)
-        # Check cross-reference
-        self.assertIn("Marcus", param_7_call_1)
-        self.assertIn("Irene", param_7_call_2)
-
-        # Contact card sent to customer
-        mock_send_contact.assert_called_once()
+        self.assertEqual(mock_send_template.call_count, 0)
+        mock_send_contact.assert_not_called()
+        self.assertIn("AI continues", result["diagnostic"])
 
     @patch("app.worker.tasks.send_whatsapp_contact")
     @patch("app.worker.tasks.send_whatsapp_template")
@@ -342,20 +332,14 @@ class TestDynamicHotLeadHandoverRouting(unittest.TestCase):
             "inquiry_text": "General question"
         }
 
-        result = dispatch_hot_lead_handover(lead_data)
+        with patch("app.worker.tasks.send_private_note", return_value={"id": 1}):
+            result = dispatch_hot_lead_handover(lead_data)
 
-        self.assertEqual(result["status"], "fallback_to_admin")
+        self.assertEqual(result["status"], "below_threshold")
+        self.assertFalse(result["assignment_verified"])
         self.assertEqual(result["winning_score"], 0)
-
-        # Dispatched to DEFAULT_FALLBACK_ADMIN_NUMBERS (+601165144931 and +14709202239)
-        self.assertEqual(mock_send_template.call_count, len(DEFAULT_FALLBACK_ADMIN_NUMBERS))
-        sent_numbers = [c[1]["to_phone"] for c in mock_send_template.call_args_list]
-        for admin_num in DEFAULT_FALLBACK_ADMIN_NUMBERS:
-            self.assertIn(admin_num, sent_numbers)
-
-        # Contact card sent to customer with primary admin contact
-        mock_send_contact.assert_called_once()
-        self.assertEqual(mock_send_contact.call_args[1]["contact_phone"], DEFAULT_FALLBACK_ADMIN_NUMBERS[0])
+        self.assertEqual(mock_send_template.call_count, 0)
+        mock_send_contact.assert_not_called()
 
     @patch("app.worker.tasks.send_whatsapp_contact")
     @patch("app.worker.tasks.send_whatsapp_template")

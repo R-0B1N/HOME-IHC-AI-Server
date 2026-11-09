@@ -181,6 +181,7 @@ class TestCustomerWorkflowStep3QualifiedHandover(unittest.TestCase):
         mock_note = MagicMock()
         mock_label = MagicMock()
 
+        mock_agents[0]["email"] = "tuck@homeihc.com"
         service = LeadHandoverService(
             scorer=scorer,
             get_active_agents_func=lambda: mock_agents,
@@ -192,6 +193,8 @@ class TestCustomerWorkflowStep3QualifiedHandover(unittest.TestCase):
             update_status_func=MagicMock(),
             get_or_create_contact_func=MagicMock(return_value=123),
             create_conversation_func=MagicMock(return_value=456),
+            get_agent_id_func=lambda email: 77,
+            assign_agent_func=lambda conversation_id, agent_id: True,
         )
 
         res = service.dispatch(
@@ -296,12 +299,11 @@ class TestCustomerWorkflowStep3QualifiedHandover(unittest.TestCase):
             db=mock_db,
         )
 
-        self.assertEqual(res["status"], "fallback_to_admin")
-        self.assertTrue(res["is_fallback"])
-        # Irene Leong is ALWAYS primary at index 0
-        self.assertIn("+601165144931", res["routed_to"])
-        self.assertIn("+60123334444", res["routed_to"])
-        self.assertEqual(res["routed_to"][0], "+601165144931")
+        self.assertEqual(res["status"], "below_threshold")
+        self.assertFalse(res["assignment_verified"])
+        self.assertEqual(res["routed_to"], [])
+        self.assertFalse(res["is_fallback"])
+        self.assertIn("AI continues", res["diagnostic"])
 
 
 class TestCustomerWorkflowStep4OutOfScopeRedirection(unittest.TestCase):
