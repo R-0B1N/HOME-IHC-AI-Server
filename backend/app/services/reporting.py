@@ -289,7 +289,14 @@ class BuyerReportGenerator(BaseExcelReportGenerator):
 
         loc = meta.get("location") or meta.get("buyer_location") or meta.get("current_location") or ""
         ptypes = meta.get("property_type") or meta.get("buyer_property_type") or ""
-        budget = meta.get("budget") or meta.get("buyer_budget") or meta.get("asking_price") or ""
+        budget = (
+            meta.get("budget")
+            or meta.get("buyer_budget")
+            or meta.get("asking_price")
+            or meta.get("asking_rent")
+            or meta.get("expected_rental")
+            or ""
+        )
         stored_temp = stored_temperature(meta)
         temp = stored_temp if stored_temp else "Unset"
         bypass = "Yes" if meta.get("bypass_ai") else "No"

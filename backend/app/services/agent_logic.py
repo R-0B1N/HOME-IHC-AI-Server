@@ -7,8 +7,6 @@ import redis
 from app.db.models import SessionLocal, Property, Customer
 from app.services.llm import llm_client, LLM_MODEL_NAME, _parse_json_from_llm, classify_turn_intent
 from app.services.role_contract import (
-    apply_role_evidence,
-    hot_lead_qualified,
     is_explicit_seller_statement,
     is_listing_question,
     is_title_document,
@@ -16,6 +14,12 @@ from app.services.role_contract import (
     sanitize_unverified_reply,
     seller_is_earned,
     stated_towns,
+)
+from app.services.customer_classification import (
+    apply_live_role_evidence as apply_role_evidence,
+    is_explicit_landlord,
+    live_hot_lead_qualified as hot_lead_qualified,
+    own_asking_rent,
 )
 from app.services.db_services import find_matching_property, find_similar_properties, search_properties
 from app.services.system_prompts import (
@@ -115,7 +119,7 @@ _ASKING_PRICE_PLACEHOLDERS = {
 
 def _has_real_asking_price(collected_data: dict) -> bool:
     collected = collected_data or {}
-    for key in ("asking_price", "seller_asking_price", "expected_rental"):
+    for key in ("asking_price", "seller_asking_price", "expected_rental", "asking_rent"):
         value = collected.get(key)
         if value and str(value).strip().lower() not in _ASKING_PRICE_PLACEHOLDERS:
             return True
@@ -130,7 +134,7 @@ def _customer_stated_price(raw_text: str) -> bool:
     if re.search(r"\b\d[\d,.]*(?:\s*(?:k|juta|million|mil))\b", text, re.IGNORECASE):
         return True
     if re.search(r"\d", text) and re.search(
-        r"(?:harga|asking|bajet|budget|售价|叫价|预期售价)", text, re.IGNORECASE
+        r"(?:harga|asking|bajet|budget|售价|叫价|预期售价|sewa|rent|rental|租金|月租)", text, re.IGNORECASE
     ):
         return True
     return False
@@ -566,7 +570,11 @@ class MultiIntentMemoryTracker:
                     if session.get("viewing_acknowledgement"):
                         meta["viewing_acknowledgement"] = session.get("viewing_acknowledgement")
                     if session.get("current_agent"):
-                        meta["intent_category"] = session.get("current_agent").lower()
+                        cat_lower = session.get("current_agent").lower()
+                        if cat_lower == "renter":
+                            cat_lower = "tenant"
+                        meta["intent_category"] = cat_lower
+                        meta["customer_category"] = cat_lower
                     if session.get("lead_temp"):
                         meta["intention_tag"] = session.get("lead_temp")
                     if session.get("previous_role"):
@@ -857,8 +865,9 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
         explicit_category in ["seller", "agent"]
         or turn_intent in ["seller_intake", "agent_inquiry", "agent"]
         or is_existing_seller
-        or collected_data.get("customer_category") in ["seller", "agent"]
-        or session.get("current_agent") in ["SELLER", "AGENT"]
+        or is_explicit_landlord(raw_text)
+        or collected_data.get("customer_category") in ["seller", "agent", "landlord"]
+        or session.get("current_agent") in ["SELLER", "AGENT", "LANDLORD"]
     )
 
     # 2.5 Match Specific Property in Database ONLY for Buyer / General turns (never inject inventory into Seller/Agent turns)
@@ -1048,9 +1057,13 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
         seller_is_earned(session, collected_data)
         and str(collected_data.get("customer_category") or "").lower() in {"seller", "owner"}
     )
+    is_landlord = (
+        (session.get("landlord_evidence") == "explicit" or collected_data.get("landlord_evidence") == "explicit")
+        and str(collected_data.get("customer_category") or "").lower() == "landlord"
+    )
 
-    if is_seller:
-        # A seller is listing their own property; purge any mistakenly cached inventory property
+    if is_seller or is_landlord:
+        # A seller or landlord is listing their own property; purge any mistakenly cached inventory property
         session.pop("interested_property", None)
         cached_prop = None
     else:
@@ -1079,7 +1092,7 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
     _active_role = active_inq.get("role")
     _curr_cat = (collected_data.get("customer_category") or session.get("current_agent") or "").lower()
 
-    if _curr_cat in ["seller", "owner", "agent", "broker"] or is_seller:
+    if _curr_cat in ["seller", "owner", "agent", "broker", "landlord"] or is_seller or is_landlord:
         if _active_label and str(_active_label).strip().lower() not in _placeholders and not collected_data.get("property_type"):
             collected_data["property_type"] = _active_label
         if _active_loc and str(_active_loc).strip().lower() not in _placeholders and not collected_data.get("location"):
@@ -1093,6 +1106,16 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
         ):
             collected_data["asking_price"] = own_asking_price(raw_text)
             collected_data["asking_price_grounded"] = True
+        elif (
+            _curr_cat == "landlord"
+            and (own_asking_rent(raw_text) or active_inq.get("budget"))
+            and not collected_data.get("asking_rent_grounded")
+        ):
+            rent = own_asking_rent(raw_text) or active_inq.get("budget_formatted")
+            if rent:
+                collected_data["asking_rent"] = rent
+                collected_data["expected_rental"] = rent
+                collected_data["asking_rent_grounded"] = True
     else:
         if _active_label and str(_active_label).strip().lower() not in _placeholders:
             collected_data["buyer_property_type"] = _active_label
@@ -1103,7 +1126,7 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
         if (
             _active_role
             and _active_role not in {"seller", "landlord", "owner"}
-            and _curr_cat not in ["seller", "agent"]
+            and _curr_cat not in ["seller", "agent", "landlord"]
             and not is_listing_question(raw_text)
         ):
             collected_data["customer_category"] = _active_role
@@ -1342,6 +1365,12 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
         has_type = bool(collected_data.get("seller_property_type") or collected_data.get("property_type"))
         has_price = bool(collected_data.get("asking_price"))
         if has_loc and has_type and has_price:
+            is_qualified_lead = True
+    elif current_role == "landlord":
+        has_loc = bool(collected_data.get("location"))
+        has_type = bool(collected_data.get("property_type"))
+        has_rent = bool(collected_data.get("asking_rent") or collected_data.get("expected_rental"))
+        if has_loc and has_type and has_rent:
             is_qualified_lead = True
     elif current_role in ["agent", "broker"]:
         has_agent_info = bool(collected_data.get("company_name") or collected_data.get("ren_number"))

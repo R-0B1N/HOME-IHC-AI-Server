@@ -97,10 +97,8 @@ def intent_compatible(intent: str, agent) -> bool:
     intent_clean = (intent or "").strip().lower()
     has_sale = bool(types & _SALE_TYPES)
     has_rental = "rental" in types
-    if intent_clean in {"renter", "tenant"}:
+    if intent_clean in {"renter", "tenant", "landlord"}:
         return has_rental
-    if intent_clean in {"landlord"}:
-        return has_rental or has_sale
     if intent_clean in {"seller", "owner", "buyer"}:
         return has_sale
     return False
@@ -479,10 +477,10 @@ class LeadHandoverService:
                     raw_inquiry_text,
                 )
                 if (
-                    str(intent or "").strip().lower() in {"renter", "tenant"}
+                    str(intent or "").strip().lower() in {"renter", "tenant", "landlord"}
                     and type_hits == 0
                     and "rental" in {str(t or "").strip().lower() for t in _agent_types(agent)}
-                    and (property_type or "rent" in (raw_inquiry_text or "").lower())
+                    and (property_type or any(k in (raw_inquiry_text or "").lower() for k in ["rent", "sewa", "出租", "sewakan"]))
                 ):
                     type_hits = 1
                     score = location_hits + type_hits
