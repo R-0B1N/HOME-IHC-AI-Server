@@ -273,12 +273,26 @@ def download_weekly_report(
     reports_dir = DEFAULT_REPORTS_DIR
     os.makedirs(reports_dir, exist_ok=True)
 
-    if report_type.lower() in ["consolidated", "all", "weekly"]:
-        keyword = "Home_IHC_Weekly_Business_Report"
-    elif report_type.lower() == "buyer":
-        keyword = "Buyer_Database"
-    else:
-        keyword = "Owner_Database"
+    report_key = report_type.lower()
+    if report_key in {"owner", "listings", "properties"}:
+        raise HTTPException(
+            status_code=404,
+            detail="Website listings are no longer part of the weekly report.",
+        )
+    keywords = {
+        "consolidated": "Home_IHC_Weekly_Business_Report",
+        "all": "Home_IHC_Weekly_Business_Report",
+        "weekly": "Home_IHC_Weekly_Business_Report",
+        "buyer": "Buyer_Database",
+        "seller": "Seller_Database",
+        "agent": "Agent_Database",
+        "tenant": "Tenant_Database",
+        "landlord": "Landlord_Database",
+        "uncertain": "Uncertain_Database",
+    }
+    if report_key not in keywords:
+        raise HTTPException(status_code=404, detail=f"Unknown report type {report_type}")
+    keyword = keywords[report_key]
 
     all_matching = [
         f for f in sorted(os.listdir(reports_dir), reverse=True)

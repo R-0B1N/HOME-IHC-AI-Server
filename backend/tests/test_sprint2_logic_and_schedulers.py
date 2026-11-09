@@ -280,9 +280,9 @@ class TestReportingEngine(unittest.TestCase):
         reports = generate_weekly_database_reports(output_dir=out_dir, db_session=mock_session)
 
         self.assertTrue(os.path.exists(reports["buyer_report"]))
-        self.assertTrue(os.path.exists(reports["owner_report"]))
         self.assertTrue(os.path.exists(reports["canonical_buyer"]))
-        self.assertTrue(os.path.exists(reports["canonical_owner"]))
+        self.assertTrue(os.path.exists(reports["consolidated_report"]))
+        self.assertNotIn("owner_report", reports)
 
     def test_buyer_database_with_actual_customer_model_schema(self):
         """Verifies reporting works without AttributeError when Customer has no created_at/phone_number."""

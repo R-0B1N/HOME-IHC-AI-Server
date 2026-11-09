@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 from app.db.models import Customer, Property
 from app.services.reporting import (
     create_multisheet_xlsx_bytes,
+    BuyerReportGenerator,
     ConsolidatedWeeklyReportGenerator,
     AdminWhatsAppDispatcher,
     WeeklyDatabaseReportManager,
@@ -39,7 +40,7 @@ class TestWeeklyReportingConsolidationAndMetaTemplate(unittest.TestCase):
                 "headers": ["Customer ID", "Name", "Phone"],
                 "rows": [["1", "Tan Ah Kow", "+60123456789"], ["2", "Siti Nurhaliza", "+60198765432"]]
             },
-            "Owner Database": {
+            "Landlord": {
                 "headers": ["Property ID", "Title", "Price"],
                 "rows": [["101", "Durian Orchard Raub", "1,200,000"], ["102", "Bentong Shoplot", "850,000"]]
             }
@@ -63,7 +64,8 @@ class TestWeeklyReportingConsolidationAndMetaTemplate(unittest.TestCase):
         wb_xml = zf.read("xl/workbook.xml").decode("utf-8")
         self.assertIn("Executive Summary", wb_xml)
         self.assertIn("Buyer Database", wb_xml)
-        self.assertIn("Owner Database", wb_xml)
+        self.assertIn("Landlord", wb_xml)
+        self.assertNotIn("Owner Database", wb_xml)
 
     def test_consolidated_weekly_report_generator_compiles_data(self):
         """Verifies ConsolidatedWeeklyReportGenerator extracts live records and writes consolidated .xlsx."""
@@ -113,9 +115,44 @@ class TestWeeklyReportingConsolidationAndMetaTemplate(unittest.TestCase):
         self.assertTrue(os.path.exists(result["canonical_path"]))
         self.assertEqual(result["total_buyers"], 2)
         self.assertEqual(result["hot_buyers"], 1)
-        self.assertEqual(result["total_owners"], 1)
-        self.assertIn("agent_distribution", result)
-        self.assertIn("Ah Tat", result["agent_distribution"])
+        self.assertEqual(result["total_customers"], 2)
+        self.assertEqual(result["uncertain_count"], 0)
+        self.assertNotIn("total_owners", result)
+        workbook = open(result["file_path"], "rb").read()
+        import zipfile as _zip
+        names = _zip.ZipFile(io.BytesIO(workbook)).read("xl/workbook.xml").decode("utf-8")
+        for sheet in ("Executive Summary", "Buyer", "Seller", "Agent", "Tenant", "Landlord", "Uncertain"):
+            self.assertIn(sheet, names)
+        self.assertNotIn("Owner Database", names)
+
+    def test_categories_land_on_their_own_tabs_including_previous_role(self):
+        landlord = Customer(
+            id="60333333333",
+            contact_name="Landlord Lee",
+            metadata_json={"intent_category": "landlord", "lead_temp": "hot", "previous_role": "seller", "previous_role_at": "2026-11-09T08:00:00+00:00", "previous_role_source": "backfill"},
+        )
+        renter = Customer(
+            id="60444444444",
+            contact_name="Renter",
+            metadata_json={"intent": "renter", "lead_temp": "warm"},
+        )
+        seller = Customer(
+            id="60555555555",
+            contact_name="Seller With Budget",
+            metadata_json={"intent_category": "seller", "buyer_budget": "RM 1", "lead_temp": "cold"},
+        )
+        mock_session = MagicMock()
+        mock_session.query.return_value.all.return_value = [landlord, renter, seller]
+        grouped = BuyerReportGenerator().rows_by_category(mock_session)
+        self.assertEqual(grouped["buyer"], [])
+        self.assertEqual(grouped["seller"][0][1], "Seller With Budget")
+        self.assertEqual(grouped["tenant"][0][1], "Renter")
+        self.assertEqual(grouped["landlord"][0][1], "Landlord Lee")
+        self.assertNotEqual(grouped["landlord"][0][4], "Tenant")
+        self.assertEqual(grouped["landlord"][0][-3], "seller")
+        self.assertIn("2026-11-09", grouped["landlord"][0][-2])
+        self.assertEqual(grouped["agent"], [])
+        self.assertEqual(grouped["uncertain"], [])
 
     @patch("app.services.chatwoot.send_whatsapp_template")
     @patch("app.services.chatwoot.get_or_create_contact")
@@ -159,14 +196,13 @@ class TestWeeklyReportingConsolidationAndMetaTemplate(unittest.TestCase):
 
         # 2. Assert template name and 5 dynamic parameters mapping
         first_call_kwargs = mock_send_template.call_args_list[0][1]
-        self.assertEqual(first_call_kwargs["template_name"], "weekly_business_report_digest")
+        self.assertEqual(first_call_kwargs["template_name"], "weekly_category_report")
         params = first_call_kwargs["parameters"]
-        self.assertEqual(len(params), 5)
-        self.assertEqual(params[0], "12 Oct 2026") # Date
-        self.assertEqual(params[1], "45")          # Total Buyers
-        self.assertEqual(params[2], "8")           # Hot Buyers
-        self.assertEqual(params[3], "120")         # Total Listings/Owners
-        self.assertIn("reporting-download/consolidated", params[4]) # Download link
+        self.assertEqual(len(params), 9)
+        self.assertEqual(params[0], "12 Oct 2026")
+        self.assertEqual(params[1], "0")
+        self.assertTrue((first_call_kwargs.get("button_url_suffix") or "").startswith("consolidated?date="))
+        self.assertIn("token=", first_call_kwargs.get("button_url_suffix") or "")
 
         # 3. Assert Chatwoot archival uses exactly ONE message in ONE conversation anchored to primary admin
         self.assertEqual(mock_send_att.call_count, 1)
@@ -292,12 +328,11 @@ class TestWeeklyReportingConsolidationAndMetaTemplate(unittest.TestCase):
             dispatcher.dispatch_consolidated_report(summary_data)
 
             self.assertEqual(mock_send.call_count, 1)
-            params = mock_send.call_args[1]["parameters"]
-            download_url = params[4]
-            self.assertIn("https://database.bentongland.com.my", download_url)
-            self.assertIn("date=20261102", download_url)
-            self.assertIn("token=", download_url)
-            self.assertNotIn("crm.bentongland.com.my", download_url)
+            suffix = mock_send.call_args[1]["button_url_suffix"]
+            self.assertIn("date=20261102", suffix)
+            self.assertIn("token=", suffix)
+            self.assertNotIn("crm.bentongland.com.my", suffix)
+            self.assertEqual(len(mock_send.call_args[1]["parameters"]), 9)
 
     def test_download_endpoint_dual_authorization(self):
         """Verifies download_weekly_report endpoint allows valid HMAC tokens and rejects unauthenticated/forged requests."""
