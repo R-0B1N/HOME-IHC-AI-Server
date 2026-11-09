@@ -2024,6 +2024,7 @@ function App() {
                     <option value="buyer">Buyer</option>
                     <option value="seller">Seller</option>
                     <option value="tenant">Tenant</option>
+                    <option value="landlord">Landlord</option>
                     <option value="agent">Agent</option>
                   </select>
                 </div>

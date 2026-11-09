@@ -21,7 +21,11 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from app.services.classification_config import backfill_lock_allows_override
 from app.services.role_contract import (
+    apply_role_evidence as _pr11_apply_role_evidence,
     assess_turn,
+    grounded_town,
+    grounded_type,
+    hot_lead_qualified as _pr11_hot_lead_qualified,
     is_explicit_seller_statement,
     is_listing_question,
     is_title_document,
@@ -715,6 +719,82 @@ def classify_transcript(messages: Iterable[Any], llm_classify=None) -> Dict[str,
         failed["decided_by"] = "llm_error"
         return failed
     return reconcile_rule_and_llm(rule, llm_category, texts)
+
+
+def apply_live_role_evidence(session: dict, collected: dict, text: str, document_extract: Optional[dict] = None) -> Dict[str, Any]:
+    """
+    Wrap PR #11 ``apply_role_evidence`` so unlocked live turns can be ``landlord``.
+
+    PR #11 has no landlord role and treats "rent out my shop" as ``seller``
+    because of "my shop". A question ("is it for rent?"), a photo, or a
+    classifier label never triggers landlord. ``renter`` is mapped to ``tenant``
+    on the session so the live path, labels, and report share one vocabulary.
+    """
+    raw = text or ""
+    if is_explicit_landlord(raw) and not (_SELL_VERB.search(raw) and is_explicit_seller_statement(raw)):
+        assessment = _pr11_apply_role_evidence(session, collected, "", None)
+        towns = stated_towns(raw)
+        if towns:
+            collected["location"] = " and ".join(towns)
+        ptype = stated_type(raw)
+        if ptype:
+            collected["property_type"] = ptype
+        rent = own_asking_rent(raw)
+        if rent:
+            collected["expected_rental"] = rent
+            collected["asking_rent"] = rent
+            collected["asking_rent_grounded"] = True
+        session.pop("seller_evidence", None)
+        collected.pop("seller_evidence", None)
+        collected.pop("asking_price", None)
+        collected.pop("asking_price_grounded", None)
+        collected.pop("is_owner", None)
+        seller_track = session.get("seller_track")
+        if isinstance(seller_track, dict):
+            seller_track["status"] = "inactive"
+        session.setdefault("landlord_track", {})["status"] = "active"
+        collected["customer_category"] = "landlord"
+        collected["landlord_evidence"] = "explicit"
+        session["landlord_evidence"] = "explicit"
+        session["current_agent"] = "LANDLORD"
+        assessment["role"] = "landlord"
+        assessment["asking_rent"] = rent
+        return assessment
+
+    assessment = _pr11_apply_role_evidence(session, collected, raw, document_extract)
+    role = assessment.get("role")
+    if role in {"seller", "buyer", "ambiguous", "renter"}:
+        session.pop("landlord_evidence", None)
+        collected.pop("landlord_evidence", None)
+        return assessment
+
+    if session.get("landlord_evidence") == "explicit" or collected.get("landlord_evidence") == "explicit":
+        collected["customer_category"] = "landlord"
+        session["current_agent"] = "LANDLORD"
+        rent = own_asking_rent(raw)
+        if rent:
+            collected["expected_rental"] = rent
+            collected["asking_rent"] = rent
+            collected["asking_rent_grounded"] = True
+    return assessment
+
+
+def live_hot_lead_qualified(role: str, collected: dict, text: str = "") -> bool:
+    """
+    Wrap PR #11 ``hot_lead_qualified`` with the landlord rule.
+
+    Landlord requires explicit landlord evidence, a grounded town and type,
+    and the customer's own asking rent. Other roles delegate to PR #11.
+    """
+    role_clean = (role or "").strip().lower()
+    collected = collected or {}
+    if role_clean == "landlord":
+        if collected.get("landlord_evidence") != "explicit" and not is_explicit_landlord(text):
+            return False
+        if not grounded_town(collected, text) or not grounded_type(collected, text):
+            return False
+        return bool(collected.get("asking_rent_grounded") or own_asking_rent(text))
+    return _pr11_hot_lead_qualified(role_clean, collected, text)
 
 
 def _uncertain(reason: str, photo_only: bool, evidence: str = "") -> Dict[str, Any]:

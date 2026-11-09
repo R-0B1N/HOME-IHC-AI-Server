@@ -21,6 +21,9 @@ class CustomerCreate(BaseModel):
     email: Optional[str] = None
     country: Optional[str] = None
     bypass_ai: Optional[bool] = False
+    intent_category: Optional[str] = None
+    intention_tag: Optional[str] = None
+    ignore_ai: Optional[bool] = None
 
 class CustomerUpdate(BaseModel):
     model_config = ConfigDict(extra='ignore')
@@ -28,6 +31,9 @@ class CustomerUpdate(BaseModel):
     email: Optional[str] = None
     country: Optional[str] = None
     bypass_ai: Optional[bool] = None
+    intent_category: Optional[str] = None
+    intention_tag: Optional[str] = None
+    ignore_ai: Optional[bool] = None
 
 from app.core.auth import require_admin
 import os
@@ -52,14 +58,18 @@ def serialize_customer(c: Customer) -> dict:
         "power_requirements_amp": None,
         "hybrid_opportunity": False
     }
+    raw_cat = meta.get("intent_category") or meta.get("customer_category") or meta.get("locked_intent") or "general"
+    if str(raw_cat).lower() == "renter":
+        raw_cat = "tenant"
+    raw_temp = meta.get("intention_tag") or meta.get("lead_temp") or "Cold"
     return {
         "id": c.id,
         "phone_number": c.id,
         "contact_name": c.contact_name,
         "email": c.email,
         "country": c.country,
-        "intent_category": meta.get("intent_category", "general"),
-        "intention_tag": meta.get("intention_tag", "Cold"),
+        "intent_category": str(raw_cat).lower(),
+        "intention_tag": str(raw_temp).title(),
         "inbox_id": cust_inbox,
         "conversation_ids": c.conversation_ids or [],
         "metadata_json": meta,
@@ -170,10 +180,25 @@ def update_staging_customer(customer_id: str, update_data: CustomerUpdate, admin
         customer.email = update_data.email
     if update_data.country is not None:
         customer.country = update_data.country
+    meta = dict(customer.metadata_json or {})
     if update_data.bypass_ai is not None:
-        meta = dict(customer.metadata_json or {})
         meta["bypass_ai"] = update_data.bypass_ai
-        customer.metadata_json = meta
+    if update_data.ignore_ai is not None:
+        meta["ignore_ai"] = update_data.ignore_ai
+        meta["bypass_ai"] = update_data.ignore_ai
+    if update_data.intent_category is not None:
+        cat_val = update_data.intent_category.strip().lower()
+        if cat_val == "renter":
+            cat_val = "tenant"
+        meta["intent_category"] = cat_val
+        meta["customer_category"] = cat_val
+    if update_data.intention_tag is not None:
+        temp_val = update_data.intention_tag.strip().title()
+        meta["intention_tag"] = temp_val
+        meta["lead_temp"] = temp_val.lower()
+    customer.metadata_json = meta
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(customer, "metadata_json")
         
     db.commit()
     db.refresh(customer)
@@ -232,6 +257,19 @@ def create_customer(customer_data: CustomerCreate, db: Session = Depends(get_db)
         raise HTTPException(status_code=400, detail="Customer with this phone number already exists")
     
     meta = {"bypass_ai": customer_data.bypass_ai or False}
+    if customer_data.ignore_ai is not None:
+        meta["ignore_ai"] = customer_data.ignore_ai
+        meta["bypass_ai"] = customer_data.ignore_ai
+    if customer_data.intent_category:
+        cat_val = customer_data.intent_category.strip().lower()
+        if cat_val == "renter":
+            cat_val = "tenant"
+        meta["intent_category"] = cat_val
+        meta["customer_category"] = cat_val
+    if customer_data.intention_tag:
+        temp_val = customer_data.intention_tag.strip().title()
+        meta["intention_tag"] = temp_val
+        meta["lead_temp"] = temp_val.lower()
     if IS_STAGING:
         meta["inbox_id"] = int(os.getenv("STAGING_INBOX_ID", "4"))
         meta["environment"] = "staging"
@@ -247,7 +285,7 @@ def create_customer(customer_data: CustomerCreate, db: Session = Depends(get_db)
     db.add(new_customer)
     db.commit()
     db.refresh(new_customer)
-    return new_customer
+    return serialize_customer(new_customer)
 
 @router.put("/{customer_id}")
 def update_customer(customer_id: str, customer_data: CustomerUpdate, db: Session = Depends(get_db)):
@@ -261,20 +299,32 @@ def update_customer(customer_id: str, customer_data: CustomerUpdate, db: Session
         customer.email = customer_data.email
     if customer_data.country is not None:
         customer.country = customer_data.country
+    
+    meta = customer.metadata_json.copy() if customer.metadata_json else {}
     if customer_data.bypass_ai is not None:
-        meta = customer.metadata_json.copy() if customer.metadata_json else {}
         meta["bypass_ai"] = customer_data.bypass_ai
-        customer.metadata_json = meta
+    if customer_data.ignore_ai is not None:
+        meta["ignore_ai"] = customer_data.ignore_ai
+        meta["bypass_ai"] = customer_data.ignore_ai
+    if customer_data.intent_category is not None:
+        cat_val = customer_data.intent_category.strip().lower()
+        if cat_val == "renter":
+            cat_val = "tenant"
+        meta["intent_category"] = cat_val
+        meta["customer_category"] = cat_val
+    if customer_data.intention_tag is not None:
+        temp_val = customer_data.intention_tag.strip().title()
+        meta["intention_tag"] = temp_val
+        meta["lead_temp"] = temp_val.lower()
+
+    customer.metadata_json = meta
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(customer, "metadata_json")
 
     db.commit()
     db.refresh(customer)
     
-    return {
-        "id": customer.id,
-        "contact_name": customer.contact_name,
-        "email": customer.email,
-        "country": customer.country
-    }
+    return serialize_customer(customer)
 
 class CustomerMigrate(BaseModel):
     model_config = ConfigDict(extra='ignore')

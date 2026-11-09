@@ -28,17 +28,21 @@ import requests
 from app.db.models import Customer, Order, Property, SessionLocal, User
 from app.services.agent_logic import premature_seller_hot_lead, process_persona_state_machine
 from app.services.role_contract import (
-    hot_lead_qualified,
     is_placeholder,
     is_title_document,
     sanitize_unverified_reply,
     seller_is_earned,
+)
+from app.services.customer_classification import (
+    MANAGED_LABELS,
+    live_hot_lead_qualified as hot_lead_qualified,
 )
 from app.services.chatwoot import (
     CHATWOOT_ACCOUNT_ID,
     apply_label,
     assign_agent,
     get_agent_id_by_email,
+    get_conversation_details,
     get_conversation_messages,
     send_chatwoot_image_attachment,
     send_message,
@@ -606,12 +610,20 @@ class ConversationQueueProcessor:
                     cached_sess = None
 
                 earned_seller = seller_is_earned(cached_sess)
+                earned_landlord = bool(
+                    cached_sess
+                    and (
+                        cached_sess.get("landlord_evidence") == "explicit"
+                        or cached_sess.get("collected_data", {}).get("landlord_evidence") == "explicit"
+                    )
+                )
                 # A classifier label, a photo, or a stale CRM category does not make
                 # this turn a seller. Only explicit evidence already stored on the
                 # session does, and a buyer/renter/shop question clears an unearned one
                 # inside the state machine.
                 is_seller_intent = role in ["seller", "landlord"] or (
-                    earned_seller and turn_intent not in ["buyer_search", "agent_inquiry", "unidentified_listing"]
+                    (earned_seller or earned_landlord)
+                    and turn_intent not in ["buyer_search", "agent_inquiry", "unidentified_listing"]
                 )
 
                 if is_seller_intent:
@@ -755,8 +767,9 @@ class ConversationQueueProcessor:
             if (
                 is_seller_intent
                 or turn_intent == "seller_intake"
-                or session.get("current_agent") == "SELLER"
+                or session.get("current_agent") in ["SELLER", "LANDLORD"]
                 or session.get("seller_track", {}).get("status") == "active"
+                or session.get("landlord_track", {}).get("status") == "active"
             ):
                 images_to_send = []
 
@@ -1180,7 +1193,7 @@ class ConversationQueueProcessor:
         if role in ["admin", "employee", "agent"]:
             labels_to_apply.append(role)
         else:
-            if intent in ["buyer", "seller", "tenant", "agent", "bank valuer"]:
+            if intent in ["buyer", "seller", "tenant", "landlord", "agent", "bank valuer"]:
                 labels_to_apply.append(intent.lower())
 
             if handover_initiated:
@@ -1203,8 +1216,22 @@ class ConversationQueueProcessor:
                     logger.warning(f"Failed to set priority: {e}")
 
         if labels_to_apply:
-            logger.info(f"Applying labels {labels_to_apply} to conversation {conversation_id}")
-            apply_label(conversation_id, labels_to_apply)
+            existing_labels = []
+            try:
+                conv_details = get_conversation_details(conversation_id) or {}
+                raw_labels = conv_details.get("labels") or []
+                if isinstance(raw_labels, list):
+                    existing_labels = raw_labels
+            except Exception as ex:
+                logger.warning(f"Could not read existing labels for conv {conversation_id}: {ex}")
+
+            final_labels = [lbl for lbl in existing_labels if lbl.lower() not in MANAGED_LABELS]
+            for lbl in labels_to_apply:
+                if lbl not in final_labels:
+                    final_labels.append(lbl)
+
+            logger.info(f"Applying merged labels {final_labels} to conversation {conversation_id}")
+            apply_label(conversation_id, final_labels)
 
     def process(self, conversation_id: int, task_scheduled_time: float) -> Dict[str, Any]:
         """
