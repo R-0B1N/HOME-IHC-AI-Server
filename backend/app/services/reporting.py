@@ -14,6 +14,8 @@ from typing import List, Dict, Any, Optional
 from xml.sax.saxutils import escape
 
 from app.db.models import SessionLocal, Customer, Property
+from app.services.classification_config import use_legacy_weekly_template, weekly_template_name
+from app.services.customer_classification import canonical_category_name, stored_category, stored_temperature
 
 logger = logging.getLogger(__name__)
 
@@ -246,7 +248,10 @@ class BuyerReportGenerator(BaseExcelReportGenerator):
         "Assigned Agent",
         "Bypass AI",
         "Created Date",
-        "Last Interaction Date"
+        "Last Interaction Date",
+        "Previous Role",
+        "Previous Role At",
+        "Previous Role Source",
     ]
 
     def __init__(self, output_dir: str = DEFAULT_REPORTS_DIR, db_session=None):
@@ -258,25 +263,35 @@ class BuyerReportGenerator(BaseExcelReportGenerator):
         )
 
     def format_rows(self, db_session) -> List[List[Any]]:
-        customers = db_session.query(Customer).all()
-        rows = []
-        for customer in customers:
-            row = self._format_buyer_row(customer)
-            if row is not None:
-                rows.append(row)
-        return rows
+        grouped = self.rows_by_category(db_session)
+        return grouped.get("buyer", [])
 
     @staticmethod
-    def _format_buyer_row(c: Customer) -> Optional[List[Any]]:
+    def _format_buyer_row(c: Customer) -> List[Any]:
+        """Row formatter kept for callers that inspect one customer record."""
+        _category, row = BuyerReportGenerator.format_customer_record(c)
+        return row
+
+    @classmethod
+    def rows_by_category(cls, db_session) -> Dict[str, List[List[Any]]]:
+        grouped = {name: [] for name in ("buyer", "seller", "agent", "tenant", "landlord", "uncertain")}
+        for customer in db_session.query(Customer).all():
+            category, row = cls.format_customer_record(customer)
+            grouped.setdefault(category, []).append(row)
+        return grouped
+
+    @staticmethod
+    def format_customer_record(c: Customer):
         meta = c.metadata_json or {}
-        intent = meta.get("current_agent") or meta.get("intent") or "buyer"
-        if intent not in ["buyer", "tenant", "general"] and not meta.get("buyer_budget"):
-            return None
+        raw_intent = stored_category(meta)
+        category = canonical_category_name(raw_intent) if raw_intent else "uncertain"
+        intent = category
 
         loc = meta.get("location") or meta.get("buyer_location") or meta.get("current_location") or ""
         ptypes = meta.get("property_type") or meta.get("buyer_property_type") or ""
-        budget = meta.get("budget") or meta.get("buyer_budget") or ""
-        temp = meta.get("lead_temp") or meta.get("temperature") or "Warm"
+        budget = meta.get("budget") or meta.get("buyer_budget") or meta.get("asking_price") or ""
+        stored_temp = stored_temperature(meta)
+        temp = stored_temp if stored_temp else "Unset"
         bypass = "Yes" if meta.get("bypass_ai") else "No"
         
         agent = meta.get("assigned_agent") or meta.get("assigned_agent_name")
@@ -301,7 +316,7 @@ class BuyerReportGenerator(BaseExcelReportGenerator):
         updated_str = last_int_dt.strftime("%Y-%m-%d %H:%M") if last_int_dt else ""
         phone = getattr(c, "phone_number", None) or getattr(c, "id", "")
 
-        return [
+        row = [
             str(c.id),
             c.contact_name or "Unknown",
             phone,
@@ -314,8 +329,12 @@ class BuyerReportGenerator(BaseExcelReportGenerator):
             agent_display,
             bypass,
             created_str,
-            updated_str
+            updated_str,
+            str(meta.get("previous_role") or ""),
+            str(meta.get("previous_role_at") or ""),
+            str(meta.get("previous_role_source") or ""),
         ]
+        return category, row
 
 
 class OwnerReportGenerator(BaseExcelReportGenerator):
@@ -377,16 +396,36 @@ class OwnerReportGenerator(BaseExcelReportGenerator):
         ]
 
 
+CUSTOMER_SHEET_ORDER = ("buyer", "seller", "agent", "tenant", "landlord", "uncertain")
+SHEET_TITLES = {
+    "buyer": "Buyer",
+    "seller": "Seller",
+    "agent": "Agent",
+    "tenant": "Tenant",
+    "landlord": "Landlord",
+    "uncertain": "Uncertain",
+}
+
+
+def _temperature_counts(rows: List[List[Any]]) -> Dict[str, int]:
+    counts = {"hot": 0, "warm": 0, "cold": 0}
+    for row in rows:
+        if len(row) > 5:
+            label = str(row[5]).strip().lower()
+            if label in counts:
+                counts[label] += 1
+    return counts
+
+
 class ConsolidatedWeeklyReportGenerator:
     """
-    Compiles Buyer, Seller/Owner, and Executive KPI metrics into a single multi-tab
-    canonical OpenXML .xlsx spreadsheet: Home_IHC_Weekly_Business_Report.xlsx
+    Weekly workbook tabs: Executive Summary, Buyer, Seller, Agent, Tenant,
+    Landlord, Uncertain. Website listings are not included.
     """
 
     def __init__(self, output_dir: str = DEFAULT_REPORTS_DIR):
         self.output_dir = output_dir
         self.buyer_gen = BuyerReportGenerator(output_dir=output_dir)
-        self.owner_gen = OwnerReportGenerator(output_dir=output_dir)
 
     def generate(self, db_session=None) -> Dict[str, Any]:
         os.makedirs(self.output_dir, exist_ok=True)
@@ -396,84 +435,75 @@ class ConsolidatedWeeklyReportGenerator:
         db = db_session or SessionLocal()
         should_close = db_session is None
         try:
-            buyer_rows = self.buyer_gen.format_rows(db)
-            owner_rows = self.owner_gen.format_rows(db)
-
-            summary_headers, summary_rows, metrics = self._compile_executive_metrics(buyer_rows, owner_rows, now)
-
+            grouped = self.buyer_gen.rows_by_category(db)
+            summary_headers, summary_rows, metrics = self._compile_executive_metrics(grouped, now)
             sheets_data = {
                 "Executive Summary": {"headers": summary_headers, "rows": summary_rows},
-                "Buyer Database": {"headers": self.buyer_gen.headers, "rows": buyer_rows},
-                "Owner Database": {"headers": self.owner_gen.headers, "rows": owner_rows}
             }
+            for key in CUSTOMER_SHEET_ORDER:
+                sheets_data[SHEET_TITLES[key]] = {
+                    "headers": self.buyer_gen.headers,
+                    "rows": grouped.get(key, []),
+                }
 
             xlsx_bytes = OpenXmlSpreadsheetBuilder.build(sheets_data)
-
             filename = f"Home_IHC_Weekly_Business_Report_{date_str}.xlsx"
             file_path = os.path.join(self.output_dir, filename)
             canonical_path = os.path.join(self.output_dir, "Home_IHC_Weekly_Business_Report.xlsx")
+            with open(file_path, "wb") as handle:
+                handle.write(xlsx_bytes)
+            with open(canonical_path, "wb") as handle:
+                handle.write(xlsx_bytes)
 
-            with open(file_path, "wb") as f:
-                f.write(xlsx_bytes)
-            with open(canonical_path, "wb") as f:
-                f.write(xlsx_bytes)
-
-            logger.info(f"Generated Consolidated Weekly Report: {file_path} ({metrics['total_buyers']} buyers, {metrics['total_owners']} properties)")
-
-            return {
+            logger.info(
+                "Generated Consolidated Weekly Report: %s (%s customers)",
+                file_path,
+                metrics["total_customers"],
+            )
+            result = {
                 "file_path": file_path,
                 "canonical_path": canonical_path,
                 "filename": filename,
-                "total_buyers": metrics["total_buyers"],
-                "hot_buyers": metrics["hot_buyers"],
-                "warm_buyers": metrics["warm_buyers"],
-                "total_owners": metrics["total_owners"],
-                "available_properties": metrics["available_properties"],
-                "agent_distribution": metrics.get("agent_distribution", "None"),
                 "date_display": now.strftime("%d %b %Y"),
-                "date_str": date_str
+                "date_str": date_str,
             }
+            result.update(metrics)
+            return result
         finally:
             if should_close:
                 db.close()
 
     @staticmethod
-    def _compile_executive_metrics(buyer_rows: List[List[Any]], owner_rows: List[List[Any]], timestamp: datetime):
-        total_buyers = len(buyer_rows)
-        total_owners = len(owner_rows)
-        hot_buyers = sum(1 for r in buyer_rows if len(r) > 5 and str(r[5]).lower() == "hot")
-        warm_buyers = sum(1 for r in buyer_rows if len(r) > 5 and str(r[5]).lower() == "warm")
-        available_properties = sum(1 for r in owner_rows if len(r) > 2 and "avail" in str(r[2]).lower())
-
-        agent_counts = {}
-        for r in buyer_rows:
-            if len(r) > 9 and r[9]:
-                ag = str(r[9]).strip()
-                agent_counts[ag] = agent_counts.get(ag, 0) + 1
-        agent_distribution_str = (
-            ", ".join(f"{ag}: {count}" for ag, count in sorted(agent_counts.items(), key=lambda x: -x[1]))
-            if agent_counts
-            else "None"
-        )
-
+    def _compile_executive_metrics(grouped: Dict[str, List[List[Any]]], timestamp: datetime):
         summary_headers = ["Metric", "Count / Value", "Description"]
-        summary_rows = [
-            ["Total Registered Buyers", total_buyers, "Qualified prospects registered in CRM"],
-            ["🔥 Hot Buyer Leads", hot_buyers, "High-temperature prospects requiring active follow-up"],
-            ["⚡ Warm Buyer Leads", warm_buyers, "Engaged buyer prospects exploring listings"],
-            ["Agent Lead Attribution", agent_distribution_str, "Breakdown of assigned leads across specialist agents and admins"],
-            ["Total Listings / Owners", total_owners, "Managed properties across Bentong, Raub & Temerloh"],
-            ["Available Listings", available_properties, "Listings ready for immediate buyer matching"],
-            ["Report Generated At", timestamp.strftime("%Y-%m-%d %H:%M MYT"), "Home IHC Automated Business Run"]
-        ]
-        metrics = {
-            "total_buyers": total_buyers,
-            "total_owners": total_owners,
-            "hot_buyers": hot_buyers,
-            "warm_buyers": warm_buyers,
-            "available_properties": available_properties,
-            "agent_distribution": agent_distribution_str,
-        }
+        summary_rows = []
+        metrics = {}
+        total_customers = 0
+        total_hot = 0
+        for key in CUSTOMER_SHEET_ORDER:
+            rows = grouped.get(key, [])
+            temps = _temperature_counts(rows)
+            total_customers += len(rows)
+            total_hot += temps["hot"]
+            title = SHEET_TITLES[key]
+            metrics[f"total_{key}s" if key != "uncertain" else "uncertain_count"] = len(rows)
+            if key == "buyer":
+                metrics["total_buyers"] = len(rows)
+                metrics["hot_buyers"] = temps["hot"]
+                metrics["warm_buyers"] = temps["warm"]
+            metrics[f"hot_{key}"] = temps["hot"]
+            metrics[f"warm_{key}"] = temps["warm"]
+            metrics[f"cold_{key}"] = temps["cold"]
+            summary_rows.append([f"{title} customers", len(rows), f"Customers classified as {title.lower()}"])
+            summary_rows.append([f"{title} hot", temps["hot"], f"Hot {title.lower()} customers"])
+            summary_rows.append([f"{title} warm", temps["warm"], f"Warm {title.lower()} customers"])
+            summary_rows.append([f"{title} cold", temps["cold"], f"Cold {title.lower()} customers"])
+        summary_rows.append(["Total customers", total_customers, "All classified customer rows, including uncertain"])
+        summary_rows.append(["Total hot", total_hot, "Hot customers across every category"])
+        summary_rows.append(["Report Generated At", timestamp.strftime("%Y-%m-%d %H:%M MYT"), "Home IHC weekly customer report"])
+        metrics["total_customers"] = total_customers
+        metrics["total_hot"] = total_hot
+        metrics["agent_distribution"] = "See Agent tab"
         return summary_headers, summary_rows, metrics
 
 
@@ -511,7 +541,14 @@ class AdminWhatsAppDispatcher:
 
         is_staging = os.getenv("ENVIRONMENT", "").lower() == "staging"
         self.inbox_id = inbox_id or int(os.getenv("STAGING_INBOX_ID" if is_staging else "WHATSAPP_INBOX_ID", "3" if not is_staging else "4"))
-        self.template_name = template_name or stored_config.get("template_name") or os.getenv("WHATSAPP_WEEKLY_REPORT_TEMPLATE", "weekly_business_report_digest")
+        if use_legacy_weekly_template():
+            self.template_name = (
+                template_name
+                or stored_config.get("template_name")
+                or os.getenv("WHATSAPP_WEEKLY_REPORT_LEGACY_TEMPLATE", "weekly_business_report_digest")
+            )
+        else:
+            self.template_name = template_name or weekly_template_name()
         self.template_lang = template_lang or stored_config.get("template_language") or os.getenv("WHATSAPP_WEEKLY_REPORT_TEMPLATE_LANGUAGE", "en_US")
         self.download_base = os.getenv("API_PUBLIC_BASE_URL", "https://database.bentongland.com.my")
 
@@ -544,28 +581,55 @@ class AdminWhatsAppDispatcher:
             download_url = f"{self.download_base}/api/v1/settings/reporting-download/consolidated"
 
         date_str = consolidated_info.get("date_display", datetime.now().strftime("%d %b %Y"))
+        button_suffix = ""
+        if "token=" in download_url:
+            button_suffix = download_url.split("/reporting-download/", 1)[-1]
 
-        template_params = [
-            str(date_str),
-            str(consolidated_info.get("total_buyers", 0)),
-            str(consolidated_info.get("hot_buyers", 0)),
-            str(consolidated_info.get("total_owners", 0)),
-            download_url
-        ]
+        if use_legacy_weekly_template():
+            template_params = [
+                str(date_str),
+                str(consolidated_info.get("total_customers", consolidated_info.get("total_buyers", 0))),
+                str(consolidated_info.get("total_hot", consolidated_info.get("hot_buyers", 0))),
+                str(consolidated_info.get("total_customers", 0)),
+                download_url,
+            ]
+            button_suffix = ""
+        else:
+            template_params = [
+                str(date_str),
+                str(consolidated_info.get("total_customers", 0)),
+                str(consolidated_info.get("total_buyers", 0)),
+                str(consolidated_info.get("total_sellers", 0)),
+                str(consolidated_info.get("total_agents", 0)),
+                str(consolidated_info.get("total_tenants", 0)),
+                str(consolidated_info.get("total_landlords", 0)),
+                str(consolidated_info.get("uncertain_count", 0)),
+                str(consolidated_info.get("total_hot", 0)),
+            ]
+        self._button_suffix = button_suffix
 
         # 1. Dispatch single Meta Template message to each admin
         for phone in self.admin_phones:
             clean_phone = phone.strip()
             if not clean_phone:
                 continue
-            results[clean_phone] = self._dispatch_template_to_admin(clean_phone, template_params)
+            results[clean_phone] = self._dispatch_template_to_admin(
+                clean_phone,
+                template_params,
+                button_url_suffix=getattr(self, "_button_suffix", ""),
+            )
 
         # 2. In-Chatwoot Archival: Single internal private note per admin contact
         self._archive_report_in_chatwoot(consolidated_info, date_str, download_url)
 
         return results
 
-    def _dispatch_template_to_admin(self, clean_phone: str, template_params: List[str]) -> Dict[str, Any]:
+    def _dispatch_template_to_admin(
+        self,
+        clean_phone: str,
+        template_params: List[str],
+        button_url_suffix: str = "",
+    ) -> Dict[str, Any]:
         """Dispatches WhatsApp template message to a single recipient."""
         from app.services.chatwoot import send_whatsapp_template
         try:
@@ -574,7 +638,8 @@ class AdminWhatsAppDispatcher:
                 to_phone=clean_phone,
                 template_name=self.template_name,
                 parameters=template_params,
-                language_code=self.template_lang
+                language_code=self.template_lang,
+                button_url_suffix=button_url_suffix or None,
             )
             logger.info(f"Dispatched weekly report Meta template '{self.template_name}' to {clean_phone}")
             return {
@@ -607,13 +672,22 @@ class AdminWhatsAppDispatcher:
 
             note_content = (
                 f"📊 **Weekly Business Report & Executive Summary** ({date_str})\n\n"
-                f"• 👥 **Active Buyers**: {consolidated_info.get('total_buyers', 0)} ({consolidated_info.get('hot_buyers', 0)} hot, {consolidated_info.get('warm_buyers', 0)} warm)\n"
-                f"• 🏡 **Managed Listings**: {consolidated_info.get('total_owners', 0)} ({consolidated_info.get('available_properties', 0)} available)\n"
-                f"• 🔗 **Download Portal**: {download_url}\n\n"
+                f"• Customers: {consolidated_info.get('total_customers', 0)} ({consolidated_info.get('total_hot', 0)} hot)\n"
+                f"• Buyer {consolidated_info.get('total_buyers', 0)}, "
+                f"Seller {consolidated_info.get('total_sellers', 0)}, "
+                f"Agent {consolidated_info.get('total_agents', 0)}, "
+                f"Tenant {consolidated_info.get('total_tenants', 0)}, "
+                f"Landlord {consolidated_info.get('total_landlords', 0)}, "
+                f"Uncertain {consolidated_info.get('uncertain_count', 0)}\n"
+                f"• Download: {download_url}\n\n"
                 f"• Tab 1: Executive KPI Summary\n"
-                f"• Tab 2: Buyer Database\n"
-                f"• Tab 3: Owner & Seller Database\n\n"
-                f"📁 Consolidated multi-tab workbook attached below."
+                f"• Tab 2: Buyer\n"
+                f"• Tab 3: Seller\n"
+                f"• Tab 4: Agent\n"
+                f"• Tab 5: Tenant\n"
+                f"• Tab 6: Landlord\n"
+                f"• Tab 7: Uncertain\n\n"
+                f"Previous role and timestamp are columns on each customer tab."
             )
 
             # Single conversation guarantee: Anchor strictly to primary admin
@@ -660,35 +734,22 @@ class WeeklyDatabaseReportManager:
         self.output_dir = output_dir
         self.inbox_id = inbox_id
         self.buyer_generator = BuyerReportGenerator(output_dir=output_dir)
-        self.owner_generator = OwnerReportGenerator(output_dir=output_dir)
         self.consolidated_generator = ConsolidatedWeeklyReportGenerator(output_dir=output_dir)
 
     def generate_all(self, db_session=None) -> Dict[str, str]:
-        """Generates all individual and consolidated reports and returns file path mappings."""
+        """Generates the category workbook. Website listings are not part of this report."""
         os.makedirs(self.output_dir, exist_ok=True)
         date_str = datetime.now().strftime("%Y%m%d")
-
         buyer_path = os.path.join(self.output_dir, f"Buyer_Database_{date_str}.xlsx")
-        owner_path = os.path.join(self.output_dir, f"Owner_Database_{date_str}.xlsx")
-
         self.buyer_generator.generate(output_path=buyer_path, db_session=db_session)
-        self.owner_generator.generate(output_path=owner_path, db_session=db_session)
-
-        # Maintain canonical latest copies
         canonical_buyer = os.path.join(self.output_dir, "Buyer Database.xlsx")
-        canonical_owner = os.path.join(self.output_dir, "Owner Database.xlsx")
         self._copy_file(buyer_path, canonical_buyer)
-        self._copy_file(owner_path, canonical_owner)
-
         consolidated = self.consolidated_generator.generate(db_session=db_session)
-
         return {
             "buyer_report": buyer_path,
-            "owner_report": owner_path,
             "canonical_buyer": canonical_buyer,
-            "canonical_owner": canonical_owner,
             "consolidated_report": consolidated["file_path"],
-            "canonical_consolidated": consolidated["canonical_path"]
+            "canonical_consolidated": consolidated["canonical_path"],
         }
 
     def generate_and_dispatch(self, db_session=None, send_to_admins: bool = True) -> Dict[str, Any]:
@@ -707,12 +768,17 @@ class WeeklyDatabaseReportManager:
             "reports": reports,
             "dispatch_results": dispatch_results,
             "buyers_count": consolidated_info.get("total_buyers", 0),
-            "owners_count": consolidated_info.get("total_owners", 0),
+            "customers_count": consolidated_info.get("total_customers", 0),
+            "hot_count": consolidated_info.get("total_hot", 0),
+            "sellers_count": consolidated_info.get("total_sellers", 0),
+            "agents_count": consolidated_info.get("total_agents", 0),
+            "tenants_count": consolidated_info.get("total_tenants", 0),
+            "landlords_count": consolidated_info.get("total_landlords", 0),
+            "uncertain_count": consolidated_info.get("uncertain_count", 0),
             "hot_buyers_count": consolidated_info.get("hot_buyers", 0),
             "agent_distribution": consolidated_info.get("agent_distribution", "N/A"),
             "consolidated_file": consolidated_info.get("file_path"),
             "buyer_file": reports.get("buyer_report"),
-            "owner_file": reports.get("owner_report")
         }
 
     @staticmethod

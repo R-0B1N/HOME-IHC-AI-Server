@@ -6,6 +6,17 @@ import datetime
 import redis
 from app.db.models import SessionLocal, Property, Customer
 from app.services.llm import llm_client, LLM_MODEL_NAME, _parse_json_from_llm, classify_turn_intent
+from app.services.role_contract import (
+    apply_role_evidence,
+    hot_lead_qualified,
+    is_explicit_seller_statement,
+    is_listing_question,
+    is_title_document,
+    own_asking_price,
+    sanitize_unverified_reply,
+    seller_is_earned,
+    stated_towns,
+)
 from app.services.db_services import find_matching_property, find_similar_properties, search_properties
 from app.services.system_prompts import (
     detect_customer_language,
@@ -250,8 +261,10 @@ class MultiIntentMemoryTracker:
             role = "agent"
         elif any(k in clean for k in ["sell", "selling", "list my", "jual", "出让", "想卖", "放盘", "委托出售", "property owner", "pemilik hartanah", "我是业主", "我是卖家", "send u the piece of land", "geran"]):
             role = "seller"
-        elif any(k in clean for k in ["rent out", "lease out", "for rent", "bagi sewa", "sewakan", "出租", "放租", "招租"]):
+        elif any(k in clean for k in ["rent out", "lease out", "bagi sewa", "sewakan", "出租", "放租", "招租"]):
             role = "landlord"
+        elif is_listing_question(clean):
+            role = existing_role
         elif any(k in clean for k in ["rent", "renting", "sewa", "租", "想要租"]):
             role = "tenant"
         elif any(k in clean for k in ["buy", "buying", "beli", "cari", "looking for", "personal buyer", "pembeli", "想买", "要买", "我是买家"]):
@@ -537,6 +550,8 @@ class MultiIntentMemoryTracker:
             try:
                 cust = db.query(Customer).filter(Customer.id == phone_number).first()
                 if cust:
+                    from app.services.customer_classification import enforce_classification_lock
+                    enforce_classification_lock(session)
                     meta = dict(cust.metadata_json or {})
                     meta["requirements_profile"] = session.get("requirements_profile")
                     meta["intent_progression"] = session.get("intent_progression")
@@ -554,6 +569,18 @@ class MultiIntentMemoryTracker:
                         meta["intent_category"] = session.get("current_agent").lower()
                     if session.get("lead_temp"):
                         meta["intention_tag"] = session.get("lead_temp")
+                    if session.get("previous_role"):
+                        meta["previous_role"] = session.get("previous_role")
+                        meta["previous_role_at"] = session.get("previous_role_at")
+                        meta["previous_role_source"] = session.get("previous_role_source")
+                    if session.get("role_override"):
+                        meta["customer_category"] = meta.get("intent_category")
+                        meta["locked_intent"] = meta.get("intent_category")
+                        meta["locked_category"] = meta.get("intent_category")
+                        meta["classification_source"] = "live"
+                        meta["classification_locked"] = True
+                    elif session.get("role_override_queued"):
+                        meta["role_override_queued"] = session.get("role_override_queued")
                     cust.metadata_json = meta
                     db.commit()
             finally:
@@ -638,6 +665,7 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
         session = {}
     actual_text = (text or raw_text or "").strip()
     raw_text = actual_text
+    session["last_customer_text"] = raw_text
     collected_data = session.setdefault("collected_data", {})
 
     # Detect and track customer language
@@ -790,11 +818,13 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
         }
 
     # 2. Dynamic Semantic Turn Classification & Step 1 / 2 Category Selection Detection BEFORE Property Matching
+    title_document = is_title_document(session.get("latest_document_extract"))
+    # A storefront photo is not a title document and must not force seller_intake.
     turn_intent = classify_turn_intent(
         prompt=raw_text,
         conversation_history=conversation_history,
-        has_document=bool(session.get("latest_document_extract") or images),
-        document_extract=session.get("latest_document_extract")
+        has_document=title_document,
+        document_extract=session.get("latest_document_extract") if title_document else None,
     )
     session["turn_intent"] = turn_intent
 
@@ -882,12 +912,20 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
         ])
     )
 
+    seller_already_earned = (
+        session.get("seller_evidence") == "explicit"
+        or (
+            (seller_track or {}).get("status") == "active"
+            and str(collected_data.get("customer_category") or "").lower() in {"seller", "owner"}
+        )
+    )
+
     if explicit_category == "seller":
         seller_track["status"] = "active"
         seller_track["last_active"] = datetime.datetime.utcnow().isoformat()
         session["current_agent"] = "SELLER"
         collected_data["customer_category"] = "seller"
-        for stale_k in ("buyer_budget", "buyer_location", "buyer_property_type", "property_of_interest"):
+        for stale_k in ("buyer_budget", "buyer_property_type", "property_of_interest"):
             collected_data.pop(stale_k, None)
     elif explicit_category == "agent":
         agent_track = session.setdefault("agent_track", {})
@@ -895,7 +933,7 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
         agent_track["last_active"] = datetime.datetime.utcnow().isoformat()
         session["current_agent"] = "AGENT"
         collected_data["customer_category"] = "agent"
-        for stale_k in ("buyer_budget", "buyer_location", "buyer_property_type", "property_of_interest"):
+        for stale_k in ("buyer_budget", "buyer_property_type", "property_of_interest"):
             collected_data.pop(stale_k, None)
     elif explicit_category == "buyer":
         buyer_track["status"] = "active"
@@ -911,7 +949,7 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
             session["intake_properties"] = intake_list
         session["current_agent"] = "SELLER"
         collected_data["customer_category"] = "seller"
-        for stale_k in ("buyer_budget", "buyer_location", "buyer_property_type", "property_of_interest"):
+        for stale_k in ("buyer_budget", "buyer_property_type", "property_of_interest"):
             collected_data.pop(stale_k, None)
     elif turn_intent == "buyer_search":
         buyer_track["status"] = "active"
@@ -924,8 +962,18 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
         agent_track["last_active"] = datetime.datetime.utcnow().isoformat()
         session["current_agent"] = "AGENT"
         collected_data["customer_category"] = "agent"
-        for stale_k in ("buyer_budget", "buyer_location", "buyer_property_type", "property_of_interest"):
+        for stale_k in ("buyer_budget", "buyer_property_type", "property_of_interest"):
             collected_data.pop(stale_k, None)
+
+    if seller_already_earned:
+        session["seller_evidence"] = "explicit"
+        collected_data["seller_evidence"] = "explicit"
+
+    # Customer evidence overrides a classifier label, a photo, and unearned seller state.
+    # An explicit menu choice of seller is first-person evidence.
+    if explicit_category == "seller":
+        raw_text = raw_text if is_explicit_seller_statement(raw_text) else f"I am a seller. {raw_text}"
+    apply_role_evidence(session, collected_data, raw_text, session.get("latest_document_extract"))
 
     # Step 2: Role assigned and NO property info provided -> ask premature questions
     if explicit_category and not has_msg_property_info:
@@ -982,43 +1030,23 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
             "updated_session": session
         }
 
-    # Conversation 71 Protocol: Unidentified Listing & Advertisement Inquiry
-    is_unidentified_inquiry = (turn_intent == "unidentified_listing") or (
-        session.get("unidentified_listing_turns", 0) >= 1 and not matched_prop and not _property_entity_detected
-    )
-    if not matched_prop and is_unidentified_inquiry:
-        unidentified_turns = session.get("unidentified_listing_turns", 0) + 1
-        session["unidentified_listing_turns"] = unidentified_turns
-        
-        if unidentified_turns >= 2:
-            # Turn 2+: Anti-Looping Handover Guard -> Transfer immediately to Ah Tuck (+60129663589)
-            session["state"] = "COMPLETED"
-            session["handover"] = True
-            handover_msg = get_multilingual_ah_tuck_handover(customer_lang, current_user_name)
-            MultiIntentMemoryTracker.persist_customer_memory(phone_number, session)
-            return {
-                "response": handover_msg,
-                "handover": True,
-                "assignee_email": AH_TUCK_EMAIL,
-                "images_to_send": [],
-                "updated_session": session
-            }
-        else:
-            # Turn 1: Listing Disambiguation Protocol -> Ask for ad screenshot/photo/link
-            disambig_msg = get_multilingual_disambiguation_request(customer_lang, current_user_name)
-            MultiIntentMemoryTracker.persist_customer_memory(phone_number, session)
-            return {
-                "response": disambig_msg,
-                "handover": False,
-                "images_to_send": [],
-                "updated_session": session
-            }
+    # Unidentified listing: ask which ad this is. A second ask is not a handover
+    # and does not name Ah Tuck. A turn count never qualifies a hot lead.
+    if turn_intent == "unidentified_listing" and not matched_prop:
+        session["unidentified_listing_turns"] = session.get("unidentified_listing_turns", 0) + 1
+        disambig_msg = get_multilingual_disambiguation_request(customer_lang, current_user_name)
+        MultiIntentMemoryTracker.persist_customer_memory(phone_number, session)
+        return {
+            "response": disambig_msg,
+            "handover": False,
+            "handover_reason": None,
+            "images_to_send": [],
+            "updated_session": session
+        }
 
     is_seller = (
-        seller_track.get("status") == "active"
-        or collected_data.get("customer_category") == "seller"
-        or session.get("current_agent") == "SELLER"
-        or turn_intent == "seller_intake"
+        seller_is_earned(session, collected_data)
+        and str(collected_data.get("customer_category") or "").lower() in {"seller", "owner"}
     )
 
     if is_seller:
@@ -1056,8 +1084,15 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
             collected_data["property_type"] = _active_label
         if _active_loc and str(_active_loc).strip().lower() not in _placeholders and not collected_data.get("location"):
             collected_data["location"] = _active_loc
-        if _active_budget and _curr_cat in ["seller", "owner"] and not collected_data.get("asking_price"):
-            collected_data["asking_price"] = active_inq.get("budget_formatted")
+        if (
+            _active_budget
+            and _curr_cat in ["seller", "owner"]
+            and seller_is_earned(session, collected_data)
+            and own_asking_price(raw_text)
+            and not collected_data.get("asking_price_grounded")
+        ):
+            collected_data["asking_price"] = own_asking_price(raw_text)
+            collected_data["asking_price_grounded"] = True
     else:
         if _active_label and str(_active_label).strip().lower() not in _placeholders:
             collected_data["buyer_property_type"] = _active_label
@@ -1065,7 +1100,12 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
             collected_data["buyer_location"] = _active_loc
         if _active_budget:
             collected_data["buyer_budget"] = active_inq.get("budget_formatted")
-        if _active_role and _curr_cat not in ["seller", "agent"]:
+        if (
+            _active_role
+            and _active_role not in {"seller", "landlord", "owner"}
+            and _curr_cat not in ["seller", "agent"]
+            and not is_listing_question(raw_text)
+        ):
             collected_data["customer_category"] = _active_role
 
     # Check if user explicitly wants to switch criteria
@@ -1125,10 +1165,18 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
         **llm_kwargs
     )
 
-    # Merge extracted data
+    # Merge extracted data. Prices and ownership the customer did not state are dropped
+    # again by apply_role_evidence below.
     for k, v in llm_analysis.get("extracted_data", {}).items():
+        if k in {"asking_price", "seller_asking_price", "buyer_budget", "rent_budget", "is_owner", "customer_category"}:
+            continue
         if v and str(v).lower() not in ["null", "none", ""]:
+            if k == "location" and is_listing_question(raw_text):
+                mentioned = {town.lower() for town in stated_towns(raw_text)}
+                if not mentioned or not any(town in str(v).lower() for town in mentioned):
+                    continue
             collected_data[k] = v
+    apply_role_evidence(session, collected_data, raw_text, session.get("latest_document_extract"))
 
     is_out_of_context = llm_analysis.get("is_out_of_context", False)
 
@@ -1243,11 +1291,14 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
         "visit the property", "can view", "view tomorrow", "view saturday", "viewing on"
     ]
     has_viewing_confirmation = (
-        bool(llm_analysis.get("viewing_confirmed"))
-        or any(phrase in raw_text.lower() for phrase in viewing_phrases)
-        or (bool(cached_prop) and any(d in raw_text.lower() for d in ["tomorrow", "saturday", "sunday", "esok", "sabtu", "ahad", "周六", "周日", "明天", "后天", "next week", "minggu depan"]) and any(w in raw_text.lower() or w in conversation_history.lower() for w in ["view", "tengok", "see", "visit", "look", "看"]))
+        any(phrase in raw_text.lower() for phrase in viewing_phrases)
+        or (
+            bool(cached_prop)
+            and any(d in raw_text.lower() for d in ["tomorrow", "saturday", "sunday", "esok", "sabtu", "ahad", "周六", "周日", "明天", "后天", "next week", "minggu depan"])
+            and any(w in raw_text.lower() for w in ["view", "tengok", "see", "visit", "look", "看"])
+        )
     )
-    user_books_cached_viewing = bool(cached_prop) and (bool(asked_meeting) or has_viewing_confirmation)
+    user_books_cached_viewing = bool(cached_prop) and has_viewing_confirmation
 
     if bool(cached_prop) and has_viewing_confirmation:
         schedule_viewing = True
@@ -1303,29 +1354,35 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
 
     handover_promised = is_handover_promised(response_text)
     promises_handover = bool(llm_analysis.get("promises_handover"))
-    # A finished seller Turn-1 reply can now carry promises_handover / asked_meeting
-    # (those keys sit after the response text and used to be truncated away).
-    # Land and a town are not enough. Keep the full reply and do not hand over.
-    if premature_seller_hot_lead(
+    # Model flags and promise prose do not qualify a handover. A finished
+    # seller Turn-1 that only names land and a town still must not.
+    qualified_now = hot_lead_qualified(current_role, collected_data, raw_text)
+    handover_reason = None
+    if user_wants_immediate_human:
+        handover_reason = "explicit_human"
+    elif has_viewing_confirmation:
+        handover_reason = "viewing"
+    elif qualified_now and not premature_seller_hot_lead(
         collected_data,
         conversation_history,
         raw_text,
         role=current_role,
     ):
+        handover_reason = "qualified"
+    if handover_reason is None:
         asked_meeting = False
         handover_promised = False
         promises_handover = False
-    if user_wants_immediate_human:
-        handover = True
-        name_str = f" {current_user_name}" if current_user_name else ""
-        prop_str = f" for {cached_prop.get('title')}" if cached_prop else ""
+        response_text = sanitize_unverified_reply(response_text)
+    elif handover_reason == "explicit_human":
         if "senior" not in response_text.lower() and "specialist" not in response_text.lower() and "representative" not in response_text.lower() and "专员" not in response_text and "pegawai" not in response_text.lower():
             response_text = get_multilingual_handover_wrapup(customer_lang, current_user_name, cached_prop.get('title') if cached_prop else None)
         session["state"] = "COMPLETED"
-    elif user_books_cached_viewing or has_viewing_confirmation or bool(asked_meeting):
+        handover = True
+    elif handover_reason == "viewing":
         handover = True
         session["state"] = "COMPLETED"
-    elif handover_promised or promises_handover:
+    elif handover_reason == "qualified":
         handover = True
         session["state"] = "COMPLETED"
 
@@ -1357,7 +1414,8 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
     return {
         "response": response_text,
         "handover": handover,
-        "promises_handover": promises_handover or handover_promised,
+        "handover_reason": handover_reason,
+        "promises_handover": bool(handover and (promises_handover or handover_promised)),
         "images_to_send": images_to_send,
         "schedule_viewing": schedule_viewing,
         "viewing_property": cached_prop if schedule_viewing else None,
@@ -1518,16 +1576,24 @@ def _minimal_reply_prompt(customer_language: str, customer_name: str = None, is_
     who = f" The customer's name is {customer_name}." if customer_name else ""
     if is_seller:
         track = (
-            "They are a seller or landowner. Acknowledge the property they described and ask only for "
-            "missing location, size, or asking price. Do not pitch buyer listings and do not promise a callback."
+            "They are a confirmed seller who already offered their own property. "
+            "Ask only for missing location, size, or their own asking price. "
+            "Do not pitch buyer listings and do not promise a callback."
         )
+        intent_example = "seller"
     else:
-        track = "Answer their latest property question using only facts you were given."
+        track = (
+            "Do not call them a seller, owner, or landlord. A photo, 'is it still available', "
+            "or 'how much is this' is a buyer question or an unresolved buy-versus-rent question. "
+            "Do not ask for land size, a title, or an asking price. "
+            "Answer their latest property question using only facts you were given."
+        )
+        intent_example = "buyer"
     lang = (customer_language or "en").upper()
     return (
         f"You are Irene Leong of ERA Realtor / Home IHC.{who} Reply only in {lang}. {track} "
         "Write at most 4 complete sentences and end with punctuation. "
-        'Output JSON only: {"response": "...", "intent": "seller"}'
+        f'Output JSON only: {{"response": "...", "intent": "{intent_example}"}}'
     )
 
 

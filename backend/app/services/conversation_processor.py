@@ -27,6 +27,13 @@ import requests
 
 from app.db.models import Customer, Order, Property, SessionLocal, User
 from app.services.agent_logic import premature_seller_hot_lead, process_persona_state_machine
+from app.services.role_contract import (
+    hot_lead_qualified,
+    is_placeholder,
+    is_title_document,
+    sanitize_unverified_reply,
+    seller_is_earned,
+)
 from app.services.chatwoot import (
     CHATWOOT_ACCOUNT_ID,
     apply_label,
@@ -317,10 +324,13 @@ class ConversationQueueProcessor:
 
         final_prompt_text = "\n".join(combined_text).strip()
         if not final_prompt_text and combined_images:
-            final_prompt_text = (
-                "[Customer shared land grant / document photo(s). "
-                "Please analyze the document and extract property particulars.]"
-            )
+            if is_title_document(latest_doc_struct):
+                final_prompt_text = (
+                    "[Customer shared a land title or plan. "
+                    "Please read the document particulars they sent.]"
+                )
+            else:
+                final_prompt_text = "[Customer sent a photo.]"
             logger.info(f"Synthesized prompt for {len(combined_images)} image attachment(s).")
 
         return final_prompt_text, combined_images, latest_doc_struct, contact_info
@@ -574,17 +584,16 @@ class ConversationQueueProcessor:
                     conversation_history = ""
 
                 # Semantic Turn Classification
+                title_document = is_title_document(latest_doc_struct)
                 turn_intent = classify_turn_intent(
                     prompt=final_prompt_text,
                     conversation_history=conversation_history,
-                    has_document=bool(
-                        latest_doc_struct
-                        or (combined_images and "document" in final_prompt_text.lower())
-                    ),
-                    document_extract=latest_doc_struct,
+                    has_document=title_document,
+                    document_extract=latest_doc_struct if title_document else None,
                 )
 
                 existing_sess_category = None
+                cached_sess = None
                 try:
                     cached_sess = SessionManager.get_session(phone_number)
                     if cached_sess:
@@ -594,34 +603,24 @@ class ConversationQueueProcessor:
                             or cached_sess.get("seller_track", {}).get("status")
                         )
                 except Exception:
-                    pass
+                    cached_sess = None
 
-                is_seller_intent = (
-                    role in ["seller", "landlord"]
-                    or turn_intent == "seller_intake"
-                    or (
-                        existing_sess_category in ["SELLER", "seller", "active"]
-                        and turn_intent not in ["buyer_search", "agent_inquiry"]
-                    )
-                    or (
-                        customer
-                        and customer.metadata_json
-                        and customer.metadata_json.get("customer_category") == "seller"
-                    )
+                earned_seller = seller_is_earned(cached_sess)
+                # A classifier label, a photo, or a stale CRM category does not make
+                # this turn a seller. Only explicit evidence already stored on the
+                # session does, and a buyer/renter/shop question clears an unearned one
+                # inside the state machine.
+                is_seller_intent = role in ["seller", "landlord"] or (
+                    earned_seller and turn_intent not in ["buyer_search", "agent_inquiry", "unidentified_listing"]
                 )
 
                 if is_seller_intent:
                     logger.info("Seller/landowner intent detected: suppressing buyer recommendations.")
                     db_context["data"]["properties"] = []
                     db_context["data"]["seller_market_context"] = {
-                        "district": "Bentong",
-                        "agriculture_rate_benchmark": (
-                            "RM 150,000 - RM 280,000 per acre for agricultural land depending "
-                            "on road access, terrain, and water source."
-                        ),
                         "service_note": (
-                            "Home IHC provides direct off-market listing and marketing services "
-                            "directly to serious qualified buyers."
+                            "The customer has offered their own property. "
+                            "Use only a town they stated. Do not assume Bentong."
                         ),
                     }
                 else:
@@ -686,9 +685,15 @@ class ConversationQueueProcessor:
             if is_fresh_convo:
                 session.clear()
                 session.update(SessionManager._new_session())
-            elif customer and getattr(customer, "metadata_json", None):
+            if customer and getattr(customer, "metadata_json", None):
                 c_meta = customer.metadata_json or {}
-                if c_meta.get("handover_completed") or c_meta.get("bypass_ai"):
+                if c_meta.get("classification_locked"):
+                    from app.services.customer_classification import canonical_category_name, stored_category
+                    session["classification_locked"] = True
+                    session["locked_category"] = canonical_category_name(stored_category(c_meta))
+                    session["classification_source"] = c_meta.get("classification_source") or "backfill"
+                    session["locked_metadata"] = c_meta
+                if (not is_fresh_convo) and (c_meta.get("handover_completed") or c_meta.get("bypass_ai")):
                     session["handover_completed"] = True
                     if c_meta.get("locked_intent") or c_meta.get("intent"):
                         session["locked_intent"] = c_meta.get("locked_intent") or c_meta.get("intent")
@@ -741,7 +746,7 @@ class ConversationQueueProcessor:
                     images_to_send,
                 )
 
-            intent = session.get("current_agent", "general").lower()
+            intent = str(session.get("current_agent") or "general").lower()
             response_text = agent_result.get(
                 "response", "Sorry, I couldn't process your request."
             )
@@ -815,47 +820,44 @@ class ConversationQueueProcessor:
             )
 
             if role not in ["admin", "employee", "agent"]:
-                # Conv 234: a finished Turn-1 seller reply set promises_handover and the
-                # hot-lead note fired. AgentSpecializationScorer was not changed; it only
-                # ran because this gate treated the model flag as an immediate handover.
+                # Model flags, promise prose, and an 80% field count do not open a
+                # hot lead. Conv 234 stays closed. A later turn with the same flags
+                # stays closed too.
+                reason = agent_result.get("handover_reason")
+                contract_ok = hot_lead_qualified(intent, collected, final_prompt_text)
+                out_of_scope = str(intent).strip().lower() in {"out_of_scope", "out_of_context"}
+                legitimate = out_of_scope or user_wants_immediate_human or user_books_inspection or (
+                    reason == "explicit_human" and user_wants_immediate_human
+                ) or (
+                    reason == "viewing" and user_books_inspection
+                ) or (
+                    reason == "qualified" and contract_ok
+                )
                 if premature_seller_hot_lead(
                     collected,
                     conversation_history,
                     final_prompt_text,
                     role=intent,
                 ):
+                    if not user_wants_immediate_human and not user_books_inspection:
+                        legitimate = False
                     handover_from_state = False
-                    response_promises_handover = False
                     session["handover"] = False
                     if session.get("state") == "COMPLETED":
                         session["state"] = "IN_PROGRESS"
+                if not legitimate:
+                    handover_from_state = False
+                    session["handover"] = False
                     if lead_temp == "Hot":
                         lead_temp = "Warm"
-                is_qualified_handover = (completeness_ratio >= 0.8) and has_prior_assistant_turn
-                if (
-                    handover_from_state
-                    or user_wants_immediate_human
-                    or user_books_inspection
-                    or response_promises_handover
-                    or is_qualified_handover
-                ):
+                    response_text = sanitize_unverified_reply(response_text)
+                else:
                     handover_initiated = True
                     lead_temp = "Hot"
-                    session["handover_completed"] = True
-                    session["locked_intent"] = intent
-                    session["locked_lead_temp"] = "Hot"
-                    if (
-                        not response_promises_handover
-                        and "senior" not in response_text.lower()
-                        and "specialist" not in response_text.lower()
-                        and "representative" not in response_text.lower()
-                        and "专员" not in response_text
-                        and "pegawai" not in response_text.lower()
-                    ):
-                        response_text += (
-                            f"\n\nThank you, {contact_name}! 😊 We have noted your request. "
-                            f"A senior property specialist from Home IHC will contact you shortly to assist directly."
-                        )
+                    # Pause and the public name wait until assign_agent succeeds.
+                    session["handover_requested"] = reason or (
+                        "explicit_human" if user_wants_immediate_human else "viewing"
+                    )
 
             SessionManager.save_session(phone_number, session)
 
@@ -941,6 +943,35 @@ class ConversationQueueProcessor:
 
         return conversation_summary_text, valuer_data
 
+    def gate_public_handover(
+        self,
+        handover_initiated: bool,
+        assignment_verified: bool,
+        intent: str,
+        lead_temp: str,
+        session: Dict[str, Any],
+        response_text: str,
+        phone_number: str,
+    ) -> Tuple[bool, str, str]:
+        """
+        A public specialist name is allowed only after assign_agent succeeds.
+        Otherwise the AI keeps the conversation and the reply does not promise contact.
+        """
+        if handover_initiated and not assignment_verified and str(intent).strip().lower() not in {
+            "out_of_scope", "out_of_context", "agent", "agent_inquiry", "broker",
+        }:
+            handover_initiated = False
+            lead_temp = "Warm" if str(lead_temp).lower() == "hot" else lead_temp
+            session["handover"] = False
+            session.pop("handover_completed", None)
+            session.pop("locked_intent", None)
+            response_text = sanitize_unverified_reply(response_text)
+            try:
+                SessionManager.save_session(phone_number, session)
+            except Exception:
+                pass
+        return handover_initiated, lead_temp, response_text
+
     def route_hot_lead(
         self,
         conversation_id: int,
@@ -964,7 +995,7 @@ class ConversationQueueProcessor:
             or collected.get("current_location")
             or collected.get("coverage_area")
         )
-        location = str(loc_val) if loc_val else "Pahang (To be advised)"
+        location = str(loc_val).strip() if loc_val and not is_placeholder(loc_val) else ""
 
         ptype_val = (
             collected.get("property_type")
@@ -972,7 +1003,7 @@ class ConversationQueueProcessor:
             or collected.get("buyer_property_type")
             or collected.get("use_type")
         )
-        property_type = str(ptype_val) if ptype_val else "Commercial / Residential / Land"
+        property_type = str(ptype_val).strip() if ptype_val and not is_placeholder(ptype_val) else ""
 
         budget_val = (
             collected.get("budget")
@@ -980,7 +1011,7 @@ class ConversationQueueProcessor:
             or collected.get("asking_price")
             or collected.get("expected_rental")
         )
-        budget = str(budget_val) if budget_val else "To be discussed in meeting"
+        budget = str(budget_val).strip() if budget_val and not is_placeholder(budget_val) else "Not specified"
 
         if intent == "bank valuer" and valuer_data:
             location = str(valuer_data)
@@ -1306,14 +1337,25 @@ class ConversationQueueProcessor:
 
         assigned_agent_name = ""
         assigned_agent_phone = ""
-        if handover_result and handover_result.get("assigned_agents"):
+        assignment_verified = bool(handover_result and handover_result.get("assignment_verified"))
+        if assignment_verified and handover_result.get("assigned_agents"):
             assigned_agent_name = handover_result["assigned_agents"][0].get("name", "")
             assigned_agent_phone = handover_result["assigned_agents"][0].get("phone_number", "")
-        elif handover_result and handover_result.get("primary_agent_name"):
+        elif assignment_verified and handover_result.get("primary_agent_name"):
             assigned_agent_name = handover_result.get("primary_agent_name", "")
             assigned_agent_phone = handover_result.get("primary_agent_phone", "")
 
-        if handover_initiated and (assigned_agent_name or assigned_agent_phone):
+        handover_initiated, lead_temp, response_text = self.gate_public_handover(
+            handover_initiated=handover_initiated,
+            assignment_verified=assignment_verified,
+            intent=intent,
+            lead_temp=lead_temp,
+            session=session,
+            response_text=response_text,
+            phone_number=phone_number,
+        )
+
+        if handover_initiated and assignment_verified and (assigned_agent_name or assigned_agent_phone):
             session["assigned_agent_name"] = assigned_agent_name
             session["assigned_agent_phone"] = assigned_agent_phone
             try:

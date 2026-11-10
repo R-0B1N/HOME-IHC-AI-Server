@@ -433,7 +433,7 @@ export default function ReportingConfig() {
                   {config?.latest_consolidated_report || 'Home_IHC_Weekly_Business_Report.xlsx'}
                 </span>
                 <span style={{ color: '#64748b', fontSize: '0.72rem', display: 'block', marginTop: '2px' }}>
-                  Consolidates: Executive KPI Summary • Buyer Database • Owner & Seller Database
+                  Tabs: Executive Summary, Buyer, Seller, Agent, Tenant, Landlord, Uncertain
                 </span>
               </div>
               <button
@@ -474,33 +474,19 @@ export default function ReportingConfig() {
               </button>
             </div>
 
-            {/* Owner Report Card */}
             <div style={{
               background: 'rgba(255, 255, 255, 0.03)',
               border: '1px solid #334155',
               borderRadius: '8px',
-              padding: '1rem',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: '12px'
+              padding: '1rem'
             }}>
-              <div>
-                <strong style={{ color: '#a855f7', fontSize: '0.92rem', display: 'block' }}>
-                  📑 Owner & Seller Database.xlsx
-                </strong>
-                <span style={{ color: '#64748b', fontSize: '0.78rem' }}>
-                  {config?.latest_owner_report || 'Available for on-demand generation.'}
-                </span>
-              </div>
-              <button
-                onClick={() => handleDownload('owner')}
-                disabled={downloading.owner}
-                className="lux-btn-secondary"
-                style={{ fontSize: '0.8rem', padding: '6px 12px', display: 'flex', alignItems: 'center', gap: '6px' }}
-              >
-                <Download size={14} /> {downloading.owner ? 'Downloading...' : 'Download'}
-              </button>
+              <strong style={{ color: '#a855f7', fontSize: '0.92rem', display: 'block' }}>
+                Customer categories
+              </strong>
+              <span style={{ color: '#64748b', fontSize: '0.78rem' }}>
+                Seller, Agent, Tenant, Landlord, and Uncertain are tabs in the weekly workbook.
+                Website listings are not in this report. Each row can show the previous role and when it changed.
+              </span>
             </div>
 
             {/* In-Chatwoot Command Reference Card */}

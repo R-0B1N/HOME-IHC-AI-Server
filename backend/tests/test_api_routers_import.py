@@ -19,6 +19,7 @@ ROUTERS = [
     "app.api.transcripts",
     "app.api.acknowledgements",
     "app.api.documents",
+    "app.api.recategorize",
 ]
 
 

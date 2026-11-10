@@ -464,3 +464,74 @@ def generate_and_send_weekly_reports(self, output_dir: str = None, send_to_admin
         logger.error(f"Failed to generate/dispatch weekly reports: {exc}")
         raise self.retry(exc=exc, countdown=120)
 
+
+@celery_app.task(bind=True, max_retries=0, queue="recategorize")
+def run_recategorize_job(self, batch_id: str, accepted_conversation_ids=None):
+    """
+    One recategorize batch on the low-priority ``recategorize`` queue.
+
+    Concurrency is 1 on that worker. dry_run never writes customers or labels.
+    apply and rollback are explicit modes stored on the job.
+    """
+    from app.services.recategorize_service import (
+        SqlJobStore,
+        build_chatwoot_fetchers,
+        execute_apply,
+        execute_dry_run,
+        execute_rollback,
+        load_customers_for_apply,
+        load_customers_read_only,
+        production_label_io,
+        production_reset_session,
+    )
+
+    store = SqlJobStore()
+    job = store.get_job(batch_id)
+    if not job:
+        raise KeyError(batch_id)
+    mode = job.get("mode") or "dry_run"
+    logger.info("Recategorize batch %s mode %s", batch_id, mode)
+    try:
+        if mode == "apply":
+            from app.services.recategorize_service import save_customer_metadata
+            read_labels, write_labels = production_label_io()
+            return execute_apply(
+                store=store,
+                batch_id=batch_id,
+                accepted_conversation_ids=accepted_conversation_ids or job.get("accepted_ids") or [],
+                customers=load_customers_for_apply(),
+                read_labels=read_labels,
+                write_labels=write_labels,
+                save_customer=save_customer_metadata,
+                reset_session=production_reset_session,
+            )
+        if mode == "rollback":
+            _read_labels, write_labels = production_label_io()
+            from app.services.recategorize_service import save_customer_metadata
+            return execute_rollback(
+                store=store,
+                batch_id=batch_id,
+                customers=load_customers_for_apply(),
+                write_labels=write_labels,
+                save_customer=save_customer_metadata,
+                reset_session=production_reset_session,
+            )
+        fetch_page, fetch_details = build_chatwoot_fetchers(job.get("rate") or 1.0)
+        return execute_dry_run(
+            customers=load_customers_read_only(),
+            fetch_page=fetch_page,
+            fetch_details=fetch_details,
+            store=store,
+            batch_id=batch_id,
+            limit=job.get("conversation_limit"),
+            conversation_id=job.get("conversation_id"),
+            resume=bool(job.get("checkpoint_json")),
+        )
+    except Exception as exc:
+        logger.error("Recategorize batch %s failed: %s", batch_id, exc)
+        try:
+            store.update_job(batch_id, status="failed", error=str(exc))
+        except Exception:
+            pass
+        raise
+

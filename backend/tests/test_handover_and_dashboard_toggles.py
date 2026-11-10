@@ -106,9 +106,9 @@ class TestHandoverAndDashboardToggles(unittest.TestCase):
             session={"state": "INITIAL", "collected_data": {}}
         )
 
-        self.assertTrue(res["handover"], "Handover must be True when LLM sets promises_handover=True")
-        self.assertTrue(res["promises_handover"], "promises_handover must be True in return dict")
-        self.assertEqual(res["updated_session"]["state"], "COMPLETED", "Session state must transition to COMPLETED")
+        self.assertFalse(res["handover"], "promises_handover alone must not hand over")
+        self.assertFalse(res["promises_handover"])
+        self.assertNotEqual(res["updated_session"].get("state"), "COMPLETED")
 
     @patch("requests.post")
     def test_update_conversation_status(self, mock_post):

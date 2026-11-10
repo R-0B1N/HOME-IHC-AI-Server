@@ -390,14 +390,19 @@ async def chatwoot_webhook(request: Request):
                 
                 full_summary = (
                     f"📊 **Weekly Business Report & Executive Summary**\n\n"
-                    f"• 👥 **Active Buyers**: {result.get('buyers_count', 0)} ({result.get('hot_buyers_count', 0)} hot)\n"
-                    f"• 🏡 **Managed Listings**: {result.get('owners_count', 0)}\n"
-                    f"• 👤 **Assigned Agents**: {result.get('agent_distribution', 'N/A')}\n"
-                    f"• 📁 **Workbook**: `{os.path.basename(consolidated_file) if consolidated_file else 'N/A'}`\n"
-                    f"• 📲 **WhatsApp Dispatch**: {dispatch_status}\n\n"
+                    f"• Customers: {result.get('customers_count', 0)} ({result.get('hot_count', 0)} hot)\n"
+                    f"• Buyer {result.get('buyers_count', 0)}, Seller {result.get('sellers_count', 0)}, "
+                    f"Agent {result.get('agents_count', 0)}, Tenant {result.get('tenants_count', 0)}, "
+                    f"Landlord {result.get('landlords_count', 0)}, Uncertain {result.get('uncertain_count', 0)}\n"
+                    f"• Workbook: `{os.path.basename(consolidated_file) if consolidated_file else 'N/A'}`\n"
+                    f"• WhatsApp Dispatch: {dispatch_status}\n\n"
                     f"• Tab 1: Executive KPI Summary\n"
-                    f"• Tab 2: Buyer Database\n"
-                    f"• Tab 3: Owner & Seller Database"
+                    f"• Tab 2: Buyer\n"
+                    f"• Tab 3: Seller\n"
+                    f"• Tab 4: Agent\n"
+                    f"• Tab 5: Tenant\n"
+                    f"• Tab 6: Landlord\n"
+                    f"• Tab 7: Uncertain"
                 )
                 
                 if consolidated_file and os.path.exists(consolidated_file):
