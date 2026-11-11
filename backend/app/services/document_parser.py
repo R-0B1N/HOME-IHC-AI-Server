@@ -7,6 +7,7 @@ import re
 import json
 from typing import Optional, Dict, Any, List
 
+from app.services.chatwoot import fetch_chatwoot_attachment
 from app.services.document_extractor import extract_real_estate_document_data
 
 logger = logging.getLogger(__name__)
@@ -87,8 +88,9 @@ def extract_text_from_document(
     }
     
     try:
-        # 1. Download stream with strict 100MB limit
-        resp = requests.get(data_url, stream=True, timeout=30)
+        # 1. Download stream with strict 100MB limit.
+        # Public Chatwoot data_urls are fetched via the internal base URL.
+        resp = fetch_chatwoot_attachment(data_url, stream=True, timeout=30)
         resp.raise_for_status()
 
         # Check declared content-length header
@@ -214,6 +216,8 @@ def extract_text_from_document(
             logger.warning(f"Unsupported document type: {effective_name}. Attempting plain text decoding.")
             result["text"] = content.decode("utf-8", errors="replace").strip()
             
+    except requests.exceptions.RequestException:
+        raise
     except Exception as e:
         logger.error(f"Failed to extract document {effective_name}: {e}")
         

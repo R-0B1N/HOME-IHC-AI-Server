@@ -5,6 +5,8 @@ import json
 from openai import OpenAI
 import re
 
+from app.services.chatwoot import fetch_chatwoot_attachment
+
 logger = logging.getLogger(__name__)
 
 _vllm_env = os.getenv("VLLM_BASE_URL") or os.getenv("OLLAMA_BASE_URL") or "http://crm-vllm:8000/v1"
@@ -27,13 +29,14 @@ def transcribe_audio(audio_url: str) -> str:
     in Mandarin, Cantonese, Hokkien, Bahasa Melayu, and English.
     """
     logger.info(f"Transcribing audio from {audio_url}")
-    
+
+    # Download failures propagate so the conversation processor can log them
+    # and ask the customer to send the photo again. Whisper failures still
+    # return an empty transcript.
+    audio_resp = fetch_chatwoot_attachment(audio_url, timeout=30)
+
     try:
-        # 1. Download audio
-        audio_resp = requests.get(audio_url, timeout=30)
-        audio_resp.raise_for_status()
-        
-        # 2. POST to whisper API with domain vocabulary biasing
+        # POST to whisper API with domain vocabulary biasing
         multilingual_prompt = (
             "Irene Leong, ERA Realtor, Home IHC, BentongLand, Pahang, Kuantan, Bentong, Raub, Karak, Temerloh, Mentakab, Triang, Bera. "
             "店面, 铺位, 铺头, 双层排屋, 农业地, 榴莲园, 佣金, 一个月佣金, 租金, 一个月租金, 顶手费, 招租, 出租, 买卖, 一间, 一个月, 订金, 押金, 发展地, 商业地, 睇楼, 屋主, 业主. "

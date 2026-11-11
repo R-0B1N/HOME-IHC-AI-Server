@@ -96,11 +96,13 @@ class TestConversationQueueProcessor(unittest.TestCase):
             {"content": "", "attachments": [{"file_type": "image", "data_url": "https://example.com/photo.jpg"}]},
         ]
 
-        prompt, images, doc_struct, contact_info = self.processor.parse_multimodal_content(messages, 123)
+        prompt, images, doc_struct, contact_info, attachment_errors = self.processor.parse_multimodal_content(messages, 123)
         self.assertIn("Text message", prompt)
         self.assertIn("[Audio Transcript]: Audio transcript text", prompt)
         self.assertEqual(len(images), 1)
         self.assertEqual(contact_info["name"], "Test User")
+        self.assertEqual(attachment_errors, [])
+        self.assertEqual(mock_requests_get.call_args[0][0], "https://example.com/photo.jpg")
 
     @patch.object(ConversationQueueProcessor, "check_debounce", return_value=None)
     @patch.object(ConversationQueueProcessor, "check_master_ai_enabled", return_value=True)
@@ -128,7 +130,7 @@ class TestConversationQueueProcessor(unittest.TestCase):
         mock_check_debounce,
     ):
         mock_fetch_msgs.return_value = [{"content": "Looking for durian land"}]
-        mock_parse_multi.return_value = ("Looking for durian land", [], None, {"name": "Buyer"})
+        mock_parse_multi.return_value = ("Looking for durian land", [], None, {"name": "Buyer"}, [])
         mock_customer = MagicMock()
         mock_customer.id = "cust-1"
         mock_resolve_cust.return_value = (mock_customer, False, "+60121111111", "Buyer", {"inbox_id": 1})

@@ -23,7 +23,6 @@ import urllib.parse
 from typing import Any, Dict, List, Optional, Tuple
 
 import redis
-import requests
 
 from app.db.models import Customer, Order, Property, SessionLocal, User
 from app.services.agent_logic import premature_seller_hot_lead, process_persona_state_machine
@@ -38,6 +37,7 @@ from app.services.chatwoot import (
     CHATWOOT_ACCOUNT_ID,
     apply_label,
     assign_agent,
+    fetch_chatwoot_attachment,
     get_agent_id_by_email,
     get_conversation_messages,
     send_chatwoot_image_attachment,
@@ -67,6 +67,10 @@ from app.services.system_prompts import is_handover_promised
 logger = logging.getLogger(__name__)
 
 TIMEOUT_SECONDS = 10
+
+PHOTO_DOWNLOAD_FALLBACK = (
+    "Sorry, I couldn't open the photo you sent. Please send the photo again."
+)
 
 REQUIRED_PERSONA_KEYS = {
     "buyer": ["name", "buyer_location", "buyer_property_type", "buyer_budget", "purchase_entity"],
@@ -102,6 +106,17 @@ PLACEHOLDER_FIELD_VALUES = {
     "null",
     "unknown",
 }
+
+
+def _attachment_filename(attachment: Dict[str, Any]) -> str:
+    """Best-effort filename from Chatwoot attachment fields or the data_url path."""
+    for key in ("data_file_name", "file_name", "filename", "title"):
+        value = attachment.get(key)
+        if value:
+            return str(value)
+    data_url = str(attachment.get("data_url") or "")
+    name = urllib.parse.urlsplit(data_url).path.rstrip("/").split("/")[-1]
+    return urllib.parse.unquote(name) if name else ""
 
 
 class ConversationQueueProcessor:
@@ -213,25 +228,30 @@ class ConversationQueueProcessor:
 
     def parse_multimodal_content(
         self, messages: List[Dict[str, Any]], conversation_id: int
-    ) -> Tuple[str, List[str], Optional[Dict[str, Any]], Dict[str, Any]]:
+    ) -> Tuple[str, List[str], Optional[Dict[str, Any]], Dict[str, Any], List[Dict[str, str]]]:
         """
         Parses text, audio attachments (transcription), image attachments (base64),
         and document attachments (extraction & mobile preview).
+
+        Returns attachment download errors as the last element. Each error has
+        file_type, filename, and error.
         """
         combined_text = []
         combined_images = []
         contact_info = messages[0].get("sender", {}) if messages else {}
         latest_doc_struct = None
+        attachment_errors: List[Dict[str, str]] = []
 
         for msg_payload in messages:
             content = msg_payload.get("content", "")
             if content:
                 combined_text.append(content)
 
-            attachments = msg_payload.get("attachments", [])
+            attachments = msg_payload.get("attachments") or []
             for attachment in attachments:
                 file_type = attachment.get("file_type")
                 data_url = attachment.get("data_url")
+                filename = _attachment_filename(attachment)
 
                 if file_type == "audio":
                     logger.info("Audio attachment detected. Downloading and transcribing...")
@@ -240,27 +260,40 @@ class ConversationQueueProcessor:
                         if transcription_text:
                             combined_text.append(f"[Audio Transcript]: {transcription_text}")
                     except Exception as e:
-                        logger.error(f"Failed to process audio attachment: {e}")
+                        logger.error(
+                            "Failed to process audio attachment: file_type=%s filename=%s error=%s",
+                            file_type,
+                            filename,
+                            e,
+                        )
+                        attachment_errors.append(
+                            {"file_type": str(file_type or ""), "filename": filename, "error": str(e)}
+                        )
 
                 elif file_type == "image":
                     logger.info("Image attachment detected. Downloading and encoding...")
                     try:
-                        img_resp = requests.get(data_url, timeout=30)
-                        img_resp.raise_for_status()
-                        b64_image = base64.b64encode(img_resp.content).decode("utf-8")
+                        img_resp = fetch_chatwoot_attachment(data_url, timeout=30)
+                        image_bytes = img_resp.content or b""
+                        if not isinstance(image_bytes, (bytes, bytearray)) or not image_bytes:
+                            raise ValueError("empty image response")
+                        b64_image = base64.b64encode(image_bytes).decode("utf-8")
                         combined_images.append(b64_image)
                     except Exception as e:
-                        logger.error(f"Failed to process image attachment: {e}")
+                        logger.error(
+                            "Failed to process image attachment: file_type=%s filename=%s error=%s",
+                            file_type,
+                            filename,
+                            e,
+                        )
+                        attachment_errors.append(
+                            {"file_type": str(file_type or ""), "filename": filename, "error": str(e)}
+                        )
 
                 elif file_type == "file":
                     logger.info("Document/PDF attachment detected.")
                     try:
-                        file_name_val = (
-                            attachment.get("data_file_name")
-                            or attachment.get("file_name")
-                            or attachment.get("title")
-                            or ""
-                        )
+                        file_name_val = filename
                         content_type_val = attachment.get("content_type", "")
                         extension_val = attachment.get("extension", "")
                         doc_result = extract_text_from_document(
@@ -320,7 +353,15 @@ class ConversationQueueProcessor:
                                     f"Could not dispatch inline document preview: {prev_err}"
                                 )
                     except Exception as e:
-                        logger.error(f"Failed to extract document text/images: {e}")
+                        logger.error(
+                            "Failed to extract document text/images: file_type=%s filename=%s error=%s",
+                            file_type,
+                            filename,
+                            e,
+                        )
+                        attachment_errors.append(
+                            {"file_type": str(file_type or ""), "filename": filename, "error": str(e)}
+                        )
 
         final_prompt_text = "\n".join(combined_text).strip()
         if not final_prompt_text and combined_images:
@@ -333,7 +374,33 @@ class ConversationQueueProcessor:
                 final_prompt_text = "[Customer sent a photo.]"
             logger.info(f"Synthesized prompt for {len(combined_images)} image attachment(s).")
 
-        return final_prompt_text, combined_images, latest_doc_struct, contact_info
+        return final_prompt_text, combined_images, latest_doc_struct, contact_info, attachment_errors
+
+    def _send_photo_download_fallback(self, conversation_id: int) -> Dict[str, Any]:
+        """
+        One public reply when attachments were present and none of them decoded.
+        Turns typing off and does not call the vision/LLM path.
+        """
+        try:
+            send_message(conversation_id, PHOTO_DOWNLOAD_FALLBACK)
+        except Exception as exc:
+            logger.error(
+                "Failed to send photo retry fallback for conversation %s: %s",
+                conversation_id,
+                exc,
+            )
+        try:
+            toggle_typing_status(conversation_id, "off")
+        except Exception as exc:
+            logger.warning(
+                "Failed to turn typing status off after photo download fallback: %s",
+                exc,
+            )
+        return {
+            "status": "fallback_sent",
+            "reason": "attachment download failed",
+            "conversation_id": conversation_id,
+        }
 
     def resolve_customer(
         self,
@@ -1244,9 +1311,12 @@ class ConversationQueueProcessor:
             combined_images,
             latest_doc_struct,
             contact_info,
+            attachment_errors,
         ) = self.parse_multimodal_content(messages, conversation_id)
 
         if not final_prompt_text:
+            if attachment_errors:
+                return self._send_photo_download_fallback(conversation_id)
             logger.info("No text, audio, or images to process. Skipping.")
             return {"status": "skipped", "reason": "empty aggregated input"}
 
