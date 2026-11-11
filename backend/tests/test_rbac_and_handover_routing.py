@@ -319,7 +319,7 @@ class TestDynamicHotLeadHandoverRouting(unittest.TestCase):
     @patch("app.worker.tasks.send_whatsapp_template")
     @patch("app.worker.tasks.get_active_agents_and_employees")
     def test_admin_fallback_when_pool_empty_or_zero_score(self, mock_get_agents, mock_send_template, mock_send_contact):
-        """When agent score is 0 or no agents are active, route to fallback admin numbers."""
+        """When nobody is compatible, alert admins only and do not assign a specialist."""
         # Empty agent roster
         mock_get_agents.return_value = []
 
@@ -337,9 +337,19 @@ class TestDynamicHotLeadHandoverRouting(unittest.TestCase):
 
         self.assertEqual(result["status"], "below_threshold")
         self.assertFalse(result["assignment_verified"])
+        self.assertEqual(result["assigned_agents"], [])
         self.assertEqual(result["winning_score"], 0)
-        self.assertEqual(mock_send_template.call_count, 0)
+        self.assertTrue(result.get("admin_only_handover"))
+        self.assertGreaterEqual(mock_send_template.call_count, 1)
+        phones = [call.kwargs["to_phone"] for call in mock_send_template.call_args_list]
+        self.assertIn("+601165144931", phones)
+        for call in mock_send_template.call_args_list:
+            remark = call.kwargs["parameters"][6]
+            self.assertIn("No specialist was named", remark)
+            self.assertNotIn("will contact", remark.lower())
         mock_send_contact.assert_not_called()
+        self.assertNotIn("AI continues", result["diagnostic"])
+        self.assertIn("No customer contact was promised", result["diagnostic"])
 
     @patch("app.worker.tasks.send_whatsapp_contact")
     @patch("app.worker.tasks.send_whatsapp_template")

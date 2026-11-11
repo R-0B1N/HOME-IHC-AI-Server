@@ -28,14 +28,10 @@ from app.services.system_prompts import (
     get_multilingual_out_of_scope_redirect,
     get_multilingual_handover_wrapup,
     get_multilingual_disambiguation_request,
-    get_multilingual_ah_tuck_handover,
     build_system_prompt,
     IRENE_MAIN_PHONE,
     IRENE_DISPLAY_PHONE,
     ADMIN_EMAIL,
-    AH_TUCK_NAME,
-    AH_TUCK_PHONE,
-    AH_TUCK_EMAIL
 )
 
 logger = logging.getLogger(__name__)
@@ -1031,7 +1027,7 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
         }
 
     # Unidentified listing: ask which ad this is. A second ask is not a handover
-    # and does not name Ah Tuck. A turn count never qualifies a hot lead.
+    # and does not name a specialist. A turn count never qualifies a hot lead.
     if turn_intent == "unidentified_listing" and not matched_prop:
         session["unidentified_listing_turns"] = session.get("unidentified_listing_turns", 0) + 1
         disambig_msg = get_multilingual_disambiguation_request(customer_lang, current_user_name)

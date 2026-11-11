@@ -972,6 +972,19 @@ class ConversationQueueProcessor:
                 pass
         return handover_initiated, lead_temp, response_text
 
+    def verified_specialist_identity(self, handover_result: Optional[Dict[str, Any]]) -> Tuple[str, str]:
+        """Public name and phone, only after Chatwoot assignment succeeded."""
+        if not handover_result or not handover_result.get("assignment_verified"):
+            return "", ""
+        agents = handover_result.get("assigned_agents") or []
+        if agents:
+            first = agents[0] or {}
+            return first.get("name") or "", first.get("phone_number") or ""
+        return (
+            handover_result.get("primary_agent_name") or "",
+            handover_result.get("primary_agent_phone") or "",
+        )
+
     def route_hot_lead(
         self,
         conversation_id: int,
@@ -1008,6 +1021,7 @@ class ConversationQueueProcessor:
         budget_val = (
             collected.get("budget")
             or collected.get("buyer_budget")
+            or collected.get("rent_budget")
             or collected.get("asking_price")
             or collected.get("expected_rental")
         )
@@ -1335,15 +1349,8 @@ class ConversationQueueProcessor:
                 final_prompt_text=final_prompt_text,
             )
 
-        assigned_agent_name = ""
-        assigned_agent_phone = ""
         assignment_verified = bool(handover_result and handover_result.get("assignment_verified"))
-        if assignment_verified and handover_result.get("assigned_agents"):
-            assigned_agent_name = handover_result["assigned_agents"][0].get("name", "")
-            assigned_agent_phone = handover_result["assigned_agents"][0].get("phone_number", "")
-        elif assignment_verified and handover_result.get("primary_agent_name"):
-            assigned_agent_name = handover_result.get("primary_agent_name", "")
-            assigned_agent_phone = handover_result.get("primary_agent_phone", "")
+        assigned_agent_name, assigned_agent_phone = self.verified_specialist_identity(handover_result)
 
         handover_initiated, lead_temp, response_text = self.gate_public_handover(
             handover_initiated=handover_initiated,

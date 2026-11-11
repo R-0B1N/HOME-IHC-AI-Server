@@ -159,6 +159,18 @@ _OWN_BUDGET = re.compile(
     re.IGNORECASE,
 )
 
+# A bare "budget" / "bajet" / "预算" only counts when an amount follows.
+# "my budget" and "budget is" stay in _OWN_BUDGET. Rent-specific phrases stay
+# in _OWN_RENT_BUDGET. Listing questions still do not qualify unless one of
+# these own-budget anchors is present.
+_BARE_OWN_BUDGET = re.compile(
+    r"(?:"
+    r"\b(?:budget|bajet)\b\s*(?:of|around|about|is|:)?\s*(?=(?:rm|myr)\b|\d)"
+    r"|预算\s*(?:是|为|大约)?\s*(?=(?:rm|myr)|\d)"
+    r")",
+    re.IGNORECASE,
+)
+
 _OWN_RENT_BUDGET = re.compile(
     r"(?:rent budget|rental budget|monthly budget|i can pay|租金预算|预算租金)",
     re.IGNORECASE,
@@ -268,16 +280,40 @@ def own_asking_price(text: str) -> Optional[str]:
     return _money_near(text, _OWN_ASKING)
 
 
+def _has_own_budget_anchor(text: str) -> bool:
+    raw = _clean(text)
+    return bool(_OWN_BUDGET.search(raw) or _BARE_OWN_BUDGET.search(raw))
+
+
+def _has_own_rent_budget_anchor(text: str) -> bool:
+    raw = _clean(text)
+    return bool(_OWN_RENT_BUDGET.search(raw) or _has_own_budget_anchor(raw))
+
+
+def _first_money(text: str, *anchors: re.Pattern) -> Optional[str]:
+    for anchor in anchors:
+        amount = _money_near(text, anchor)
+        if amount:
+            return amount
+    return None
+
+
 def own_buyer_budget(text: str) -> Optional[str]:
-    if is_listing_question(text) and not _OWN_BUDGET.search(_clean(text)):
+    """The customer's own buy budget. An asked listing price is not this."""
+    if is_listing_question(text) and not _has_own_budget_anchor(text):
         return None
-    return _money_near(text, _OWN_BUDGET)
+    return _first_money(text, _OWN_BUDGET, _BARE_OWN_BUDGET)
 
 
 def own_rent_budget(text: str) -> Optional[str]:
-    if is_listing_question(text) and not _OWN_RENT_BUDGET.search(_clean(text)):
+    """The customer's own rent budget. An asked listing rent is not this.
+
+    Rent-specific phrases still count. "my budget", "budget is", and a bare
+    "budget" followed by an amount count too, the same way they do for buyers.
+    """
+    if is_listing_question(text) and not _has_own_rent_budget_anchor(text):
         return None
-    return _money_near(text, _OWN_RENT_BUDGET)
+    return _first_money(text, _OWN_RENT_BUDGET, _OWN_BUDGET, _BARE_OWN_BUDGET)
 
 
 def assess_turn(text: str, document_extract: Optional[dict] = None) -> Dict[str, Any]:
@@ -369,12 +405,6 @@ def apply_role_evidence(session: dict, collected: dict, text: str, document_extr
     if assessment["asking_price"]:
         collected["asking_price"] = assessment["asking_price"]
         collected["asking_price_grounded"] = True
-    if assessment["buyer_budget"]:
-        collected["buyer_budget"] = assessment["buyer_budget"]
-        collected["buyer_budget_grounded"] = True
-    if assessment["rent_budget"]:
-        collected["rent_budget"] = assessment["rent_budget"]
-        collected["rent_budget_grounded"] = True
 
     if role == "seller":
         collected["customer_category"] = "seller"
@@ -404,6 +434,8 @@ def apply_role_evidence(session: dict, collected: dict, text: str, document_extr
         if str(collected.get("customer_category") or "").lower() in {"seller", "owner"}:
             _clear_unearned_seller(session, collected)
 
+    _ground_customer_budget(collected, text, role, assessment)
+
     # Drop prices the model may already have copied from a question.
     if not collected.get("asking_price_grounded") and not own_asking_price(text):
         if collected.get("asking_price") and is_listing_question(text):
@@ -414,6 +446,36 @@ def apply_role_evidence(session: dict, collected: dict, text: str, document_extr
         collected.pop("is_owner", None)
 
     return assessment
+
+
+def _ground_customer_budget(collected: dict, text: str, role: str, assessment: dict) -> None:
+    """Record a budget the customer stated as their own.
+
+    This turn's buyer or renter evidence wins. A later turn that only states
+    the amount still counts when the session is already a buyer or a
+    renter/tenant. Listing questions do not, unless they also use an
+    own-budget anchor.
+    """
+    if assessment.get("buyer_budget"):
+        collected["buyer_budget"] = assessment["buyer_budget"]
+        collected["buyer_budget_grounded"] = True
+    if assessment.get("rent_budget"):
+        collected["rent_budget"] = assessment["rent_budget"]
+        collected["rent_budget_grounded"] = True
+
+    category = str(collected.get("customer_category") or "").lower()
+    if not collected.get("buyer_budget_grounded") and (role == "buyer" or category == "buyer"):
+        amount = own_buyer_budget(text)
+        if amount:
+            collected["buyer_budget"] = amount
+            collected["buyer_budget_grounded"] = True
+    if not collected.get("rent_budget_grounded") and (
+        role == "renter" or category in {"renter", "tenant"}
+    ):
+        amount = own_rent_budget(text)
+        if amount:
+            collected["rent_budget"] = amount
+            collected["rent_budget_grounded"] = True
 
 
 def _clear_unearned_seller(session: dict, collected: dict) -> None:
@@ -473,7 +535,7 @@ def hot_lead_qualified(role: str, collected: dict, text: str = "") -> bool:
 
 _PROMISE_SENTENCE = re.compile(
     r"[^.!?\n]*("
-    r"ah tuck|阿tuck|012-?966\s*3589|\+60129663589"
+    r"ah tuck|阿tuck|ah tat|阿tat|012-?966\s*3589|\+60129663589"
     r"|right away|immediately contact|contact you shortly"
     r"|will (?:shortly )?contact you|will reach out"
     r"|senior (?:property |commercial )?(?:specialist|lead|agent)"
