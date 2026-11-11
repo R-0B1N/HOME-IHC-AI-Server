@@ -36,7 +36,7 @@ def transcribe_audio(audio_url: str) -> str:
         # 2. POST to whisper API with domain vocabulary biasing
         multilingual_prompt = (
             "Irene Leong, ERA Realtor, Home IHC, BentongLand, Pahang, Kuantan, Bentong, Raub, Karak, Temerloh, Mentakab, Triang, Bera. "
-            "店面, 铺位, 铺头, 双层排屋, 农业地, 榴莲园, 佣金, 一个月佣金, 租金, 一个月租金, 顶手费, 招租, 出租, 买卖, 一间, 一个月, 订金, 押金, 发展地, 商业地, 睇楼, 屋主, 业主, 阿Tuck 012-9663589. "
+            "店面, 铺位, 铺头, 双层排屋, 农业地, 榴莲园, 佣金, 一个月佣金, 租金, 一个月租金, 顶手费, 招租, 出租, 买卖, 一间, 一个月, 订金, 押金, 发展地, 商业地, 睇楼, 屋主, 业主. "
             "Tanah, kedai, sewa, jual, sewa sebulan, komisen agent, deposit 2+1, geran freehold leasehold, Musang King. "
             "Tiàm-thâu, Chhu, Chhut-cho͘, Bóe, Bē, Thô͘-tī. Shoplot, commercial shop, rental, one month advance commission, ROI."
         )
