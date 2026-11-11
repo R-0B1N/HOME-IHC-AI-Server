@@ -1,12 +1,187 @@
 import logging
-import requests
 import os
+import urllib.parse
+
+import requests
 
 logger = logging.getLogger(__name__)
 
 CHATWOOT_BASE_URL = os.getenv("CHATWOOT_BASE_URL", "http://localhost:3000")
 CHATWOOT_API_TOKEN = os.getenv("CHATWOOT_API_TOKEN", "")
 CHATWOOT_ACCOUNT_ID = os.getenv("CHATWOOT_ACCOUNT_ID", "1")
+
+# Public inbox host stamped on Active Storage data_urls. Workers cannot route to it
+# (Errno 101). Optional CHATWOOT_PUBLIC_URL / CHATWOOT_PUBLIC_HOSTS extend this set.
+# The fetch target is always the configured CHATWOOT_BASE_URL, same as API calls.
+_KNOWN_PUBLIC_CHATWOOT_HOSTS = frozenset({"inbox.bentongland.com.my"})
+_ACTIVE_STORAGE_PREFIX = "/rails/active_storage/"
+_REDIRECT_STATUSES = (301, 302, 303, 307, 308)
+_MAX_ATTACHMENT_REDIRECTS = 5
+_PUBLIC_HOST_ENV_VARS = (
+    "CHATWOOT_PUBLIC_URL",
+    "CHATWOOT_PUBLIC_BASE_URL",
+    "CHATWOOT_FRONTEND_URL",
+    "CHATWOOT_PUBLIC_HOSTS",
+)
+
+
+def _configured_chatwoot_base() -> str:
+    """Internal Chatwoot origin used by send_message and the other API calls."""
+    base = (CHATWOOT_BASE_URL or os.getenv("CHATWOOT_BASE_URL") or "").strip().rstrip("/")
+    if base and "://" not in base:
+        base = "http://" + base
+    return base
+
+
+def _configured_chatwoot_token() -> str:
+    if CHATWOOT_API_TOKEN:
+        return CHATWOOT_API_TOKEN
+    return os.getenv("CHATWOOT_API_TOKEN") or ""
+
+
+def _default_port(scheme: str):
+    if scheme == "https":
+        return 443
+    if scheme == "http":
+        return 80
+    return None
+
+
+def _hostname(value: str) -> str:
+    item = (value or "").strip()
+    if not item:
+        return ""
+    if "://" in item:
+        return (urllib.parse.urlsplit(item).hostname or "").lower()
+    return item.split("/")[0].split(":")[0].lower()
+
+
+def public_chatwoot_hosts() -> set:
+    """
+    Hosts that serve this Chatwoot's public attachment URLs.
+    Includes the known inbox host plus any public base configured in the environment.
+    """
+    hosts = {host.lower() for host in _KNOWN_PUBLIC_CHATWOOT_HOSTS}
+    for env_name in _PUBLIC_HOST_ENV_VARS:
+        raw = os.getenv(env_name, "")
+        if not raw:
+            continue
+        for item in raw.split(","):
+            host = _hostname(item)
+            if host:
+                hosts.add(host)
+    return hosts
+
+
+def _same_chatwoot_endpoint(parsed, internal) -> bool:
+    if not parsed.hostname or not internal.hostname:
+        return False
+    if parsed.hostname.lower() != internal.hostname.lower():
+        return False
+    parsed_port = parsed.port or _default_port(parsed.scheme)
+    internal_port = internal.port or _default_port(internal.scheme)
+    return parsed_port == internal_port
+
+
+def _is_chatwoot_attachment_url(parsed, internal) -> bool:
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return False
+    if internal.hostname and _same_chatwoot_endpoint(parsed, internal):
+        return True
+    if parsed.hostname.lower() in public_chatwoot_hosts():
+        return True
+    return (parsed.path or "").startswith(_ACTIVE_STORAGE_PREFIX)
+
+
+def rewrite_chatwoot_attachment_url(data_url: str) -> str:
+    """
+    Rewrite a public Chatwoot/Active Storage data_url onto CHATWOOT_BASE_URL.
+
+    Only the scheme and host change. The path and query stay so the signed blob
+    id still resolves. URLs that are already on the internal base, and URLs that
+    are not this service's attachments, are returned unchanged.
+    """
+    if not data_url:
+        return data_url
+    parsed = urllib.parse.urlsplit(data_url)
+    base_raw = _configured_chatwoot_base()
+    if not base_raw:
+        return data_url
+    internal = urllib.parse.urlsplit(base_raw)
+    if not internal.hostname or not _is_chatwoot_attachment_url(parsed, internal):
+        return data_url
+    if (
+        _same_chatwoot_endpoint(parsed, internal)
+        and (parsed.scheme or "") == (internal.scheme or "http")
+    ):
+        return data_url
+    rewritten = urllib.parse.urlunsplit(
+        parsed._replace(scheme=internal.scheme or "http", netloc=internal.netloc)
+    )
+    if rewritten != data_url:
+        logger.info(
+            "Rewriting Chatwoot attachment host %s to internal base %s",
+            parsed.hostname,
+            internal.netloc,
+        )
+    return rewritten
+
+
+def fetch_chatwoot_attachment(
+    url: str,
+    timeout: int = 30,
+    stream: bool = False,
+    headers: dict = None,
+    raise_for_status: bool = True,
+):
+    """
+    Download a Chatwoot attachment via the internal base URL.
+
+    Redirects are followed manually. Each Location is rewritten the same way, so an
+    Active Storage redirect cannot bounce back to the public inbox host. The
+    api_access_token header is sent only to the internal Chatwoot host.
+    """
+    if not url:
+        raise requests.RequestException("missing attachment url")
+
+    current = url
+    extra_headers = dict(headers or {})
+    internal = urllib.parse.urlsplit(_configured_chatwoot_base())
+    token = _configured_chatwoot_token()
+
+    for _hop in range(_MAX_ATTACHMENT_REDIRECTS):
+        current = rewrite_chatwoot_attachment_url(current)
+        request_headers = dict(extra_headers)
+        parsed = urllib.parse.urlsplit(current)
+        if token and internal.hostname and _same_chatwoot_endpoint(parsed, internal):
+            request_headers["api_access_token"] = token
+        response = requests.get(
+            current,
+            headers=request_headers or None,
+            timeout=timeout,
+            allow_redirects=False,
+            stream=stream,
+        )
+        status = getattr(response, "status_code", None)
+        if isinstance(status, int) and status in _REDIRECT_STATUSES:
+            location = ""
+            response_headers = getattr(response, "headers", None) or {}
+            if hasattr(response_headers, "get"):
+                location = response_headers.get("Location") or response_headers.get("location") or ""
+            try:
+                response.close()
+            except Exception:
+                pass
+            if not isinstance(location, str) or not location.strip():
+                raise requests.RequestException("Chatwoot attachment redirect missing Location")
+            current = urllib.parse.urljoin(current, location.strip())
+            continue
+        if raise_for_status:
+            response.raise_for_status()
+        return response
+
+    raise requests.RequestException("Too many redirects downloading Chatwoot attachment")
+
 
 def resolve_whatsapp_phone_number_id(inbox_id: int, override_phone_number_id: str = None) -> tuple:
     """
