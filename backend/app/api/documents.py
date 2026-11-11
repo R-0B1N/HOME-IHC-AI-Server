@@ -7,13 +7,13 @@ preventing mobile redirect failures and 302 download aborts.
 import os
 import io
 import logging
-import requests
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends, Query, Response, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.db.models import SessionLocal, AcknowledgementForm
+from app.services.chatwoot import fetch_chatwoot_attachment, rewrite_chatwoot_attachment_url
 
 logger = logging.getLogger(__name__)
 
@@ -101,10 +101,16 @@ def proxy_document_inline(
     if not url.startswith("http://") and not url.startswith("https://"):
         raise HTTPException(status_code=400, detail="Invalid document URL scheme.")
 
-    # Translate expiring redirect route to permanent proxy route if applicable
-    target_url = url
-    if "/rails/active_storage/blobs/redirect/" in target_url:
-        target_url = target_url.replace("/rails/active_storage/blobs/redirect/", "/rails/active_storage/blobs/proxy/")
+    # Translate expiring redirect route to permanent proxy route if applicable,
+    # then fetch via the internal Chatwoot base so the API container does not
+    # dial the public inbox host.
+    translated_url = url
+    if "/rails/active_storage/blobs/redirect/" in translated_url:
+        translated_url = translated_url.replace(
+            "/rails/active_storage/blobs/redirect/",
+            "/rails/active_storage/blobs/proxy/",
+        )
+    target_url = rewrite_chatwoot_attachment_url(translated_url)
 
     # Forward client Range headers for mobile PDF page-by-page streaming
     client_headers = {}
@@ -113,13 +119,28 @@ def proxy_document_inline(
         client_headers["Range"] = range_header
 
     try:
-        resp = requests.get(target_url, headers=client_headers, stream=True, timeout=30)
-        
-        # Fallback to original url if proxy route translation returned 404
-        if resp.status_code == 404 and target_url != url:
-            target_url = url
-            resp = requests.get(target_url, headers=client_headers, stream=True, timeout=30)
-            
+        resp = fetch_chatwoot_attachment(
+            target_url,
+            headers=client_headers,
+            stream=True,
+            timeout=30,
+            raise_for_status=False,
+        )
+
+        # Fallback to the original redirect URL if the proxy route returned 404.
+        if resp.status_code == 404 and translated_url != url:
+            try:
+                resp.close()
+            except Exception:
+                pass
+            resp = fetch_chatwoot_attachment(
+                url,
+                headers=client_headers,
+                stream=True,
+                timeout=30,
+                raise_for_status=False,
+            )
+
         resp.raise_for_status()
 
         content_type = resp.headers.get("Content-Type", "application/pdf")
