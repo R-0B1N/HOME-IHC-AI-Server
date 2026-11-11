@@ -28,12 +28,6 @@ from app.services.document_extractor import (
 )
 from app.services.llm import classify_turn_intent
 from app.services.agent_logic import process_persona_state_machine
-from app.services.system_prompts import (
-    get_multilingual_disambiguation_request,
-    get_multilingual_ah_tuck_handover,
-    AH_TUCK_PHONE,
-    AH_TUCK_EMAIL,
-)
 from app.main import app
 
 
@@ -177,7 +171,7 @@ class TestDocumentIngestionAndContext(unittest.TestCase):
         self.assertIn("buyer_track", s2)
 
     def test_conversation_71_anti_looping(self):
-        """Simulates Mei Lin inquiry: Turn 1 triggers ad request, Turn 2 triggers Ah Tuck handover."""
+        """Simulates Mei Lin inquiry: Turn 1 asks which listing, Turn 2 asks again."""
         phone = "+60179658268"
         session = {
             "created_at": time.time(),
@@ -205,7 +199,7 @@ class TestDocumentIngestionAndContext(unittest.TestCase):
             "Turn 1 did not execute Listing Disambiguation Protocol"
         )
 
-        # Turn 2: still unidentified. Ask again. Do not hand over to Ah Tuck.
+        # Turn 2: still unidentified. Ask again. Do not name a specialist.
         t2_text = "一个月多少钱？你们是代理还是屋主？"
         history = f"User: {t1_text}\nAssistant: {res1['response']}"
         res2 = process_persona_state_machine(

@@ -19,9 +19,6 @@ DIGITAL_NAME_CARD_URL = "https://my.mecard.my/1733211127"
 IRENE_MAIN_PHONE = "+601165144931"
 IRENE_DISPLAY_PHONE = "+60 11-6514 4931"
 ADMIN_EMAIL = "homeihc13@gmail.com"
-AH_TUCK_NAME = "Ah Tuck"
-AH_TUCK_PHONE = "+60129663589"
-AH_TUCK_EMAIL = "tuck@homeihc.com"
 
 # Malaysian Dialect & Domain Lexicon
 MALAY_KEYWORDS = {
@@ -419,20 +416,6 @@ def get_multilingual_disambiguation_request(language: str, customer_name: str = 
         )
 
 
-def get_multilingual_ah_tuck_handover(language: str, customer_name: str = None) -> str:
-    """
-    Returns immediate handover message to commercial specialist Ah Tuck.
-    """
-    name_str = f"{customer_name}，" if customer_name else ""
-    if language == "zh":
-        return f"{name_str}我已经把您的店面咨询直接转交给负责该区商业店面的资深主管 阿Tuck (012-9663589)。他会立刻通过 WhatsApp 或电话联系您协助处理！"
-    elif language == "ms":
-        return f"{name_str}Saya telah majukan pertanyaan kedai anda kepada Pengurus Kanan Komersial kami, Ah Tuck (012-9663589). Beliau akan segera menghubungi anda melalui WhatsApp atau panggilan!"
-    else:
-        return f"{name_str}I have forwarded your shop inquiry directly to our Senior Commercial Lead, Ah Tuck (012-9663589). He will reach out to you via WhatsApp or phone right away to assist you!"
-
-
-
 def _cap_prompt_fragment(text: str, limit: int = 500) -> str:
     """Keeps optional prompt context inside the completion-token budget."""
     if not text:
@@ -502,7 +485,7 @@ Stage: {stage}
 {prop_block}Known customer context: {known}
 
 Write ONE complete WhatsApp reply of at most 90 words. Finish every sentence. Never stop mid-sentence.
-Never invent listings, prices, sizes, or addresses. Do not promise that a specialist, Ah Tuck, or Ah Tat will call, and do not say they will be in touch right away.
+Never invent listings, prices, sizes, or addresses. Do not promise that a specialist will call, and do not say they will be in touch right away. Do not name a specialist.
 {seller_line}
 
 Output JSON only, with "response" written FIRST and fully closed:
@@ -678,7 +661,7 @@ Core Operational Directives:
 2. Strict Grounding: NEVER invent properties or prices. Only reference properties in context. If customer inquires about residential homes (e.g. Semi-D, house, terrace, bungalow, condo), NEVER pitch or substitute commercial shop lots or industrial warehouses! If customer asks for rent, do not pitch sale properties without clarifying.
 3. Viewing & Acknowledgement: When viewing is requested, acknowledge warmly, ask for preferred day/time window, and explain that Home IHC prepares a standard Customer Property Viewing Acknowledgement form prior to inspection. Set "asked_meeting": true only if concrete viewing is confirmed.
 4. Off-Market Consultative Protocol: If 0 matching properties exist in the database for the requested category and area (e.g. Semi-D in Raub), explain warmly that listings for this category in that area are primarily handled off-market directly with private owners and landlords. Ask 1-2 consultative qualification questions (preferred budget range, specific neighborhood/area) and offer to scout off-market options. NEVER substitute commercial or industrial properties for a residential request.
-5. Handover wording: Do not promise that a specialist, Ah Tuck, or Ah Tat will call, and do not say anyone will be in touch right away. Leave "asked_meeting" and "promises_handover" unset. The server decides handover from the customer's own words.
+5. Handover wording: Do not promise that a specialist will call, and do not say anyone will be in touch right away. Do not name a specialist. Leave "asked_meeting" and "promises_handover" unset. The server decides handover from the customer's own words.
 6. Media Handling: If customer sends image/doc without text, ask how to assist regarding that property/document. Never say "image not received".
 7. Out-of-Scope Redirection: If the customer asks for something out of scope (e.g. job vacancies, non-property services, personal matters) before/without sufficient property information -> set "is_out_of_context": true and redirect directly to Senior Agent Irene Leong ({IRENE_DISPLAY_PHONE}) and our management team. NEVER refer to any email address.
 8. Land Document & Title Extraction (Borang 11BK, Borang B2, Geran, Rekod Ketuanpunyaan):
@@ -689,7 +672,7 @@ Core Operational Directives:
    - Consultative Seller Intake: Only if the sender has explicitly offered their own property or land. Then ask for their own asking price. Do not treat a shop photo or "how much is this" as a seller. NEVER recommend buyer properties to a confirmed land seller. Do not assume the town is Bentong.
 9. Unidentified Listing & Advertisement Inquiries (Conversation 71 Protocol):
    - If customer asks about an unspecified commercial shop, advertisement, or listing ("哪一间店面?", "租金多少钱一个月?", "where is the shop?", "is the shop still available?"):
-   - Ask which listing they mean, and ask for a screenshot, photo, or link. Ask again if it is still unclear. Do not hand them to Ah Tuck, do not name a specialist, and do not set "asked_meeting" or "promises_handover".
+   - Ask which listing they mean, and ask for a screenshot, photo, or link. Ask again if it is still unclear. Do not name a specialist, and do not set "asked_meeting" or "promises_handover".
 10. Dual-Track State Isolation:
    - When communicating with a property seller or landowner, NEVER search or pitch buyer properties from the database.
    - If a seller switches to inquiring about buying (or a buyer uploads a property to sell), address the active priority directly without erasing their previously recorded profile.
