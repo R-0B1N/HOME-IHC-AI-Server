@@ -416,6 +416,15 @@ def get_multilingual_disambiguation_request(language: str, customer_name: str = 
         )
 
 
+# Shown on every prompt tier that can actually be sent when a photo is attached.
+# The full directive prompt does not fit the 2048-token window, so the compact
+# and minimal tiers must carry the same prohibition.
+IMAGE_TURN_NO_MEDIA_REQUEST = (
+    "The customer already attached a photo. Read it and any [Photo shows: ...] note. "
+    "Do not request another image, a listing URL, or a screen capture."
+)
+
+
 def _cap_prompt_fragment(text: str, limit: int = 500) -> str:
     """Keeps optional prompt context inside the completion-token budget."""
     if not text:
@@ -434,6 +443,7 @@ def _assemble_compact_system_prompt(
     role_clean: str,
     prop_context: str,
     collected_data: dict,
+    customer_sent_image: bool = False,
 ) -> str:
     """
     Short system prompt used when the full directive prompt cannot leave enough
@@ -486,6 +496,7 @@ Stage: {stage}
 
 Write ONE complete WhatsApp reply of at most 90 words. Finish every sentence. Never stop mid-sentence.
 Never invent listings, prices, sizes, or addresses. Do not promise that a specialist will call, and do not say they will be in touch right away. Do not name a specialist.
+{IMAGE_TURN_NO_MEDIA_REQUEST if customer_sent_image else ""}
 {seller_line}
 
 Output JSON only, with "response" written FIRST and fully closed:
@@ -509,6 +520,7 @@ def build_system_prompt(
     memory_context: dict = None,
     hybrid_properties: list = None,
     compact: bool = False,
+    customer_sent_image: bool = False,
 ) -> str:
     """
     Constructs the master system prompt for Irene Leong with strict behavioral guardrails,
@@ -642,7 +654,19 @@ CRITICAL ANTI-REPETITION RULE:
             role_clean=role_clean,
             prop_context=prop_context,
             collected_data=collected_data,
+            customer_sent_image=customer_sent_image,
         )
+
+    if customer_sent_image:
+        listing_rule = f"""9. Photo already attached on this turn:
+   - {IMAGE_TURN_NO_MEDIA_REQUEST}
+   - Answer from the visible sign: FOR RENT / FOR SALE, phone, street, area, and shop type.
+   - If the sign is unreadable, ask for the shop or road name in words only.
+   - Do not name a specialist, and do not set "asked_meeting" or "promises_handover"."""
+    else:
+        listing_rule = """9. Unidentified Listing & Advertisement Inquiries (Conversation 71 Protocol):
+   - If customer asks about an unspecified commercial shop, advertisement, or listing ("哪一间店面?", "租金多少钱一个月?", "where is the shop?", "is the shop still available?"):
+   - Ask which listing they mean, and ask for a screenshot, photo, or link. Ask again if it is still unclear. Do not name a specialist, and do not set "asked_meeting" or "promises_handover"."""
 
     # 5. Master Prompt Assembly
     prompt = f"""You are Irene Leong, a Senior Property Agent from ERA Realtor representing Home IHC ({COMPANY_FULL_NAME}).
@@ -670,9 +694,7 @@ Core Operational Directives:
      * Area / Size: State hectares and converted acres (1 ha = 2.471 acres; e.g. 0.289 ha = ~0.714 acres).
      * Tenure & Category: Freehold (Pegangan Selama-lamanya) vs Leasehold, Syarat Nyata (Pertanian / Dusun / Kelapa Sawit).
    - Consultative Seller Intake: Only if the sender has explicitly offered their own property or land. Then ask for their own asking price. Do not treat a shop photo or "how much is this" as a seller. NEVER recommend buyer properties to a confirmed land seller. Do not assume the town is Bentong.
-9. Unidentified Listing & Advertisement Inquiries (Conversation 71 Protocol):
-   - If customer asks about an unspecified commercial shop, advertisement, or listing ("哪一间店面?", "租金多少钱一个月?", "where is the shop?", "is the shop still available?"):
-   - Ask which listing they mean, and ask for a screenshot, photo, or link. Ask again if it is still unclear. Do not name a specialist, and do not set "asked_meeting" or "promises_handover".
+{listing_rule}
 10. Dual-Track State Isolation:
    - When communicating with a property seller or landowner, NEVER search or pitch buyer properties from the database.
    - If a seller switches to inquiring about buying (or a buyer uploads a property to sell), address the active priority directly without erasing their previously recorded profile.
