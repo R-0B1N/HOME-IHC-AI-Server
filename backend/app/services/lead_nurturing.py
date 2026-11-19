@@ -8,6 +8,7 @@ import os
 import logging
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Optional, Dict, Any, List
 
 from app.db.models import SessionLocal, Customer
@@ -311,6 +312,32 @@ class ReengagementTemplateDispatcher:
             return {"status": "error", "error": str(e), "parameters": params}
 
 
+def _copy_plain(value: Any) -> Any:
+    """Keep JSON-able values. Drop MagicMock and ORM internals."""
+    if isinstance(value, (str, int, float, bool, datetime)):
+        return value
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, list):
+        return list(value)
+    return None
+
+
+def _freeze_customer(row: Any) -> SimpleNamespace:
+    """Detach the fields run_cycle needs so the scan session can close."""
+    return SimpleNamespace(
+        id=_copy_plain(getattr(row, "id", None)),
+        contact_name=_copy_plain(getattr(row, "contact_name", None)),
+        phone_number=_copy_plain(getattr(row, "phone_number", None)),
+        conversation_ids=_copy_plain(getattr(row, "conversation_ids", None)),
+        metadata_json=_copy_plain(getattr(row, "metadata_json", None)) or {},
+        last_interaction=_copy_plain(getattr(row, "last_interaction", None)),
+        updated_at=_copy_plain(getattr(row, "updated_at", None)),
+        created_at=_copy_plain(getattr(row, "created_at", None)),
+        intent_category=_copy_plain(getattr(row, "intent_category", None)),
+    )
+
+
 class LeadNurturingManager:
     """
     Object-Oriented Lead Nurturing Orchestrator.
@@ -384,7 +411,9 @@ class LeadNurturingManager:
             if phone_cand:
                 try:
                     from app.services.db_services import get_sender_role
-                    sender_role = get_sender_role(str(phone_cand), db=self.db_session)
+                    # Own short session. Never borrow the scan session: that
+                    # connection used to stay checked out across Chatwoot calls.
+                    sender_role = get_sender_role(str(phone_cand))
                     if sender_role in ["admin", "employee", "agent"]:
                         logger.info(
                             f"[NURTURE SUPPRESSED] Customer {phone_cand} is verified staff ({sender_role}). Skipping lead follow-up."
@@ -598,6 +627,35 @@ class LeadNurturingManager:
 
         return action_taken
 
+    def _persist_nurture_metadata(self, customer: Any) -> None:
+        """Write nurture metadata in a session that is closed before return."""
+        customer_id = getattr(customer, "id", None)
+        if not customer_id:
+            return
+        meta = getattr(customer, "metadata_json", None) or {}
+        if not isinstance(meta, dict):
+            return
+        db = SessionLocal()
+        try:
+            row = db.query(Customer).filter(Customer.id == customer_id).first()
+            if row is None:
+                return
+            row.metadata_json = dict(meta)
+            try:
+                from sqlalchemy.orm.attributes import flag_modified
+                flag_modified(row, "metadata_json")
+            except Exception:
+                pass
+            db.commit()
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            db.close()
+
     def run_cycle(self) -> Dict[str, Any]:
         """
         Scans all database customers and processes due nurture cadences.
@@ -617,21 +675,36 @@ class LeadNurturingManager:
         except Exception as toggle_err:
             logger.warning(f"Could not check follow-up toggle status: {toggle_err}")
 
+        # Load every row, copy the fields the cycle needs, and close the
+        # session before any Chatwoot/WhatsApp call. A session passed in by
+        # the caller is closed here too: SQLAlchemy 2.0 keeps the checked-out
+        # connection alive until close(), so leaving it on the manager leaked
+        # one connection per hourly run until the pool (15 + 25) was full.
         db = self.db_session or SessionLocal()
-        should_close = self.db_session is None
+        now = datetime.now(timezone.utc)
+        try:
+            snapshots = [_freeze_customer(row) for row in db.query(Customer).all()]
+        except Exception as exc:
+            logger.error(f"Error executing nurturing cycle: {exc}")
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            db.close()
+
         nurtured_messages = 0
         templates_dispatched = 0
         private_notes = 0
-        now = datetime.now(timezone.utc)
-
         try:
-            customers = db.query(Customer).all()
-            for c in customers:
-                eval_res = self.evaluate_customer(c, now=now)
+            for customer in snapshots:
+                eval_res = self.evaluate_customer(customer, now=now)
                 if not eval_res:
                     continue
 
-                action = self.dispatch_nurture(c, eval_res, now=now)
+                action = self.dispatch_nurture(customer, eval_res, now=now)
+                self._persist_nurture_metadata(customer)
                 if action == "message_sent":
                     nurtured_messages += 1
                 elif action in ["template_dispatched", "private_note_posted"]:
@@ -639,15 +712,9 @@ class LeadNurturingManager:
                     private_notes += 1
                 elif "note" in action:
                     private_notes += 1
-                db.commit()
-
         except Exception as exc:
             logger.error(f"Error executing nurturing cycle: {exc}")
-            db.rollback()
-            raise exc
-        finally:
-            if should_close:
-                db.close()
+            raise
 
         logger.info(
             f"Completed lead nurturing cycle: {nurtured_messages} 24h messages, "

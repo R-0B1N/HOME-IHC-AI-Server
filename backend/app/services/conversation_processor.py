@@ -15,6 +15,7 @@ testable stages:
 
 import base64
 import datetime
+import hashlib
 import json
 import logging
 import os
@@ -91,6 +92,11 @@ PERSONA_ALIAS_MAP = {
     "expected_rental": ["budget", "asking_price"],
 }
 
+PROCESSING_ERROR_FALLBACK = (
+    "Sorry, something went wrong on our side. Please send your message again, "
+    "or we'll get back to you shortly."
+)
+
 PLACEHOLDER_FIELD_VALUES = {
     "property inquiry",
     "to be advised",
@@ -127,6 +133,13 @@ class ConversationQueueProcessor:
             redis_host = os.getenv("REDIS_HOST", "redis")
             redis_port = int(os.getenv("REDIS_PORT", "6379"))
             self.redis_client = redis.Redis(host=redis_host, port=redis_port, db=0)
+
+        self._fetched_messages: List[Dict[str, Any]] = []
+        self._fetched_batch_count = 0
+        self._fetched_conversation_id: Optional[int] = None
+        self._manual_bypass = False
+        self._reply_claimed = False
+        self._local_owner_id: Optional[str] = None
 
     def check_debounce(
         self, conversation_id: int, task_scheduled_time: float
@@ -189,27 +202,242 @@ class ConversationQueueProcessor:
 
         return True
 
+    def _processing_owner_id(self) -> str:
+        """Celery retries keep the same task id, so the retry can re-enter its own lock."""
+        request = getattr(self.celery_task, "request", None)
+        task_id = getattr(request, "id", None) if request is not None else None
+        if task_id:
+            return str(task_id)
+        if not self._local_owner_id:
+            self._local_owner_id = f"inline-{id(self)}"
+        return self._local_owner_id
+
+    def release_processing_lock(self, conversation_id: Optional[int] = None) -> None:
+        conv_id = conversation_id if conversation_id is not None else self._fetched_conversation_id
+        if conv_id is None:
+            return
+        lock_key = f"convo_processing_{conv_id}"
+        try:
+            current = self.redis_client.get(lock_key)
+        except Exception:
+            return
+        current_id = current.decode("utf-8") if isinstance(current, bytes) else (current or "")
+        if current_id == self._processing_owner_id():
+            try:
+                self.redis_client.delete(lock_key)
+            except Exception:
+                pass
+
     def fetch_queued_messages(self, conversation_id: int) -> Optional[List[Dict[str, Any]]]:
         """
-        Atomically pops all messages from Redis for this conversation and removes keys.
+        Read the queued batch without deleting it.
+
+        Deletion used to happen here, so a later DB timeout retried against an
+        empty list and the customer's photo was gone. The batch stays until
+        acknowledge_fetched_batch(). Messages RPUSHed during processing remain
+        at the tail. A per-conversation lock stops a second task from sending
+        a second reply for the same batch; Celery retries share the task id
+        and are allowed back in.
         """
         queue_key = f"convo_queue_{conversation_id}"
-        active_key = f"convo_active_{conversation_id}"
+        lock_key = f"convo_processing_{conversation_id}"
+        task_id = self._processing_owner_id()
 
-        pipe = self.redis_client.pipeline()
-        pipe.lrange(queue_key, 0, -1)
-        pipe.delete(queue_key)
-        pipe.delete(active_key)
-        results = pipe.execute()
+        existing = self.redis_client.get(lock_key)
+        existing_id = existing.decode("utf-8") if isinstance(existing, bytes) else (existing or "")
+        if existing_id and existing_id != task_id:
+            logger.info(
+                "Conversation %s is already being processed. Skipping.",
+                conversation_id,
+            )
+            return None
+        if not existing_id:
+            locked = self.redis_client.set(lock_key, task_id, nx=True, ex=300)
+            if not locked:
+                logger.info(
+                    "Conversation %s processing lock was taken concurrently. Skipping.",
+                    conversation_id,
+                )
+                return None
+        else:
+            try:
+                self.redis_client.expire(lock_key, 300)
+            except Exception:
+                pass
 
-        raw_messages = results[0]
+        raw_messages = self.redis_client.lrange(queue_key, 0, -1) or []
         if not raw_messages:
             logger.info(f"Queue for conversation {conversation_id} is empty. Skipping.")
+            self._fetched_messages = []
+            self._fetched_batch_count = 0
+            self._fetched_conversation_id = conversation_id
+            self.release_processing_lock(conversation_id)
             return None
 
-        messages = [json.loads(msg) for msg in raw_messages]
+        messages = []
+        for msg in raw_messages:
+            if isinstance(msg, bytes):
+                msg = msg.decode("utf-8")
+            messages.append(json.loads(msg))
+        self._fetched_messages = messages
+        self._fetched_batch_count = len(messages)
+        self._fetched_conversation_id = conversation_id
         logger.info(f"Aggregating {len(messages)} messages for conversation {conversation_id}")
         return messages
+
+    def acknowledge_fetched_batch(self) -> int:
+        """
+        Drop only the prefix that was read. Newer RPUSH messages stay in order.
+        Returns how many messages were left behind.
+        """
+        conv_id = self._fetched_conversation_id
+        count = int(self._fetched_batch_count or 0)
+        remaining = 0
+        if conv_id is not None and count > 0:
+            queue_key = f"convo_queue_{conv_id}"
+            self.redis_client.ltrim(queue_key, count, -1)
+            remaining = int(self.redis_client.llen(queue_key) or 0)
+            if remaining <= 0:
+                self.redis_client.delete(queue_key)
+                self.redis_client.delete(f"convo_active_{conv_id}")
+                remaining = 0
+        self._fetched_batch_count = 0
+        self._fetched_messages = []
+        self.release_processing_lock(conv_id)
+        if remaining and conv_id is not None and self.celery_task and hasattr(self.celery_task, "apply_async"):
+            try:
+                self.celery_task.apply_async(
+                    args=[conv_id, time.time()],
+                    countdown=self.timeout_seconds,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not schedule follow-up for conversation %s: %s",
+                    conv_id,
+                    exc,
+                )
+        return remaining
+
+    @staticmethod
+    def should_acknowledge(status: Optional[str], reason: Optional[str]) -> bool:
+        if status in {"success", "fallback_sent"}:
+            return True
+        if status == "skipped" and reason in {
+            "bypass_ai is true",
+            "empty aggregated input",
+            "attachment download failed",
+        }:
+            return True
+        return False
+
+    def _batch_fingerprint(self) -> str:
+        parts = []
+        for msg in self._fetched_messages or []:
+            if isinstance(msg, dict) and msg.get("id") is not None:
+                parts.append(str(msg.get("id")))
+            else:
+                parts.append(json.dumps(msg, sort_keys=True, default=str)[:180])
+        raw = "|".join(parts) or "empty"
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+    def _claim_public_reply(self, conversation_id: int) -> bool:
+        key = f"convo_reply_once_{conversation_id}_{self._batch_fingerprint()}"
+        self._reply_guard_key = key
+        claimed = bool(self.redis_client.set(key, "1", nx=True, ex=86400))
+        return claimed
+
+    def _release_public_reply(self) -> None:
+        self._reply_claimed = False
+        key = getattr(self, "_reply_guard_key", None)
+        if not key:
+            return
+        try:
+            self.redis_client.delete(key)
+        except Exception:
+            pass
+
+    def _fallback_allowed(self, conversation_id: int) -> bool:
+        if self._manual_bypass or self._reply_claimed:
+            return False
+        try:
+            from app.api.settings import get_system_toggle
+            if not get_system_toggle("master_ai_enabled", default=True):
+                logger.info(
+                    "Skipping error fallback for conversation %s because master AI is off.",
+                    conversation_id,
+                )
+                return False
+        except Exception as exc:
+            logger.warning(
+                "Could not read master AI toggle before fallback for %s: %s",
+                conversation_id,
+                exc,
+            )
+        return True
+
+    def fail_unrecoverable(self, conversation_id: int, exc: BaseException) -> Dict[str, Any]:
+        """
+        Retries are exhausted. Tell the customer once, turn typing off, and
+        drop this batch so a later task cannot answer it a second time.
+        """
+        batch_size = int(self._fetched_batch_count or 0)
+        logger.error(
+            "Unrecoverable conversation processing failure conversation_id=%s batch_size=%s error=%s",
+            conversation_id,
+            batch_size,
+            exc,
+        )
+        sent = False
+        if batch_size and self._fallback_allowed(conversation_id):
+            guard = f"convo_error_fallback_{conversation_id}_{self._batch_fingerprint()}"
+            try:
+                first = bool(self.redis_client.set(guard, "1", nx=True, ex=86400))
+            except Exception as guard_exc:
+                logger.error(
+                    "Error-fallback guard failed for conversation %s: %s",
+                    conversation_id,
+                    guard_exc,
+                )
+                first = False
+            if first:
+                try:
+                    send_message(conversation_id, PROCESSING_ERROR_FALLBACK)
+                    sent = True
+                except Exception as send_exc:
+                    logger.error(
+                        "Failed to send error fallback for conversation %s: %s",
+                        conversation_id,
+                        send_exc,
+                    )
+                    try:
+                        self.redis_client.delete(guard)
+                    except Exception:
+                        pass
+        try:
+            toggle_typing_status(conversation_id, "off")
+        except Exception as typing_exc:
+            logger.warning(
+                "Failed to turn typing off after unrecoverable error for %s: %s",
+                conversation_id,
+                typing_exc,
+            )
+        if batch_size:
+            try:
+                self.acknowledge_fetched_batch()
+            except Exception as ack_exc:
+                logger.error(
+                    "Failed to drop batch after unrecoverable error for %s: %s",
+                    conversation_id,
+                    ack_exc,
+                )
+        else:
+            self.release_processing_lock(conversation_id)
+        return {
+            "status": "fallback_sent" if sent else "failed",
+            "conversation_id": conversation_id,
+            "batch_size": batch_size,
+            "fallback_sent": sent,
+        }
 
     def parse_multimodal_content(
         self, messages: List[Dict[str, Any]], conversation_id: int
@@ -406,6 +634,7 @@ class ConversationQueueProcessor:
         is_bypassed = bool(
             customer and customer.metadata_json and customer.metadata_json.get("manual_bypass_ai")
         )
+        self._manual_bypass = is_bypassed
         return customer, is_bypassed, phone_number, contact_name, metadata
 
     def build_rbac_and_context(
@@ -506,6 +735,10 @@ class ConversationQueueProcessor:
                         {"id": str(o.id), "status": o.status, "total": o.total_amount}
                         for o in db.query(Order).filter(Order.customer_id == customer.id).all()
                     ]
+
+                # Return the connection before Chatwoot history and LLM calls.
+                db.close()
+                db = None
 
                 # Fetch and filter conversation history
                 logger.info(f"Fetching conversation history for {conversation_id}")
@@ -633,19 +866,24 @@ class ConversationQueueProcessor:
                         logger.info(f"Found {len(matched_properties)} matching properties.")
                         db_context["data"]["properties"] = matched_properties
                     else:
-                        db_context["data"]["properties"] = [
-                            {
-                                "id": str(p.id),
-                                "name": p.title,
-                                "price": p.asking_price_myr,
-                                "status": p.listing_status,
-                            }
-                            for p in db.query(Property).filter(
-                                Property.listing_status == "Available"
-                            ).limit(10).all()
-                        ]
+                        summary_db = self.session_factory()
+                        try:
+                            db_context["data"]["properties"] = [
+                                {
+                                    "id": str(p.id),
+                                    "name": p.title,
+                                    "price": p.asking_price_myr,
+                                    "status": p.listing_status,
+                                }
+                                for p in summary_db.query(Property).filter(
+                                    Property.listing_status == "Available"
+                                ).limit(10).all()
+                            ]
+                        finally:
+                            summary_db.close()
         finally:
-            db.close()
+            if db is not None:
+                db.close()
 
         return (
             role,
@@ -1075,6 +1313,17 @@ class ConversationQueueProcessor:
         """
         Dispatches property images, Chatwoot message response, and autonomous viewing form if booked.
         """
+        if not self._claim_public_reply(conversation_id):
+            logger.info(
+                "Public reply already sent for conversation %s. Skipping duplicate send.",
+                conversation_id,
+            )
+            try:
+                toggle_typing_status(conversation_id, "off")
+            except Exception:
+                pass
+            return
+
         # 1. Transcoded images
         if images_to_send:
             for idx, img_url in enumerate(images_to_send):
@@ -1093,8 +1342,10 @@ class ConversationQueueProcessor:
         logger.info(f"Sending response to conversation {conversation_id}")
         try:
             send_message(conversation_id, response_text)
+            self._reply_claimed = True
         except Exception as me:
             logger.error(f"Failed to send response message to conv {conversation_id}: {me}")
+            self._release_public_reply()
 
         # 3. Viewing Form Dispatch
         if agent_result.get("schedule_viewing") and customer:

@@ -128,22 +128,39 @@ def process_conversation_queue(self, conversation_id: int, task_scheduled_time: 
     """
     Processes all queued messages for a conversation if the user has stopped typing.
     Delegates to ConversationQueueProcessor domain service.
+
+    The Redis list is removed only after a terminal result. A failed attempt
+    leaves the batch in place so this retry (same task id) processes it.
+    When retries are exhausted, one public fallback is sent unless AI is off.
     """
+    processor = ConversationQueueProcessor(
+        celery_task=self,
+        redis_client=redis_client,
+        session_factory=SessionLocal,
+        timeout_seconds=TIMEOUT_SECONDS,
+    )
     try:
-        processor = ConversationQueueProcessor(
-            celery_task=self,
-            redis_client=redis_client,
-            session_factory=SessionLocal,
-            timeout_seconds=TIMEOUT_SECONDS,
-        )
-        return processor.process(conversation_id, task_scheduled_time)
+        result = processor.process(conversation_id, task_scheduled_time)
     except Exception as exc:
         try:
             toggle_typing_status(conversation_id, "off")
         except Exception:
             pass
         logger.error(f"Error processing conversation {conversation_id}: {exc}")
+        if self.request.retries >= (self.max_retries or 0):
+            return processor.fail_unrecoverable(conversation_id, exc)
         raise self.retry(exc=exc, countdown=2 ** self.request.retries)
+
+    status = (result or {}).get("status")
+    reason = (result or {}).get("reason")
+    if status == "deferred":
+        # The follow-up apply_async has a new task id and must be able to take the lock.
+        processor.release_processing_lock(conversation_id)
+    elif processor.should_acknowledge(status, reason):
+        processor.acknowledge_fetched_batch()
+    else:
+        processor.release_processing_lock(conversation_id)
+    return result
 
 @celery_app.task(bind=True, max_retries=3)
 def process_wordpress_property(self, payload: dict):
@@ -429,8 +446,12 @@ def run_lead_nurturing_daemon(self):
     from app.services.lead_nurturing import LeadNurturingManager
     logger.info("Starting lead nurturing daemon run via LeadNurturingManager...")
     try:
+        # Do not pass a Session into the manager. run_cycle opens its own
+        # session and closes it before Chatwoot calls. A session stored on
+        # the manager was never closed, and SQLAlchemy 2.0 holds that
+        # connection until close(), so each hourly run permanently occupied
+        # one pool slot until 15+25 was exhausted.
         manager = LeadNurturingManager(
-            db_session=SessionLocal(),
             message_sender=send_message,
             note_sender=send_private_note
         )
