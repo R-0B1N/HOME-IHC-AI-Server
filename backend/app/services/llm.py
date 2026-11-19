@@ -22,6 +22,122 @@ llm_client = OpenAI(
     base_url=VLLM_BASE_URL
 )
 
+# One short vision read of a customer photo. Separate from the reply call.
+# Default ON. Set PHOTO_VISION_ENABLED=0 to skip the call; failure still
+# returns an empty description and the turn continues.
+PHOTO_VISION_MAX_TOKENS = 80
+_PHOTO_VISION_IMAGES = 2
+_NO_VISION_TEXT = re.compile(
+    r"^(?:none|n/?a|empty|no(?:\s+visible)?\s+text|unreadable|not readable|"
+    r"i (?:can(?:not|'t)|could not) (?:read|see)(?:\s+any)?(?:\s+text)?\.?)$",
+    re.IGNORECASE,
+)
+
+
+def photo_vision_enabled() -> bool:
+    raw = os.getenv("PHOTO_VISION_ENABLED", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def customer_image_part(img):
+    """OpenAI image_url part for a base64 string, data/http URL, or {url} dict."""
+    if isinstance(img, str) and img.strip():
+        if img.startswith(("http://", "https://", "data:")):
+            url = img
+        else:
+            url = f"data:image/jpeg;base64,{img}"
+        return {"type": "image_url", "image_url": {"url": url}}
+    if isinstance(img, dict) and img.get("url"):
+        return {"type": "image_url", "image_url": {"url": img["url"]}}
+    return None
+
+
+def _clean_vision_text(raw: str) -> str:
+    text = (raw or "").strip()
+    text = re.sub(r"^```(?:text|json)?", "", text, flags=re.IGNORECASE).strip()
+    if text.endswith("```"):
+        text = text[:-3].strip()
+    text = text.strip('"').strip("'").strip()
+    text = re.sub(r"\s+", " ", text)
+    if not text or _NO_VISION_TEXT.match(text):
+        return ""
+    return text[:400]
+
+
+def describe_customer_photos(images) -> str:
+    """
+    Transcribe a customer photo in one small request: FOR RENT / FOR SALE,
+    phone numbers, place names, shop type, and any other visible text.
+
+    Returns "" when vision is off, there is no image, or the call times out
+    or errors. Never raises.
+    """
+    if not photo_vision_enabled() or not images:
+        return ""
+    parts = [{
+        "type": "text",
+        "text": (
+            "Transcribe only text that is visibly printed on this photo. "
+            "Include FOR RENT or FOR SALE (出租/招租/出售), phone numbers, "
+            "street or area names, and the shop type. One short line. "
+            "If nothing is readable, reply with none. Do not guess and do not ask a question."
+        ),
+    }]
+    added = 0
+    for img in list(images)[:_PHOTO_VISION_IMAGES]:
+        part = customer_image_part(img)
+        if part:
+            parts.append(part)
+            added += 1
+    if added == 0:
+        return ""
+    try:
+        response = llm_client.chat.completions.create(
+            model=LLM_MODEL_NAME,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You read visible text on property advertisement photos for Home IHC. "
+                        "Output one plain line of transcription and nothing else."
+                    ),
+                },
+                {"role": "user", "content": parts},
+            ],
+            max_tokens=PHOTO_VISION_MAX_TOKENS,
+            temperature=0.0,
+            timeout=12.0,
+        )
+        content = ""
+        if response and response.choices:
+            content = response.choices[0].message.content or ""
+        description = _clean_vision_text(content)
+        logger.info("Photo vision transcribed %s characters", len(description))
+        return description
+    except Exception as exc:
+        logger.warning("Photo vision transcription failed: %s", exc)
+        return ""
+
+
+def append_photo_description(text: str, description: str) -> str:
+    """Append a [Photo shows: ...] note for classifiers, search, and the reply text."""
+    description = re.sub(r"\s+", " ", (description or "").strip())
+    if not description:
+        return text or ""
+    if description[-1] not in ".!?":
+        description += "."
+    note = (
+        "[Photo shows: "
+        f"{description} "
+        "The customer is asking about this advertisement, not offering their own property.]"
+    )
+    base = (text or "").strip()
+    if "[Photo shows:" in base:
+        return base
+    if not base:
+        return note
+    return f"{base}\n{note}"
+
 def transcribe_audio(audio_url: str) -> str:
     """
     Downloads audio and sends to Whisper (or audio transcription engine).
@@ -693,6 +809,8 @@ Categories:
 5. "valuer_inquiry": Bank valuer asking for transaction comparisons or bank values.
 6. "general": General greetings, thank you, or conversational pleasantries.
 
+If the message contains "[Photo shows: ...]", the customer already sent a photo of an advertisement. Do not use unidentified_listing just because the caption is empty. FOR RENT / FOR SALE / 出租 / 招租 / 出售 on that sign is buyer_search unless the customer explicitly says they own the property or want to list it.
+
 Output format:
 {"category": "seller_intake" | "buyer_search" | "unidentified_listing" | "agent_inquiry" | "valuer_inquiry" | "general"}"""
 
@@ -719,7 +837,14 @@ Output format:
 
     # Deterministic semantic fallback
     p_lower = (prompt or "").lower()
-    
+
+    # A photographed advertisement is a question about that listing. A FOR SALE
+    # sign must not become seller_intake when the vision call is all we have.
+    if "[photo shows:" in p_lower:
+        from app.services.role_contract import is_explicit_seller_statement
+        if not is_explicit_seller_statement(prompt or ""):
+            return "buyer_search"
+
     # 1. Unidentified listing inquiry (Conversation 71 pattern)
     if any(k in p_lower for k in [
         "哪一间店面", "哪间店面", "哪里的店面", "那个店面", "那间店面", "那一间店面", "那一间店", "那间店", "那一间",

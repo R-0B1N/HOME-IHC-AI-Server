@@ -26,7 +26,11 @@ from typing import Any, Dict, List, Optional, Tuple
 import redis
 
 from app.db.models import Customer, Order, Property, SessionLocal, User
-from app.services.agent_logic import premature_seller_hot_lead, process_persona_state_machine
+from app.services.agent_logic import (
+    premature_seller_hot_lead,
+    process_persona_state_machine,
+    restore_image_turn_reply,
+)
 from app.services.role_contract import (
     hot_lead_qualified,
     is_placeholder,
@@ -56,7 +60,9 @@ from app.services.document_parser import extract_text_from_document
 from app.services.lead_handover import dispatch_hot_lead_handover
 from app.services.llm import (
     LLM_MODEL_NAME,
+    append_photo_description,
     classify_turn_intent,
+    describe_customer_photos,
     extract_property_search_criteria,
     extract_valuer_data,
     llm_client,
@@ -604,6 +610,26 @@ class ConversationQueueProcessor:
 
         return final_prompt_text, combined_images, latest_doc_struct, contact_info, attachment_errors
 
+    def text_with_customer_photo(
+        self,
+        final_prompt_text: str,
+        combined_images: List[str],
+        latest_doc_struct: Optional[Dict[str, Any]],
+    ) -> str:
+        """
+        One vision read for a customer photo. Title documents already have a
+        structured extract and skip this call. Failure leaves the original text.
+        """
+        if not combined_images or is_title_document(latest_doc_struct):
+            return final_prompt_text
+        description = ""
+        try:
+            description = describe_customer_photos(combined_images)
+        except Exception as exc:
+            logger.warning("Photo vision transcription failed: %s", exc)
+            description = ""
+        return append_photo_description(final_prompt_text, description)
+
     def _send_photo_download_fallback(self, conversation_id: int) -> Dict[str, Any]:
         """
         One public reply when attachments were present and none of them decoded.
@@ -712,12 +738,14 @@ class ConversationQueueProcessor:
         final_prompt_text: str,
         latest_doc_struct: Optional[Dict[str, Any]],
         combined_images: List[str],
+        analysis_text: Optional[str] = None,
     ) -> Tuple[str, Dict[str, Any], str, str, bool, float]:
         """
         Constructs RBAC data context (Admin, Agent, Customer) and executes semantic turn classification.
         Returns (role, db_context, conversation_history, turn_intent, is_seller_intent, reset_cutoff_ts).
         """
         role = get_sender_role(phone_number)
+        model_text = final_prompt_text if analysis_text is None else analysis_text
         db_context: Dict[str, Any] = {"role": role, "data": {}}
         conversation_history = ""
         turn_intent = "general"
@@ -886,7 +914,7 @@ class ConversationQueueProcessor:
                 # Semantic Turn Classification
                 title_document = is_title_document(latest_doc_struct)
                 turn_intent = classify_turn_intent(
-                    prompt=final_prompt_text,
+                    prompt=model_text,
                     conversation_history=conversation_history,
                     has_document=title_document,
                     document_extract=latest_doc_struct if title_document else None,
@@ -924,8 +952,8 @@ class ConversationQueueProcessor:
                         ),
                     }
                 else:
-                    logger.info(f"Extracting search criteria from prompt: {final_prompt_text}")
-                    criteria = extract_property_search_criteria(final_prompt_text, "")
+                    logger.info(f"Extracting search criteria from prompt: {model_text}")
+                    criteria = extract_property_search_criteria(model_text, "")
                     logger.info(f"Extracted criteria: {criteria}")
 
                     if criteria and any(criteria.values()):
@@ -1163,6 +1191,9 @@ class ConversationQueueProcessor:
                     session["handover_requested"] = reason or (
                         "explicit_human" if user_wants_immediate_human else "viewing"
                     )
+
+            if combined_images:
+                response_text = restore_image_turn_reply(response_text, final_prompt_text)
 
             SessionManager.save_session(phone_number, session)
 
@@ -1571,6 +1602,10 @@ class ConversationQueueProcessor:
             logger.info("No text, audio, or images to process. Skipping.")
             return {"status": "skipped", "reason": "empty aggregated input"}
 
+        turn_text = self.text_with_customer_photo(
+            final_prompt_text, combined_images, latest_doc_struct
+        )
+
         # Turn typing on
         try:
             toggle_typing_status(conversation_id, "on")
@@ -1609,6 +1644,7 @@ class ConversationQueueProcessor:
             final_prompt_text,
             latest_doc_struct,
             combined_images,
+            analysis_text=turn_text,
         )
 
         # 7. Execute Persona State Machine
@@ -1624,7 +1660,7 @@ class ConversationQueueProcessor:
             phone_number=phone_number,
             contact_name=contact_name,
             role=role,
-            final_prompt_text=final_prompt_text,
+            final_prompt_text=turn_text,
             conversation_history=conversation_history,
             latest_doc_struct=latest_doc_struct,
             turn_intent=turn_intent,
@@ -1648,7 +1684,7 @@ class ConversationQueueProcessor:
                 customer=customer,
                 phone_number=phone_number,
                 contact_name=contact_name,
-                final_prompt_text=final_prompt_text,
+                final_prompt_text=turn_text,
                 session=session,
                 intent=intent,
                 handover_initiated=handover_initiated,
@@ -1667,7 +1703,7 @@ class ConversationQueueProcessor:
                 conversation_summary=conversation_summary_text,
                 valuer_data=valuer_data,
                 metadata=metadata,
-                final_prompt_text=final_prompt_text,
+                final_prompt_text=turn_text,
             )
 
         assignment_verified = bool(handover_result and handover_result.get("assignment_verified"))

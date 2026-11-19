@@ -5,7 +5,13 @@ import os
 import datetime
 import redis
 from app.db.models import SessionLocal, Property, Customer
-from app.services.llm import llm_client, LLM_MODEL_NAME, _parse_json_from_llm, classify_turn_intent
+from app.services.llm import (
+    llm_client,
+    LLM_MODEL_NAME,
+    _parse_json_from_llm,
+    classify_turn_intent,
+    customer_image_part,
+)
 from app.services.role_contract import (
     apply_role_evidence,
     hot_lead_qualified,
@@ -16,6 +22,7 @@ from app.services.role_contract import (
     sanitize_unverified_reply,
     seller_is_earned,
     stated_towns,
+    UNVERIFIED_REPLY_FALLBACK,
 )
 from app.services.db_services import find_matching_property, find_similar_properties, search_properties
 from app.services.system_prompts import (
@@ -29,6 +36,7 @@ from app.services.system_prompts import (
     get_multilingual_handover_wrapup,
     get_multilingual_disambiguation_request,
     build_system_prompt,
+    IMAGE_TURN_NO_MEDIA_REQUEST,
     IRENE_MAIN_PHONE,
     IRENE_DISPLAY_PHONE,
     ADMIN_EMAIL,
@@ -251,19 +259,21 @@ class MultiIntentMemoryTracker:
             except (ValueError, TypeError):
                 pass
 
-        # 5. Role: Only assign role when explicitly indicated or preserve existing_role (never blindly default to buyer)
+        # 5. Role: Only assign role when explicitly indicated or preserve existing_role (never blindly default to buyer).
+        # A photographed sign is the advertisement they asked about, not their own role.
+        role_text = re.sub(r"\[photo shows:.*?\]", " ", clean, flags=re.DOTALL)
         role = existing_role
-        if any(k in clean for k in ["property agent", "ejen hartanah", "我是中介", "我是经纪", "我是agent", "co-broke", "cobroke"]) or re.search(r'\b(?:i\s+am\s+(?:a\s+)?agent|agent\s*/\s*broker)\b', clean):
+        if any(k in role_text for k in ["property agent", "ejen hartanah", "我是中介", "我是经纪", "我是agent", "co-broke", "cobroke"]) or re.search(r'\b(?:i\s+am\s+(?:a\s+)?agent|agent\s*/\s*broker)\b', role_text):
             role = "agent"
-        elif any(k in clean for k in ["sell", "selling", "list my", "jual", "出让", "想卖", "放盘", "委托出售", "property owner", "pemilik hartanah", "我是业主", "我是卖家", "send u the piece of land", "geran"]):
+        elif any(k in role_text for k in ["sell", "selling", "list my", "jual", "出让", "想卖", "放盘", "委托出售", "property owner", "pemilik hartanah", "我是业主", "我是卖家", "send u the piece of land", "geran"]):
             role = "seller"
-        elif any(k in clean for k in ["rent out", "lease out", "bagi sewa", "sewakan", "出租", "放租", "招租"]):
+        elif any(k in role_text for k in ["rent out", "lease out", "bagi sewa", "sewakan", "出租", "放租", "招租"]):
             role = "landlord"
-        elif is_listing_question(clean):
+        elif is_listing_question(role_text):
             role = existing_role
-        elif any(k in clean for k in ["rent", "renting", "sewa", "租", "想要租"]):
+        elif any(k in role_text for k in ["rent", "renting", "sewa", "租", "想要租"]):
             role = "tenant"
-        elif any(k in clean for k in ["buy", "buying", "beli", "cari", "looking for", "personal buyer", "pembeli", "想买", "要买", "我是买家"]):
+        elif any(k in role_text for k in ["buy", "buying", "beli", "cari", "looking for", "personal buyer", "pembeli", "想买", "要买", "我是买家"]):
             role = "buyer"
 
         # 6. Check for concurrent multi-intent in a single prompt
@@ -1028,7 +1038,8 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
 
     # Unidentified listing: ask which ad this is. A second ask is not a handover
     # and does not name a specialist. A turn count never qualifies a hot lead.
-    if turn_intent == "unidentified_listing" and not matched_prop:
+    # A photo is already the identification that template would request.
+    if turn_intent == "unidentified_listing" and not matched_prop and not images:
         session["unidentified_listing_turns"] = session.get("unidentified_listing_turns", 0) + 1
         disambig_msg = get_multilingual_disambiguation_request(customer_lang, current_user_name)
         MultiIntentMemoryTracker.persist_customer_memory(phone_number, session)
@@ -1436,6 +1447,26 @@ def completion_token_room(system_prompt: str, history: str, user_text: str, imag
     return CONTEXT_TOKEN_BUDGET - estimated_input
 
 
+def _customer_photo_fits_retry(active_plan: dict, images: list) -> bool:
+    """
+    Keep a shop photo on the short retry when the vision note is already in
+    the text and the image reserve still leaves a full reply. Land-title
+    retries without that note stay text-only.
+    """
+    if not images or not active_plan:
+        return False
+    user_text = active_plan.get("user_text") or ""
+    if "[Photo shows:" not in user_text:
+        return False
+    room = completion_token_room(
+        active_plan.get("system_prompt") or "",
+        active_plan.get("history") or "",
+        user_text,
+        1,
+    )
+    return room >= MIN_COMPLETION_TOKENS
+
+
 def fit_conversational_token_budget(
     base_prompt: str,
     compact_prompt: str,
@@ -1568,7 +1599,102 @@ def _interpret_llm_content(content: str, finish_reason: str = None) -> dict:
     return parsed
 
 
-def _minimal_reply_prompt(customer_language: str, customer_name: str = None, is_seller: bool = False) -> str:
+_MEDIA_REQUEST = re.compile(
+    r"(?:"
+    r"\b(?:please\s+)?(?:share|provide|forward|upload)\b\s+"
+    r"(?:me\s+)?(?:a\s+|the\s+|your\s+|another\s+)?"
+    r"(?:screenshot|screen\s*shot|photo|picture|image|link)\b"
+    r"|\bsend\s+me\s+(?:a\s+|the\s+|your\s+|another\s+)?"
+    r"(?:screenshot|screen\s*shot|photo|picture|image|link)\b"
+    r"|screenshot,\s*photo,\s*or\s*link"
+    r"|广告截图|截图、照片|照片或链接"
+    r"|(?:截图|照片|链接).{0,12}发给我|发给我.{0,12}(?:截图|照片|链接)"
+    r"|tangkapan\s*skrin|pautan\s+iklan"
+    r")",
+    re.IGNORECASE,
+)
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?？！])\s+")
+
+
+def customer_media_request(text: str) -> bool:
+    return bool(_MEDIA_REQUEST.search(text or ""))
+
+
+def strip_customer_media_request(text: str) -> str:
+    """Drop sentences that ask the customer for a screenshot, photo, or link."""
+    if not text:
+        return text or ""
+    parts = _SENTENCE_SPLIT.split(text.strip())
+    kept = [part.strip() for part in parts if part.strip() and not customer_media_request(part)]
+    return re.sub(r"\s{2,}", " ", " ".join(kept)).strip()
+
+
+def visible_photo_text(source_text: str) -> str:
+    match = re.search(r"\[Photo shows:\s*(.*?)\]", source_text or "", re.DOTALL)
+    if not match:
+        return ""
+    body = re.sub(r"\s+", " ", match.group(1)).strip()
+    framing = "The customer is asking about this advertisement"
+    if framing in body:
+        body = body.split(framing)[0].strip(" .;")
+    return body.strip()
+
+
+def image_turn_acknowledgement(source_text: str) -> str:
+    """Reply used when the model only asked for another photo or the sanitizer emptied the text."""
+    visible = visible_photo_text(source_text)
+    language = detect_customer_language(visible or source_text or "")
+    if language == "zh":
+        if visible:
+            return f"我看到您发来的照片了。照片上的文字是：{visible}。我正在为您核对这间店面。"
+        return "我看到您发来的照片了。我正在为您核对这间店面。"
+    if language == "ms":
+        if visible:
+            return f"Saya nampak gambar yang anda hantar. Tulisan pada gambar: {visible}. Saya sedang semak iklan ini."
+        return "Saya nampak gambar yang anda hantar. Saya sedang semak iklan ini."
+    if visible:
+        return (
+            f"Thanks, I can see the photo. It reads: {visible}. "
+            "I am checking this listing against our records."
+        )
+    return (
+        "Thanks, I can see the photo you sent. "
+        "I am checking this listing against our records."
+    )
+
+
+def restore_image_turn_reply(response_text: str, source_text: str) -> str:
+    """
+    Keep a photo turn from asking for a photo, including after the promise
+    sanitizer deletes the only remaining sentence.
+    """
+    cleaned = strip_customer_media_request(response_text or "").strip()
+    if (
+        not cleaned
+        or cleaned == UNVERIFIED_REPLY_FALLBACK
+        or customer_media_request(cleaned)
+    ):
+        return image_turn_acknowledgement(source_text)
+    return cleaned
+
+
+def _guard_image_turn_model_reply(parsed: dict, source_text: str) -> dict:
+    if not isinstance(parsed, dict):
+        return parsed
+    cleaned = strip_customer_media_request(parsed.get("response") or "")
+    if not cleaned or customer_media_request(cleaned):
+        cleaned = image_turn_acknowledgement(source_text)
+    parsed["response"] = cleaned
+    parsed["asked_photos"] = False
+    return parsed
+
+
+def _minimal_reply_prompt(
+    customer_language: str,
+    customer_name: str = None,
+    is_seller: bool = False,
+    customer_sent_image: bool = False,
+) -> str:
     who = f" The customer's name is {customer_name}." if customer_name else ""
     if is_seller:
         track = (
@@ -1586,8 +1712,10 @@ def _minimal_reply_prompt(customer_language: str, customer_name: str = None, is_
         )
         intent_example = "buyer"
     lang = (customer_language or "en").upper()
+    photo_rule = f" {IMAGE_TURN_NO_MEDIA_REQUEST}" if customer_sent_image else ""
     return (
         f"You are Irene Leong of ERA Realtor / Home IHC.{who} Reply only in {lang}. {track} "
+        f"{photo_rule} "
         "Write at most 4 complete sentences and end with punctuation. "
         f'Output JSON only: {{"response": "...", "intent": "{intent_example}"}}'
     )
@@ -1660,12 +1788,18 @@ def generate_conversational_response(
         hybrid_properties=hybrid_properties,
     )
     images = kwargs.get("images") or []
+    prompt_kwargs["customer_sent_image"] = bool(images)
     is_seller_flag = bool(kwargs.get("is_seller")) or str(collected_data.get("customer_category") or "").lower() in {
         "seller", "owner", "landlord"
     }
     base_prompt = build_system_prompt(**prompt_kwargs)
     compact_prompt = build_system_prompt(**prompt_kwargs, compact=True)
-    minimal_prompt = _minimal_reply_prompt(customer_lang, customer_name, is_seller=is_seller_flag)
+    minimal_prompt = _minimal_reply_prompt(
+        customer_lang,
+        customer_name,
+        is_seller=is_seller_flag,
+        customer_sent_image=bool(images),
+    )
     plan = fit_conversational_token_budget(
         base_prompt=base_prompt,
         compact_prompt=compact_prompt,
@@ -1705,13 +1839,9 @@ def generate_conversational_response(
             user_content.append({"type": "text", "text": user_prompt_text})
             # One image per call. Vision tokens are reserved in the completion budget above.
             for img in images[:1]:
-                if isinstance(img, str):
-                    if img.startswith("http://") or img.startswith("https://") or img.startswith("data:"):
-                        user_content.append({"type": "image_url", "image_url": {"url": img}})
-                    else:
-                        user_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img}"}})
-                elif isinstance(img, dict) and img.get("url"):
-                    user_content.append({"type": "image_url", "image_url": {"url": img["url"]}})
+                part = customer_image_part(img)
+                if part:
+                    user_content.append(part)
             messages.append({"role": "user", "content": user_content})
         else:
             messages.append({"role": "user", "content": user_text or ""})
@@ -1755,6 +1885,34 @@ def generate_conversational_response(
             "response": fallback_msg,
         }
 
+    def _overflow_error(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return "400" in str(exc) or "maximum context length" in message or "context length" in message
+
+    def _retry_minimal():
+        # Shop-photo turns keep the image when the vision note is in the text
+        # and the reserve still leaves a full reply. A land-title retry has no
+        # [Photo shows:] note, so it stays text-only. If the image still
+        # overflows, the note remains in the user text.
+        keep_image = _customer_photo_fits_retry(minimal_plan, images)
+        try:
+            parsed_retry = _attempt(minimal_plan, include_images=keep_image)
+        except Exception as exc:
+            if not (keep_image and _overflow_error(exc)):
+                raise
+            logger.warning(
+                "Minimal photo retry exceeded the context window; keeping the vision text only"
+            )
+            parsed_retry = _attempt(minimal_plan, include_images=False)
+        if not parsed_retry and keep_image:
+            parsed_retry = _attempt(minimal_plan, include_images=False)
+        return parsed_retry
+
+    def _publish(parsed_reply: dict) -> dict:
+        if images and parsed_reply:
+            return _guard_image_turn_model_reply(parsed_reply, text or "")
+        return parsed_reply
+
     try:
         parsed = _attempt(plan, include_images=True)
         if not parsed and plan["tier"] != "minimal":
@@ -1762,22 +1920,19 @@ def generate_conversational_response(
                 "Conversational reply incomplete on %s prompt; retrying with minimal prompt",
                 plan["tier"],
             )
-            # Drop the photo on the retry. A land-title image can consume the
-            # context window; the customer's words are enough to finish the reply.
-            parsed = _attempt(minimal_plan, include_images=False)
+            parsed = _retry_minimal()
         if parsed and parsed.get("response"):
-            return parsed
+            return _publish(parsed)
         logger.error("LLM conversational reply stayed truncated after retry; sending a complete fallback")
-        return _fallback_payload()
+        return _publish(_fallback_payload())
     except Exception as e:
         logger.error(f"Error calling LLM for conversational response: {e}")
-        overflow = "400" in str(e) or "maximum context length" in str(e).lower()
-        if overflow and plan["tier"] != "minimal":
+        if _overflow_error(e) and plan["tier"] != "minimal":
             logger.warning("Attempting emergency retry with minimal context...")
             try:
-                parsed = _attempt(minimal_plan, include_images=False)
+                parsed = _retry_minimal()
                 if parsed and parsed.get("response"):
-                    return parsed
+                    return _publish(parsed)
             except Exception as retry_err:
                 logger.error(f"Emergency retry also failed: {retry_err}")
-        return _fallback_payload()
+        return _publish(_fallback_payload())

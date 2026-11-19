@@ -545,6 +545,12 @@ _PROMISE_SENTENCE = re.compile(
 )
 
 
+UNVERIFIED_REPLY_FALLBACK = (
+    "Thanks for the details. I am still checking this for you here. "
+    "Could you tell me a little more about what you need?"
+)
+
+
 def sanitize_unverified_reply(text: str) -> str:
     """Remove specialist-contact promises when nobody was actually assigned."""
     if not text:
@@ -553,7 +559,4 @@ def sanitize_unverified_reply(text: str) -> str:
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     if cleaned:
         return cleaned
-    return (
-        "Thanks for the details. I am still checking this for you here. "
-        "Could you tell me a little more about what you need?"
-    )
+    return UNVERIFIED_REPLY_FALLBACK
