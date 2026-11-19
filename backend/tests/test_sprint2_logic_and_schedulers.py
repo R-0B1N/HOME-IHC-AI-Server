@@ -410,10 +410,11 @@ class TestReportingEngine(unittest.TestCase):
 class TestLeadNurturingDaemon(unittest.TestCase):
     """Tests the lead nurturing daemon and WhatsApp 24-hour customer care policy guard."""
 
-    @patch("app.worker.tasks.SessionLocal")
+    @patch("app.services.db_services.get_sender_role", return_value="customer")
+    @patch("app.services.lead_nurturing.SessionLocal")
     @patch("app.worker.tasks.send_message")
     @patch("app.worker.tasks.send_private_note")
-    def test_lead_nurturing_within_and_outside_24h(self, mock_note, mock_msg, mock_session_local):
+    def test_lead_nurturing_within_and_outside_24h(self, mock_note, mock_msg, mock_session_local, mock_role):
         mock_db = MagicMock()
         mock_session_local.return_value = mock_db
 
@@ -454,6 +455,7 @@ class TestLeadNurturingDaemon(unittest.TestCase):
 
         result = run_lead_nurturing_daemon()
         self.assertEqual(result["status"], "success")
+        mock_db.close.assert_called()
 
         # Customer A (within 24h): Automated message sent
         mock_msg.assert_called_once()
