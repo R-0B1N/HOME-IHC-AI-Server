@@ -18,6 +18,9 @@ COMPANY_FULL_NAME = "Home IHC Sdn. Bhd. / BentongLand"
 DIGITAL_NAME_CARD_URL = "https://my.mecard.my/1733211127"
 IRENE_MAIN_PHONE = "+601165144931"
 IRENE_DISPLAY_PHONE = "+60 11-6514 4931"
+# Voon's line, printed on Home IHC boards as 011-630 44931. Kept here so a
+# photographed sign can be recognised without a schema or compose change.
+VOON_MAIN_PHONE = "+601163044931"
 ADMIN_EMAIL = "homeihc13@gmail.com"
 
 # Malaysian Dialect & Domain Lexicon
@@ -166,6 +169,58 @@ def detect_customer_language(text: str) -> str:
         return "ms"
 
     return "en"
+
+
+_PHOTO_SHOWS_NOTE = re.compile(r"\[photo shows:.*?\]", re.IGNORECASE | re.DOTALL)
+_PHOTO_PLACEHOLDER = re.compile(r"\[customer sent a photo\.?\]", re.IGNORECASE)
+
+
+def strip_vision_artifacts(text: str) -> str:
+    """Customer words only. Drops the vision note and the caption-less placeholder."""
+    cleaned = _PHOTO_SHOWS_NOTE.sub(" ", text or "")
+    cleaned = _PHOTO_PLACEHOLDER.sub(" ", cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def customer_language_evidence(text: str, conversation_history: str = "") -> str:
+    """
+    Language evidence is the customer's own caption plus earlier user lines.
+    [Photo shows: ...] and [Customer sent a photo.] never count, so CJK on a
+    sign cannot overwrite the language the customer actually writes.
+    """
+    parts = []
+    own = strip_vision_artifacts(text or "")
+    if own:
+        parts.append(own)
+    for line in (conversation_history or "").splitlines():
+        stripped = line.strip()
+        if not stripped.lower().startswith("user:"):
+            continue
+        body = strip_vision_artifacts(stripped.split(":", 1)[1] if ":" in stripped else stripped)
+        if body:
+            parts.append(body)
+    return " ".join(parts).strip()
+
+
+def resolve_customer_language(session: dict, text: str, conversation_history: str = "") -> str:
+    """
+    Update session['language'] from customer words. An empty remainder keeps the
+    stored language, or English when nothing has been stored yet.
+    """
+    session = session if isinstance(session, dict) else {}
+    evidence = customer_language_evidence(text, conversation_history)
+    if not evidence:
+        if not session.get("language"):
+            session["language"] = "en"
+        return session.get("language") or "en"
+    detected = detect_customer_language(evidence)
+    if detected in ("zh", "ms"):
+        session["language"] = detected
+    elif detected == "en" and len(evidence.split()) >= 2:
+        session["language"] = "en"
+    elif not session.get("language"):
+        session["language"] = detected
+    return session.get("language") or detected or "en"
 
 
 def is_explicit_handover_request(text: str) -> bool:
@@ -424,6 +479,14 @@ IMAGE_TURN_NO_MEDIA_REQUEST = (
     "Do not request another image, a listing URL, or a screen capture."
 )
 
+# Numbers painted on our own boards (Irene, Voon, and other staff lines) are not
+# a customer callback instruction.
+OWN_LISTING_PHONE_RULE = (
+    "Never tell the customer to call or WhatsApp a phone number printed on a sign "
+    "when it is a Home IHC staff number or our own listing. "
+    "If a listing matched, use that listing. Otherwise say Home IHC will check that unit and follow up."
+)
+
 
 def _cap_prompt_fragment(text: str, limit: int = 500) -> str:
     """Keeps optional prompt context inside the completion-token budget."""
@@ -497,6 +560,7 @@ Stage: {stage}
 Write ONE complete WhatsApp reply of at most 90 words. Finish every sentence. Never stop mid-sentence.
 Never invent listings, prices, sizes, or addresses. Do not promise that a specialist will call, and do not say they will be in touch right away. Do not name a specialist.
 {IMAGE_TURN_NO_MEDIA_REQUEST if customer_sent_image else ""}
+{OWN_LISTING_PHONE_RULE}
 {seller_line}
 
 Output JSON only, with "response" written FIRST and fully closed:
@@ -695,10 +759,11 @@ Core Operational Directives:
      * Tenure & Category: Freehold (Pegangan Selama-lamanya) vs Leasehold, Syarat Nyata (Pertanian / Dusun / Kelapa Sawit).
    - Consultative Seller Intake: Only if the sender has explicitly offered their own property or land. Then ask for their own asking price. Do not treat a shop photo or "how much is this" as a seller. NEVER recommend buyer properties to a confirmed land seller. Do not assume the town is Bentong.
 {listing_rule}
-10. Dual-Track State Isolation:
+10. Sign phone numbers: {OWN_LISTING_PHONE_RULE}
+11. Dual-Track State Isolation:
    - When communicating with a property seller or landowner, NEVER search or pitch buyer properties from the database.
    - If a seller switches to inquiring about buying (or a buyer uploads a property to sell), address the active priority directly without erasing their previously recorded profile.
-11. 4-Step Qualification & Handover Workflow:
+12. 4-Step Qualification & Handover Workflow:
    - Step 1: If role is unknown and no property info provided, ask which category they belong to (Personal Buyer, Property Agent / Broker, Seller / Property Owner).
    - Step 2: Once role is assigned and no property details were provided, ask premature qualification questions (Buyer: location, property type, budget; Seller: location, property type/size, asking price; Agent: agency, REN, client needs).
    - Step 3: Keep the conversation going until the customer has stated their own role, their own price or budget, a town, and a property type. Do not set "promises_handover" or "asked_meeting" for that, and do not promise a callback.

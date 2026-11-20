@@ -128,8 +128,19 @@ class SessionCheckoutTests(unittest.TestCase):
         self.assertEqual(self.engine.pool.checkedout(), 0)
 
     def _run(self, sender):
+        inbound_at = datetime.now(timezone.utc) - timedelta(hours=20)
+
+        def _inbound(_conversation_id):
+            return [{
+                "message_type": "incoming",
+                "private": False,
+                "content": "still looking",
+                "created_at": inbound_at.timestamp(),
+            }]
+
         with patch("app.services.lead_nurturing.SessionLocal", self.Session), \
              patch("app.services.db_services.get_sender_role", return_value="customer"), \
+             patch("app.services.lead_nurturing.get_conversation_messages", side_effect=_inbound), \
              patch("app.api.settings.get_system_toggle", return_value=True):
             manager = LeadNurturingManager(
                 message_sender=sender,

@@ -220,7 +220,7 @@ class VisionPhotoReplyTests(unittest.TestCase):
         self.assertEqual(len(_image_parts_from_call(vision_calls[0])), 1)
 
         classifiers = [call for call in calls if "unidentified_listing" in call["system"]]
-        self.assertGreaterEqual(len(classifiers), 2)
+        self.assertEqual(len(classifiers), 1)
         for call in classifiers:
             self.assertIn("[Photo shows:", _blob(call["user"]))
             self.assertIn("Jalan Bilut", _blob(call["user"]))

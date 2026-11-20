@@ -9,12 +9,16 @@ from app.services.llm import (
     llm_client,
     LLM_MODEL_NAME,
     _parse_json_from_llm,
+    analyze_advert_text,
     classify_turn_intent,
+    sign_and_customer_text,
     customer_image_part,
 )
 from app.services.role_contract import (
     apply_role_evidence,
     hot_lead_qualified,
+    is_explicit_buy,
+    is_explicit_renter,
     is_explicit_seller_statement,
     is_listing_question,
     is_title_document,
@@ -24,7 +28,13 @@ from app.services.role_contract import (
     stated_towns,
     UNVERIFIED_REPLY_FALLBACK,
 )
-from app.services.db_services import find_matching_property, find_similar_properties, search_properties
+from app.services.db_services import (
+    extract_phone_candidates,
+    find_matching_property,
+    find_similar_properties,
+    resolve_sign_contact,
+    search_properties,
+)
 from app.services.system_prompts import (
     detect_customer_language,
     is_explicit_handover_request,
@@ -37,9 +47,12 @@ from app.services.system_prompts import (
     get_multilingual_disambiguation_request,
     build_system_prompt,
     IMAGE_TURN_NO_MEDIA_REQUEST,
+    OWN_LISTING_PHONE_RULE,
     IRENE_MAIN_PHONE,
     IRENE_DISPLAY_PHONE,
     ADMIN_EMAIL,
+    resolve_customer_language,
+    strip_vision_artifacts,
 )
 
 logger = logging.getLogger(__name__)
@@ -661,6 +674,132 @@ def parse_viewing_schedule_datetime(text: str) -> datetime.datetime:
     return target_dt.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
 
+_PHOTO_REQUEST_NOTE = re.compile(
+    r"call the number|call this number|call that number|"
+    r"whatsapp (?:the |this |that )?number|"
+    r"number on the (?:sign|photo|banner)|"
+    r"hubungi nombor|telefon(?:kan)? nombor|"
+    r"打电话|致电|这个号码",
+    re.IGNORECASE,
+)
+
+_SIGN_FOLLOWUP = {
+    "zh": "这张招牌上的号码是 Home IHC 的。我们会先核对这个单位，然后再跟进。",
+    "ms": "Nombor pada papan ini ialah nombor Home IHC. Kami akan semak unit ini dan follow up dengan anda.",
+    "en": "This sign uses a Home IHC line. We will check that unit and follow up with you.",
+}
+
+
+def _is_captionless_photo(text: str, images=None) -> bool:
+    raw = text or ""
+    lowered = raw.lower()
+    has_photo = bool(images) or "[customer sent a photo.]" in lowered or "[photo shows:" in lowered
+    if not has_photo:
+        return False
+    return not strip_vision_artifacts(raw)
+
+
+def _listing_images(cached_prop: dict, session: dict) -> list:
+    prop_images = (cached_prop or {}).get("image_urls") or []
+    if not prop_images and cached_prop.get("id"):
+        db = SessionLocal()
+        try:
+            p_record = db.query(Property).filter(Property.id == cached_prop["id"]).first()
+            if p_record and p_record.image_urls:
+                prop_images = p_record.image_urls
+                cached_prop["image_urls"] = prop_images
+                session["interested_property"] = cached_prop
+        finally:
+            db.close()
+    return [
+        img for img in prop_images
+        if isinstance(img, str) and img.startswith("http") and not any(
+            ex in img.lower() for ex in ["logo", "icon", "favicon"]
+        )
+    ][:5]
+
+
+def reply_contains_staff_phone(reply: str, extra_numbers=None) -> bool:
+    """True when the reply contains Irene, Voon, or another staff/sign number."""
+    from app.services.db_services import normalize_phone_variants
+    from app.services.system_prompts import VOON_MAIN_PHONE
+
+    tracked = set()
+    for number in (IRENE_MAIN_PHONE, VOON_MAIN_PHONE, *(extra_numbers or [])):
+        tracked.update(normalize_phone_variants(number or ""))
+    digits = "".join(ch for ch in (reply or "") if ch.isdigit())
+    for variant in tracked:
+        vd = "".join(ch for ch in variant if ch.isdigit())
+        if vd and vd in digits:
+            return True
+    for candidate in extract_phone_candidates(reply or ""):
+        if set(normalize_phone_variants(candidate)) & tracked:
+            return True
+    return False
+
+
+def guard_own_staff_phone_reply(
+    reply: str,
+    staff_hit: bool = False,
+    listing_matched: bool = False,
+    language: str = "en",
+    extra_numbers=None,
+) -> str:
+    """
+    A reply must not send the customer back to a number painted on our own sign.
+    With no listing row, say Home IHC will check that unit and follow up.
+    """
+    text = reply or ""
+    if not text:
+        return text
+    has_digits = reply_contains_staff_phone(text, extra_numbers)
+    callish = bool(_PHOTO_REQUEST_NOTE.search(text))
+    replace = False
+    if staff_hit and not listing_matched:
+        replace = True
+    elif staff_hit and (has_digits or callish):
+        replace = True
+    elif has_digits and callish:
+        replace = True
+    if not replace:
+        return text
+    return _SIGN_FOLLOWUP.get(language, _SIGN_FOLLOWUP["en"])
+
+
+def _record_sign_enquiry(session, collected_data, raw_text, images, sign_contact) -> None:
+    """
+    A readable FOR RENT sign with no first-person ownership is a tenant enquiry.
+    A FOR SALE sign stays a buyer question. Neither becomes a seller.
+    """
+    advert = analyze_advert_text(raw_text)
+    own = strip_vision_artifacts(raw_text or "")
+    photo_turn = (
+        "[photo shows:" in (raw_text or "").lower()
+        or "[customer sent a photo.]" in (raw_text or "").lower()
+        or bool(images)
+    )
+    explicit_owner = is_explicit_seller_statement(own)
+    explicit_customer_role = explicit_owner or is_explicit_buy(own) or is_explicit_renter(own)
+    earned = seller_is_earned(session, collected_data)
+    if (advert["rental"] or advert["sale"]) and photo_turn:
+        session["identified_advert"] = True
+    if (sign_contact or {}).get("staff_hit") or (sign_contact or {}).get("listing"):
+        session["identified_advert"] = True
+    if not photo_turn or explicit_customer_role or earned:
+        return
+    if advert["rental"]:
+        collected_data["customer_category"] = "renter"
+        session["current_agent"] = "RENTER"
+        session.setdefault("renter_track", {})["status"] = "active"
+        if not earned:
+            session.pop("seller_evidence", None)
+            collected_data.pop("seller_evidence", None)
+    elif advert["sale"]:
+        if str(collected_data.get("customer_category") or "").lower() in {"seller", "owner", "landlord"}:
+            collected_data["customer_category"] = "buyer"
+            session["current_agent"] = "BUYER"
+
+
 def process_persona_state_machine(phone_number: str, text: str = "", session: dict = None, conversation_history: str = "", contact_name: str = None, raw_text: str = None, images: list = None, **kwargs) -> dict:
     """
     Enterprise-standard Conversational AI Engine for Home IHC.
@@ -674,16 +813,10 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
     session["last_customer_text"] = raw_text
     collected_data = session.setdefault("collected_data", {})
 
-    # Detect and track customer language
-    detected_lang = detect_customer_language(actual_text)
-    if actual_text:
-        if detected_lang in ["zh", "ms"]:
-            session["language"] = detected_lang
-        elif detected_lang == "en" and len(actual_text.split()) >= 2:
-            session["language"] = "en"
-        elif not session.get("language"):
-            session["language"] = detected_lang
-    customer_lang = session.get("language", detected_lang)
+    # Language follows the customer's own words. A CJK vision note must not overwrite it.
+    own_words = strip_vision_artifacts(actual_text)
+    captionless_photo = _is_captionless_photo(actual_text, images)
+    customer_lang = resolve_customer_language(session, actual_text, conversation_history)
 
     # 1. Payload Name Hook & Self-Introduction Extraction — populate name if valid
     if collected_data.get("name") and not is_valid_name(str(collected_data.get("name"))):
@@ -825,13 +958,28 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
 
     # 2. Dynamic Semantic Turn Classification & Step 1 / 2 Category Selection Detection BEFORE Property Matching
     title_document = is_title_document(session.get("latest_document_extract"))
-    # A storefront photo is not a title document and must not force seller_intake.
-    turn_intent = classify_turn_intent(
-        prompt=raw_text,
-        conversation_history=conversation_history,
-        has_document=title_document,
-        document_extract=session.get("latest_document_extract") if title_document else None,
-    )
+    # The queue processor already classified this turn. Reuse that result unless
+    # role evidence on the customer's own words disagrees with it.
+    supplied_intent = kwargs.get("turn_intent")
+    reevaluate_intent = False
+    if isinstance(supplied_intent, str) and supplied_intent:
+        if is_explicit_seller_statement(own_words) and supplied_intent != "seller_intake":
+            reevaluate_intent = True
+        elif title_document and supplied_intent != "seller_intake":
+            reevaluate_intent = True
+    if isinstance(supplied_intent, str) and supplied_intent and not reevaluate_intent:
+        turn_intent = supplied_intent
+    else:
+        # A storefront photo is not a title document and must not force seller_intake.
+        turn_intent = classify_turn_intent(
+            prompt=raw_text,
+            conversation_history=conversation_history,
+            has_document=title_document,
+            document_extract=session.get("latest_document_extract") if title_document else None,
+        )
+    if "[photo shows:" in raw_text.lower() and turn_intent == "seller_intake":
+        if not is_explicit_seller_statement(own_words):
+            turn_intent = "buyer_search"
     session["turn_intent"] = turn_intent
 
     # Manage Persistent Dual-Track State Machine
@@ -869,7 +1017,33 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
 
     # 2.5 Match Specific Property in Database ONLY for Buyer / General turns (never inject inventory into Seller/Agent turns)
     matched_prop = None
-    if not is_seller_or_agent_turn:
+    sign_contact = {}
+    if captionless_photo or extract_phone_candidates(raw_text):
+        sign_contact = resolve_sign_contact(raw_text)
+    session["sign_contact"] = sign_contact
+    if captionless_photo and not is_seller_or_agent_turn:
+        # This turn only. A session is keyed by phone, so yesterday's Putrajaya
+        # listing must not ride along on a caption-less sign photo.
+        if sign_contact.get("listing"):
+            matched_prop = sign_contact["listing"]
+            session["listing_match_source"] = "agent_phone"
+        else:
+            titled = find_matching_property(sign_and_customer_text(raw_text) or raw_text)
+            if titled:
+                matched_prop = titled
+                session["listing_match_source"] = "title"
+            else:
+                session["listing_match_source"] = None
+        if matched_prop:
+            logger.info(
+                "caption-less photo listing match source=%s title=%s",
+                session.get("listing_match_source"),
+                matched_prop.get("title"),
+            )
+            session["interested_property"] = matched_prop
+        else:
+            logger.info("caption-less photo listing match source=none")
+    elif not is_seller_or_agent_turn:
         matched_prop = find_matching_property(raw_text)
         if matched_prop:
             session["interested_property"] = matched_prop
@@ -1060,6 +1234,9 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
         # A seller is listing their own property; purge any mistakenly cached inventory property
         session.pop("interested_property", None)
         cached_prop = None
+    elif captionless_photo:
+        # Do not reuse session['interested_property'] or a history title match.
+        cached_prop = matched_prop
     else:
         cached_prop = session.get("interested_property")
         # If no cached property and not a seller, try to resolve from conversation history
@@ -1114,6 +1291,8 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
             and not is_listing_question(raw_text)
         ):
             collected_data["customer_category"] = _active_role
+
+    _record_sign_enquiry(session, collected_data, raw_text, images, sign_contact)
 
     # Check if user explicitly wants to switch criteria
     is_switching_context = is_intent_switch or any(phrase in raw_text.lower() for phrase in [
@@ -1222,12 +1401,18 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
     asked_alternatives = llm_analysis.get("asked_alternatives", False)
     new_constraints = llm_analysis.get("new_constraints", {})
 
-    # Detect photo request via LLM or direct conversational keywords
-    # Guard: Only trigger photo dispatch during ongoing dialogue, not on first message
+    # Detect photo request via LLM or direct conversational keywords.
+    # The synthetic "[Customer sent a photo.]" placeholder contains the substring
+    # "photo" and must not count. Gate on the customer's own words.
     has_prior_conversation = bool(conversation_history and len(conversation_history.strip()) > 10)
-    is_photo_request = (bool(asked_photos) or any(w in raw_text.lower() for w in [
-        "picture", "pictures", "photo", "photos", "gambar", "foto", "image", "images", "see photo", "show photo", "相片", "照片"
-    ])) and has_prior_conversation
+    photo_words = (
+        "picture", "pictures", "photo", "photos", "gambar", "foto", "image", "images",
+        "see photo", "show photo", "相片", "照片",
+    )
+    own_lower = own_words.lower()
+    keyword_hit = any(word in own_lower for word in photo_words)
+    model_hit = bool(asked_photos) and bool(own_lower)
+    is_photo_request = (keyword_hit or model_hit) and has_prior_conversation
 
     images_to_send = []
 
@@ -1235,6 +1420,18 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
     if is_seller:
         # Sellers provide photos to Home IHC; do not dispatch inventory listing photos to a seller
         images_to_send = []
+    elif captionless_photo:
+        # Listing images only when THIS turn matched a listing. Empty criteria is not a match.
+        if cached_prop and session.get("listing_match_source") in {"agent_phone", "title"}:
+            images_to_send = _listing_images(cached_prop, session)
+            logger.info(
+                "caption-less photo images source=%s title=%s count=%s",
+                session.get("listing_match_source"),
+                cached_prop.get("title"),
+                len(images_to_send),
+            )
+        else:
+            images_to_send = []
     elif is_photo_request and cached_prop:
         prop_images = cached_prop.get("image_urls") or []
         
@@ -1414,6 +1611,13 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
     resolved_agent = collected_data.get("customer_category") or session.get("current_agent") or "BUYER"
     session["current_agent"] = str(resolved_agent).upper()
     session["collected_data"] = collected_data
+    response_text = guard_own_staff_phone_reply(
+        response_text,
+        staff_hit=bool((sign_contact or {}).get("staff_hit")),
+        listing_matched=bool((sign_contact or {}).get("listing")),
+        language=customer_lang,
+        extra_numbers=(sign_contact or {}).get("phones") or [],
+    )
 
     # Persist updated multi-intent memory and profile to Customer table
     MultiIntentMemoryTracker.persist_customer_memory(phone_number, session)
@@ -1640,10 +1844,17 @@ def visible_photo_text(source_text: str) -> str:
     return body.strip()
 
 
-def image_turn_acknowledgement(source_text: str) -> str:
+def image_turn_acknowledgement(source_text: str, language: str = None) -> str:
     """Reply used when the model only asked for another photo or the sanitizer emptied the text."""
     visible = visible_photo_text(source_text)
-    language = detect_customer_language(visible or source_text or "")
+    own = strip_vision_artifacts(source_text or "")
+    if language in {"zh", "ms", "en"}:
+        language = language
+    elif own:
+        language = detect_customer_language(own)
+    else:
+        # Vision CJK stays inside the quotation. It does not choose the reply language.
+        language = "en"
     if language == "zh":
         if visible:
             return f"我看到您发来的照片了。照片上的文字是：{visible}。我正在为您核对这间店面。"
@@ -1663,7 +1874,7 @@ def image_turn_acknowledgement(source_text: str) -> str:
     )
 
 
-def restore_image_turn_reply(response_text: str, source_text: str) -> str:
+def restore_image_turn_reply(response_text: str, source_text: str, language: str = None) -> str:
     """
     Keep a photo turn from asking for a photo, including after the promise
     sanitizer deletes the only remaining sentence.
@@ -1674,16 +1885,16 @@ def restore_image_turn_reply(response_text: str, source_text: str) -> str:
         or cleaned == UNVERIFIED_REPLY_FALLBACK
         or customer_media_request(cleaned)
     ):
-        return image_turn_acknowledgement(source_text)
+        return image_turn_acknowledgement(source_text, language=language)
     return cleaned
 
 
-def _guard_image_turn_model_reply(parsed: dict, source_text: str) -> dict:
+def _guard_image_turn_model_reply(parsed: dict, source_text: str, language: str = None) -> dict:
     if not isinstance(parsed, dict):
         return parsed
     cleaned = strip_customer_media_request(parsed.get("response") or "")
     if not cleaned or customer_media_request(cleaned):
-        cleaned = image_turn_acknowledgement(source_text)
+        cleaned = image_turn_acknowledgement(source_text, language=language)
     parsed["response"] = cleaned
     parsed["asked_photos"] = False
     return parsed
@@ -1715,7 +1926,7 @@ def _minimal_reply_prompt(
     photo_rule = f" {IMAGE_TURN_NO_MEDIA_REQUEST}" if customer_sent_image else ""
     return (
         f"You are Irene Leong of ERA Realtor / Home IHC.{who} Reply only in {lang}. {track} "
-        f"{photo_rule} "
+        f"{photo_rule} {OWN_LISTING_PHONE_RULE} "
         "Write at most 4 complete sentences and end with punctuation. "
         f'Output JSON only: {{"response": "...", "intent": "{intent_example}"}}'
     )
@@ -1772,7 +1983,10 @@ def generate_conversational_response(
     db_context = kwargs.get("db_context") or {}
     memory_context = kwargs.get("memory_context") or {}
     hybrid_properties = kwargs.get("hybrid_properties") or []
-    customer_lang = kwargs.get("customer_language") or detect_customer_language(text)
+    customer_lang = kwargs.get("customer_language")
+    if not customer_lang:
+        evidence = strip_vision_artifacts(text or "")
+        customer_lang = detect_customer_language(evidence) if evidence else "en"
 
     prompt_kwargs = dict(
         cached_property=cached_property,
@@ -1910,7 +2124,7 @@ def generate_conversational_response(
 
     def _publish(parsed_reply: dict) -> dict:
         if images and parsed_reply:
-            return _guard_image_turn_model_reply(parsed_reply, text or "")
+            return _guard_image_turn_model_reply(parsed_reply, text or "", language=customer_lang)
         return parsed_reply
 
     try:
