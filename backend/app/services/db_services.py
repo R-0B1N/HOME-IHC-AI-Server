@@ -1,6 +1,8 @@
 import os
 import json
 import logging
+import re
+import socket
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
@@ -158,6 +160,130 @@ def normalize_phone_variants(phone_number: str) -> list:
         variants.add(f"+{intl_my}")
 
     return list(variants)
+
+
+def extract_phone_candidates(text: str) -> list:
+    """
+    Pull Malaysian mobile numbers out of sign text such as '011-651 44931'.
+    Groups separated only by spaces or punctuation are joined. A match is a
+    local 01x number (10 or 11 digits) or the same number with country code 60.
+    """
+    if not text:
+        return []
+    groups = list(re.finditer(r"\d+", text))
+    spans = []
+    for i in range(len(groups)):
+        digits = ""
+        for j in range(i, min(i + 5, len(groups))):
+            if j > i:
+                between = text[groups[j - 1].end():groups[j].start()]
+                if between and not re.fullmatch(r"[\s\-.()+]+", between):
+                    break
+            digits += groups[j].group()
+            if _is_malaysian_mobile(digits):
+                spans.append((groups[i].start(), groups[j].end(), digits))
+    spans.sort(key=lambda item: (item[0], -(item[1] - item[0])))
+    chosen = []
+    cursor = -1
+    seen_starts = set()
+    for start, end, digits in spans:
+        if start < cursor or start in seen_starts:
+            continue
+        chosen.append(digits)
+        seen_starts.add(start)
+        cursor = end
+    return chosen
+
+
+def _is_malaysian_mobile(digits: str) -> bool:
+    if digits.startswith("60") and 11 <= len(digits) <= 13:
+        return _is_local_malaysian_mobile("0" + digits[2:])
+    return _is_local_malaysian_mobile(digits)
+
+
+def _is_local_malaysian_mobile(digits: str) -> bool:
+    return digits.startswith("01") and len(digits) in (10, 11) and digits[2].isdigit()
+
+
+def _postgres_reachable() -> bool:
+    host = os.getenv("DB_HOST", os.getenv("POSTGRES_HOST", "postgres"))
+    try:
+        port = int(os.getenv("DB_PORT", os.getenv("POSTGRES_PORT", "5432")))
+    except (TypeError, ValueError):
+        port = 5432
+    try:
+        with socket.create_connection((host, port), timeout=0.25):
+            return True
+    except OSError:
+        return False
+
+
+def _staff_phone_variants(db: Session) -> set:
+    found = set()
+    for model in (User, Admin, Employee):
+        try:
+            rows = db.query(model.phone_number).all()
+        except Exception as exc:
+            logger.warning("Staff phone lookup failed on %s: %s", getattr(model, "__tablename__", model), exc)
+            continue
+        for row in rows:
+            phone = row[0] if isinstance(row, tuple) else getattr(row, "phone_number", None)
+            found.update(normalize_phone_variants(phone or ""))
+    return found
+
+
+def _listing_for_agent_phones(db: Session, phone_variants: set):
+    if not phone_variants:
+        return None
+    try:
+        rows = db.query(Property).filter(Property.agent_phone.isnot(None)).all()
+    except Exception as exc:
+        logger.warning("Listing phone lookup failed: %s", exc)
+        return None
+    for prop in rows:
+        variants = set(normalize_phone_variants(prop.agent_phone or ""))
+        if variants & phone_variants and _is_authentic_listing(prop):
+            return _format_property_dict(prop)
+    return None
+
+
+def resolve_sign_contact(text: str) -> dict:
+    """
+    Match phone numbers painted on a sign to Property.agent_phone and to staff
+    lines (crm_users, Admin, Employee, Irene, and Voon). No schema change.
+    """
+    from app.services.system_prompts import IRENE_MAIN_PHONE, VOON_MAIN_PHONE
+
+    phones = extract_phone_candidates(text or "")
+    phone_variants = set()
+    for phone in phones:
+        phone_variants.update(normalize_phone_variants(phone))
+    staff_variants = set()
+    for seed in (IRENE_MAIN_PHONE, VOON_MAIN_PHONE):
+        staff_variants.update(normalize_phone_variants(seed))
+    listing = None
+    if phone_variants and _postgres_reachable():
+        db = SessionLocal()
+        try:
+            staff_variants |= _staff_phone_variants(db)
+            listing = _listing_for_agent_phones(db, phone_variants)
+        except Exception as exc:
+            logger.warning("Sign phone directory lookup failed: %s", exc)
+        finally:
+            db.close()
+    staff_hit = bool(phone_variants & staff_variants) or listing is not None
+    if listing is not None:
+        source = "agent_phone"
+    elif staff_hit:
+        source = "staff"
+    else:
+        source = None
+    return {
+        "phones": phones,
+        "staff_hit": staff_hit,
+        "listing": listing,
+        "source": source,
+    }
 
 
 def get_sender_role(phone_number: str, db: Session = None) -> str:

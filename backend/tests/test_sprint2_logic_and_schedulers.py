@@ -453,7 +453,17 @@ class TestLeadNurturingDaemon(unittest.TestCase):
 
         mock_db.query.return_value.all.return_value = [cust_a, cust_b, cust_c]
 
-        result = run_lead_nurturing_daemon()
+        def _inbound(conversation_id):
+            anchor = cust_a.updated_at if int(conversation_id) == 1001 else cust_b.updated_at
+            return [{
+                "message_type": "incoming",
+                "private": False,
+                "content": "still looking",
+                "created_at": anchor.timestamp(),
+            }]
+
+        with patch("app.services.lead_nurturing.get_conversation_messages", side_effect=_inbound):
+            result = run_lead_nurturing_daemon()
         self.assertEqual(result["status"], "success")
         mock_db.close.assert_called()
 

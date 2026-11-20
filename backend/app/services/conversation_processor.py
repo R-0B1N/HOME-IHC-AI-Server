@@ -35,6 +35,7 @@ from app.services.role_contract import (
     hot_lead_qualified,
     is_placeholder,
     is_title_document,
+    public_intent_label,
     sanitize_unverified_reply,
     seller_is_earned,
 )
@@ -953,7 +954,7 @@ class ConversationQueueProcessor:
                     }
                 else:
                     logger.info(f"Extracting search criteria from prompt: {model_text}")
-                    criteria = extract_property_search_criteria(model_text, "")
+                    criteria = extract_property_search_criteria(model_text, conversation_history)
                     logger.info(f"Extracted criteria: {criteria}")
 
                     if criteria and any(criteria.values()):
@@ -1053,6 +1054,7 @@ class ConversationQueueProcessor:
                 role=role,
                 db_context=db_context,
                 images=combined_images,
+                turn_intent=turn_intent,
             )
             session = agent_result.get("updated_session", session)
 
@@ -1118,6 +1120,10 @@ class ConversationQueueProcessor:
                 lead_temp = "Warm"
             else:
                 lead_temp = "Cold"
+            # A readable FOR RENT / FOR SALE sign, or our own number on that sign,
+            # is a specific enquiry. Vague unmatched messages stay cold.
+            if lead_temp == "Cold" and session.get("identified_advert"):
+                lead_temp = "Warm"
 
             # Check explicit human contact phrases & inspection requests
             user_wants_immediate_human = any(
@@ -1193,7 +1199,11 @@ class ConversationQueueProcessor:
                     )
 
             if combined_images:
-                response_text = restore_image_turn_reply(response_text, final_prompt_text)
+                response_text = restore_image_turn_reply(
+                    response_text,
+                    final_prompt_text,
+                    language=session.get("language"),
+                )
 
             SessionManager.save_session(phone_number, session)
 
@@ -1543,8 +1553,9 @@ class ConversationQueueProcessor:
         if role in ["admin", "employee", "agent"]:
             labels_to_apply.append(role)
         else:
-            if intent in ["buyer", "seller", "tenant", "agent", "bank valuer"]:
-                labels_to_apply.append(intent.lower())
+            label_intent = public_intent_label(intent)
+            if label_intent in ["buyer", "seller", "tenant", "agent", "bank valuer"]:
+                labels_to_apply.append(label_intent)
 
             if handover_initiated:
                 labels_to_apply.append("handover_initiated")

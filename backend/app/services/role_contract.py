@@ -367,6 +367,14 @@ def assess_turn(text: str, document_extract: Optional[dict] = None) -> Dict[str,
     }
 
 
+def public_intent_label(intent: str) -> str:
+    """Renter and tenant share the tenant label and the tenant nurture copy."""
+    cleaned = (intent or "").strip().lower()
+    if cleaned in {"renter", "tenant"}:
+        return "tenant"
+    return cleaned
+
+
 def seller_is_earned(session: Optional[dict], collected: Optional[dict] = None) -> bool:
     session = session or {}
     collected = collected or session.get("collected_data") or {}
