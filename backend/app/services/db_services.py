@@ -232,25 +232,31 @@ def _staff_phone_variants(db: Session) -> set:
     return found
 
 
-def _listing_for_agent_phones(db: Session, phone_variants: set):
+def _agent_phone_is_known(db: Session, phone_variants: set) -> bool:
+    """True when a painted number is stored on some Property.agent_phone.
+
+    The number identifies our staff. It does not identify one listing: the same
+    agent phone is saved on many rows, so returning any of them is arbitrary.
+    """
     if not phone_variants:
-        return None
+        return False
     try:
         rows = db.query(Property).filter(Property.agent_phone.isnot(None)).all()
     except Exception as exc:
         logger.warning("Listing phone lookup failed: %s", exc)
-        return None
+        return False
     for prop in rows:
         variants = set(normalize_phone_variants(prop.agent_phone or ""))
         if variants & phone_variants and _is_authentic_listing(prop):
-            return _format_property_dict(prop)
-    return None
+            return True
+    return False
 
 
 def resolve_sign_contact(text: str) -> dict:
     """
-    Match phone numbers painted on a sign to Property.agent_phone and to staff
-    lines (crm_users, Admin, Employee, Irene, and Voon). No schema change.
+    Match phone numbers painted on a sign to staff lines (crm_users, Admin,
+    Employee, Irene, and Voon) and to Property.agent_phone. A hit means the
+    number is ours. It never selects a listing. No schema change.
     """
     from app.services.system_prompts import IRENE_MAIN_PHONE, VOON_MAIN_PHONE
 
@@ -261,18 +267,18 @@ def resolve_sign_contact(text: str) -> dict:
     staff_variants = set()
     for seed in (IRENE_MAIN_PHONE, VOON_MAIN_PHONE):
         staff_variants.update(normalize_phone_variants(seed))
-    listing = None
+    agent_phone_hit = False
     if phone_variants and _postgres_reachable():
         db = SessionLocal()
         try:
             staff_variants |= _staff_phone_variants(db)
-            listing = _listing_for_agent_phones(db, phone_variants)
+            agent_phone_hit = _agent_phone_is_known(db, phone_variants)
         except Exception as exc:
             logger.warning("Sign phone directory lookup failed: %s", exc)
         finally:
             db.close()
-    staff_hit = bool(phone_variants & staff_variants) or listing is not None
-    if listing is not None:
+    staff_hit = bool(phone_variants & staff_variants) or agent_phone_hit
+    if agent_phone_hit:
         source = "agent_phone"
     elif staff_hit:
         source = "staff"
@@ -281,7 +287,7 @@ def resolve_sign_contact(text: str) -> dict:
     return {
         "phones": phones,
         "staff_hit": staff_hit,
-        "listing": listing,
+        "listing": None,
         "source": source,
     }
 
