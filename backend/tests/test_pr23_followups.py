@@ -7,6 +7,10 @@ The photographed board read:
 Both numbers are Home IHC staff. The reply must not send the customer back to
 those numbers, must not attach a stale listing photo, and must not nurture
 that thread half an hour later by opening a new Chatwoot conversation.
+
+A staff phone is not a listing. Caption-less photos attach images only when
+this turn names one property by title or address and that property agrees
+with the rent/sale transaction and the category.
 """
 import json
 import os
@@ -271,26 +275,32 @@ class SignReplyAndPhotoTests(unittest.TestCase):
         result = self._run(SIGN_NOTE, session=session, history=history, images=["aGVsbG8="], finder=finder)
         self.assertEqual(result["images_to_send"], [])
 
-    def test_agent_phone_match_sends_that_listings_images(self):
+    def test_agent_phone_match_does_not_send_that_listings_images(self):
         listing = {
-            "id": "bentong-shop",
-            "title": "Bentong ground floor shop",
+            "id": "bentong-land",
+            "title": "Bentong (Sg Marong) Residential Land for Sale",
             "city": "Bentong",
-            "status": "For Rent",
-            "image_urls": ["https://cdn.example/bentong-shop.jpg"],
+            "status": "For Sale",
+            "image_urls": ["https://cdn.example/DJI_0910.webp"],
         }
-        result = self._run(
-            SIGN_NOTE,
-            images=["aGVsbG8="],
-            sign={
-                "phones": ["01165144931"],
-                "staff_hit": True,
-                "listing": listing,
-                "source": "agent_phone",
-            },
-        )
-        self.assertEqual(result["images_to_send"], ["https://cdn.example/bentong-shop.jpg"])
-        self.assertEqual(result["updated_session"].get("listing_match_source"), "agent_phone")
+        with self.assertLogs("app.services.agent_logic", level="INFO") as logs:
+            result = self._run(
+                SIGN_NOTE,
+                images=["aGVsbG8="],
+                sign={
+                    "phones": ["01165144931", "01163044931"],
+                    "staff_hit": True,
+                    "listing": listing,
+                    "source": "agent_phone",
+                },
+            )
+        self.assertEqual(result["images_to_send"], [])
+        self.assertIsNone(result["updated_session"].get("interested_property"))
+        self.assertNotEqual(result["updated_session"].get("listing_match_source"), "agent_phone")
+        self.assertTrue(any("reason=agent_phone_only" in line for line in logs.output))
+        reply = result["response"]
+        self.assertNotIn("44931", reply)
+        self.assertNotIn("call the number", reply.lower())
 
     def test_real_send_photos_still_sends_the_known_listing(self):
         listing = {
@@ -313,6 +323,200 @@ class SignReplyAndPhotoTests(unittest.TestCase):
             },
         )
         self.assertEqual(result["images_to_send"], ["https://cdn.example/known.jpg"])
+
+
+class _ListingRow:
+    def __init__(self, **kwargs):
+        self.title = ""
+        self.agent_phone = None
+        self.asking_price_myr = None
+        self.monthly_rental_income_myr = None
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+
+def _property_directory(*rows):
+    db = MagicMock()
+
+    def query(target):
+        found = MagicMock()
+        if getattr(target, "__name__", None) == "Property":
+            found.filter.return_value.all.return_value = list(rows)
+        else:
+            found.all.return_value = []
+        return found
+
+    db.query.side_effect = query
+    return db
+
+
+_SHOP_REPLY = {
+    "response": "This is the Bentong ground floor shop.",
+    "intent": "tenant",
+    "asked_photos": False,
+    "extracted_data": {},
+}
+SALE_LAND = "Bentong (Sg Marong) Residential Land for Sale"
+SHOP_TITLE = "Bentong Ground Floor Shop Lot"
+
+
+class CaptionlessListingMatchTests(unittest.TestCase):
+    _run = SignReplyAndPhotoTests._run
+    def test_for_rent_sign_agent_phones_do_not_select_a_listing(self):
+        # The land row is first. The old lookup returned whichever row shared
+        # the agent phone, which is how conv 330 attached DJI_0910.webp.
+        land = _ListingRow(
+            title=SALE_LAND,
+            agent_phone="+601165144931",
+            asking_price_myr=880000,
+            listing_status="For Sale",
+            image_urls=["https://cdn.example/DJI_0910.webp"],
+        )
+        voon = _ListingRow(
+            title="Voon commercial land",
+            agent_phone="+601163044931",
+            asking_price_myr=420000,
+            listing_status="For Sale",
+            image_urls=["https://cdn.example/voon.webp"],
+        )
+        directory = _property_directory(land, voon)
+        patches = [
+            patch("app.services.agent_logic.classify_turn_intent", return_value="buyer_search"),
+            patch("app.services.agent_logic.generate_conversational_response", return_value={
+                "response": "Please call 011-651 44931 or WhatsApp the number on the sign.",
+                "intent": "buyer",
+                "asked_photos": True,
+                "extracted_data": {},
+            }),
+            patch("app.services.agent_logic.find_matching_property", return_value=None),
+            patch("app.services.agent_logic.search_properties", return_value=[]),
+            patch("app.services.agent_logic.MultiIntentMemoryTracker.persist_customer_memory"),
+            patch("app.services.db_services._postgres_reachable", return_value=True),
+            patch("app.services.db_services.SessionLocal", return_value=directory),
+        ]
+        for item in patches:
+            item.start()
+        try:
+            contact = resolve_sign_contact(SIGN_NOTE)
+            self.assertTrue(contact["staff_hit"])
+            self.assertIsNone(contact["listing"])
+            self.assertEqual(contact["source"], "agent_phone")
+            with self.assertLogs("app.services.agent_logic", level="INFO") as logs:
+                result = process_persona_state_machine(
+                    phone_number="+601200000001",
+                    text=SIGN_NOTE,
+                    session={},
+                    conversation_history="",
+                    images=["aGVsbG8="],
+                )
+        finally:
+            for item in reversed(patches):
+                item.stop()
+        self.assertEqual(result["images_to_send"], [])
+        self.assertNotIn("DJI_0910", " ".join(result["images_to_send"]))
+        self.assertIsNone(result["updated_session"].get("interested_property"))
+        self.assertTrue(any("reason=agent_phone_only" in line for line in logs.output))
+        reply = result["response"]
+        self.assertNotIn("011-651", reply)
+        self.assertNotIn("011-630", reply)
+        self.assertNotIn("44931", reply)
+        self.assertNotIn("call the number", reply.lower())
+        self.assertIn("check that unit", reply.lower())
+
+    def test_rent_enquiry_title_match_on_sale_only_listing_sends_nothing(self):
+        note = f"[Customer sent a photo.] [Photo shows: FOR RENT {SALE_LAND}]"
+        listing = {
+            "id": "land-sale",
+            "title": SALE_LAND,
+            "status": "For Sale",
+            "property_category": ["Residential"],
+            "image_urls": ["https://cdn.example/DJI_0910.webp"],
+        }
+        with self.assertLogs("app.services.agent_logic", level="INFO") as logs:
+            result = self._run(
+                note,
+                images=["aGVsbG8="],
+                finder=lambda text: listing if "sg marong" in (text or "").lower() else None,
+                generate=_SHOP_REPLY,
+            )
+        self.assertEqual(result["images_to_send"], [])
+        self.assertIsNone(result["updated_session"].get("interested_property"))
+        self.assertTrue(any("reason=transaction_mismatch" in line for line in logs.output))
+
+    def test_rent_shop_sign_does_not_send_a_different_category(self):
+        note = "[Customer sent a photo.] [Photo shows: FOR RENT shoplot]"
+        listing = {
+            "id": "land-rent",
+            "title": "Bentong Residential Land",
+            "status": "For Rent",
+            "property_category": ["Residential Land"],
+            "image_urls": ["https://cdn.example/land-rent.webp"],
+        }
+        with self.assertLogs("app.services.agent_logic", level="INFO") as logs:
+            result = self._run(
+                note,
+                images=["aGVsbG8="],
+                finder=lambda *_args, **_kwargs: listing,
+                generate=_SHOP_REPLY,
+            )
+        self.assertEqual(result["images_to_send"], [])
+        self.assertTrue(any("reason=category_mismatch" in line for line in logs.output))
+
+    def test_title_match_consistent_with_rent_sends_that_listings_images(self):
+        note = f"[Customer sent a photo.] [Photo shows: FOR RENT {SHOP_TITLE}]"
+        listing = {
+            "id": "shop-rent",
+            "title": SHOP_TITLE,
+            "status": "Sale and Rental",
+            "property_category": ["Commercial"],
+            "property_type_sub": "Shop",
+            "image_urls": ["https://cdn.example/bentong-shop.webp"],
+        }
+
+        def finder(text):
+            return listing if SHOP_TITLE.lower() in (text or "").lower() else None
+
+        result = self._run(note, images=["aGVsbG8="], finder=finder, generate=_SHOP_REPLY)
+        self.assertEqual(result["images_to_send"], ["https://cdn.example/bentong-shop.webp"])
+        self.assertEqual(result["updated_session"].get("listing_match_source"), "title")
+        self.assertEqual(result["updated_session"].get("interested_property", {}).get("id"), "shop-rent")
+        self.assertIn("ground floor shop", result["response"].lower())
+
+    def test_address_match_consistent_with_rent_sends_that_listings_images(self):
+        note = "[Customer sent a photo.] [Photo shows: FOR RENT shoplot 12 Jalan Besar Bentong]"
+        listing = {
+            "id": "shop-addr",
+            "title": "Corner Shop Lot",
+            "street_address": "12 Jalan Besar Bentong",
+            "status": "For Rent",
+            "property_category": ["Commercial"],
+            "image_urls": ["https://cdn.example/jalan-besar.webp"],
+        }
+
+        def finder(text):
+            return listing if "jalan besar" in (text or "").lower() else None
+
+        result = self._run(note, images=["aGVsbG8="], finder=finder, generate=_SHOP_REPLY)
+        self.assertEqual(result["images_to_send"], ["https://cdn.example/jalan-besar.webp"])
+        self.assertEqual(result["updated_session"].get("listing_match_source"), "address")
+
+    def test_unknown_transaction_still_sends_a_title_match(self):
+        note = f"[Customer sent a photo.] [Photo shows: {SHOP_TITLE}]"
+        listing = {
+            "id": "shop-sale",
+            "title": SHOP_TITLE,
+            "status": "For Sale",
+            "property_category": ["Commercial"],
+            "image_urls": ["https://cdn.example/shop-sale.webp"],
+        }
+        result = self._run(
+            note,
+            images=["aGVsbG8="],
+            finder=lambda text: listing if SHOP_TITLE.lower() in (text or "").lower() else None,
+            generate=_SHOP_REPLY,
+        )
+        self.assertEqual(result["images_to_send"], ["https://cdn.example/shop-sale.webp"])
+        self.assertEqual(result["updated_session"].get("listing_match_source"), "title")
 
 
 class LanguageAndRoleTests(unittest.TestCase):

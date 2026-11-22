@@ -10,6 +10,7 @@ from app.services.llm import (
     LLM_MODEL_NAME,
     _parse_json_from_llm,
     analyze_advert_text,
+    apply_deterministic_sign_criteria,
     classify_turn_intent,
     sign_and_customer_text,
     customer_image_part,
@@ -719,6 +720,155 @@ def _listing_images(cached_prop: dict, session: dict) -> list:
     ][:5]
 
 
+_PHOTO_LISTING_SOURCES = {"title", "address"}
+_BOTH_TRANSACTION = re.compile(
+    r"sale\s*(?:and|&|/)\s*rental|"
+    r"rental\s*(?:and|&|/)\s*sale|"
+    r"for sale\s*(?:and|&|/)\s*(?:for\s*)?rent|"
+    r"sale\s*(?:and|&|/)\s*rent|"
+    r"rent\s*(?:and|&|/)\s*sale|"
+    r"出租出售|出售出租|租售|售租",
+    re.IGNORECASE,
+)
+_RENT_OFFER = re.compile(r"for rent|\brent\b|\brental\b|\bsewa\b|disewa|出租|招租", re.IGNORECASE)
+_SALE_OFFER = re.compile(r"for sale|\bsale\b|\bdijual\b|出售", re.IGNORECASE)
+
+
+def _joined_fields(prop: dict, fields) -> str:
+    parts = []
+    for field in fields:
+        value = (prop or {}).get(field)
+        if isinstance(value, (list, tuple)):
+            parts.extend(str(item) for item in value if item)
+        elif value:
+            parts.append(str(value))
+    return " ".join(parts)
+
+
+def _listing_transaction_offers(prop: dict) -> set:
+    """Which of sale/rent the listing itself offers.
+
+    Read from the title, status, and transaction text. 'Sale and Rental' offers
+    both. A title or status that only says sale does not offer rent.
+    """
+    blob = _joined_fields(prop, ("title", "status", "listing_status", "transaction"))
+    if not blob:
+        return set()
+    if _BOTH_TRANSACTION.search(blob):
+        return {"sale", "rent"}
+    offers = set()
+    if _RENT_OFFER.search(blob):
+        offers.add("rent")
+    if _SALE_OFFER.search(blob):
+        offers.add("sale")
+    return offers
+
+
+def _category_families(blob: str) -> set:
+    lowered = (blob or "").lower()
+    if not lowered.strip():
+        return set()
+    families = set()
+    land = bool(re.search(r"\bland\b|\btanah\b|agricultural|agriculture|durian|orchard", lowered))
+    if re.search(r"shop|shoplot|kedai|commercial|retail|\boffice\b|店面|铺位", lowered):
+        families.add("commercial")
+    if re.search(r"factory|warehouse|industrial|kilang", lowered):
+        families.add("industrial")
+    if land:
+        families.add("land")
+    residential = bool(re.search(
+        r"\bhouse\b|\brumah\b|semi-d|semi d|terrace|bungalow|condo|apartment|\bresidence\b",
+        lowered,
+    ))
+    if "residential" in lowered and not land:
+        residential = True
+    if residential:
+        families.add("residential")
+    return families
+
+
+def _enquiry_category_families(criteria: dict) -> set:
+    if not isinstance(criteria, dict):
+        return set()
+    return _category_families(" ".join([
+        str(criteria.get("category") or ""),
+        str(criteria.get("property_type") or ""),
+    ]))
+
+
+def _listing_category_families(prop: dict) -> set:
+    return _category_families(_joined_fields(
+        prop,
+        ("title", "property_category", "property_type_sub", "zoning", "category", "property_type"),
+    ))
+
+
+def _wanted_photo_transaction(criteria: dict):
+    if not isinstance(criteria, dict):
+        return None
+    transaction = str(criteria.get("transaction") or "").strip().lower()
+    if transaction in {"rent", "sale"}:
+        return transaction
+    enquiry = str(criteria.get("enquiry") or "").strip().lower()
+    if enquiry in {"rental", "rent", "tenant"}:
+        return "rent"
+    if enquiry == "sale":
+        return "sale"
+    return None
+
+
+def _listing_specific_source(prop: dict, text: str) -> str:
+    blob = re.sub(r"\s+", " ", (text or "").lower())
+    title = re.sub(r"\s+", " ", str((prop or {}).get("title") or "").strip().lower())
+    if title and len(title) >= 8 and title in blob:
+        return "title"
+    for field in ("street_address", "address"):
+        address = re.sub(r"\s+", " ", str((prop or {}).get(field) or "").strip().lower())
+        if address and len(address) >= 8 and address in blob:
+            return "address"
+    return "title"
+
+
+def _captionless_photo_criteria(raw_text: str, supplied: dict = None) -> dict:
+    """Sign markers win. A parsed rent/sale or shop category is kept when the sign is silent."""
+    base = supplied if isinstance(supplied, dict) else {}
+    return apply_deterministic_sign_criteria(base, raw_text)
+
+
+def _photo_criteria_from_turn(raw_text: str, kwargs: dict) -> dict:
+    supplied = {}
+    if isinstance(kwargs, dict):
+        explicit = kwargs.get("search_criteria")
+        if isinstance(explicit, dict):
+            supplied = explicit
+        else:
+            db_context = kwargs.get("db_context")
+            data = db_context.get("data") if isinstance(db_context, dict) else None
+            if isinstance(data, dict) and isinstance(data.get("search_criteria"), dict):
+                supplied = data.get("search_criteria")
+    return _captionless_photo_criteria(raw_text, supplied)
+
+
+def evaluate_captionless_photo_listing(prop: dict, criteria: dict, text: str) -> dict:
+    """
+    Images on a caption-less photo require one specific listing (its title or
+    address is in this turn) that agrees with a known transaction and category.
+    Unknown transaction or category does not reject the listing.
+    """
+    if not prop:
+        return {"accept": False, "source": None, "reason": None}
+    source = _listing_specific_source(prop, text)
+    wanted = _wanted_photo_transaction(criteria)
+    offers = _listing_transaction_offers(prop)
+    if wanted and offers and wanted not in offers:
+        return {"accept": False, "source": source, "reason": "transaction_mismatch"}
+    enquiry_families = _enquiry_category_families(criteria)
+    listing_families = _listing_category_families(prop)
+    if enquiry_families and listing_families and not (enquiry_families & listing_families):
+        return {"accept": False, "source": source, "reason": "category_mismatch"}
+    return {"accept": True, "source": source, "reason": None}
+
+
 def reply_contains_staff_phone(reply: str, extra_numbers=None) -> bool:
     """True when the reply contains Irene, Voon, or another staff/sign number."""
     from app.services.db_services import normalize_phone_variants
@@ -1023,18 +1173,16 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
     session["sign_contact"] = sign_contact
     if captionless_photo and not is_seller_or_agent_turn:
         # This turn only. A session is keyed by phone, so yesterday's Putrajaya
-        # listing must not ride along on a caption-less sign photo.
-        if sign_contact.get("listing"):
-            matched_prop = sign_contact["listing"]
-            session["listing_match_source"] = "agent_phone"
-        else:
-            titled = find_matching_property(sign_and_customer_text(raw_text) or raw_text)
-            if titled:
-                matched_prop = titled
-                session["listing_match_source"] = "title"
-            else:
-                session["listing_match_source"] = None
-        if matched_prop:
+        # listing must not ride along on a caption-less sign photo. A staff
+        # number on the sign is not a listing: agent_phone is shared.
+        photo_text = sign_and_customer_text(raw_text) or raw_text
+        criteria = _photo_criteria_from_turn(raw_text, kwargs)
+        titled = find_matching_property(photo_text)
+        decision = evaluate_captionless_photo_listing(titled, criteria, photo_text)
+        phone_picked_row = bool(sign_contact.get("listing")) or sign_contact.get("source") == "agent_phone"
+        if decision["accept"]:
+            matched_prop = titled
+            session["listing_match_source"] = decision["source"]
             logger.info(
                 "caption-less photo listing match source=%s title=%s",
                 session.get("listing_match_source"),
@@ -1042,7 +1190,14 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
             )
             session["interested_property"] = matched_prop
         else:
-            logger.info("caption-less photo listing match source=none")
+            matched_prop = None
+            session["listing_match_source"] = None
+            if decision["reason"]:
+                logger.info("photo match rejected reason=%s", decision["reason"])
+            elif phone_picked_row:
+                logger.info("photo match rejected reason=agent_phone_only")
+            else:
+                logger.info("caption-less photo listing match source=none")
     elif not is_seller_or_agent_turn:
         matched_prop = find_matching_property(raw_text)
         if matched_prop:
@@ -1421,12 +1576,14 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
         # Sellers provide photos to Home IHC; do not dispatch inventory listing photos to a seller
         images_to_send = []
     elif captionless_photo:
-        # Listing images only when THIS turn matched a listing. Empty criteria is not a match.
-        if cached_prop and session.get("listing_match_source") in {"agent_phone", "title"}:
+        # Images only after a title or address match was accepted above.
+        # source=agent_phone is not a listing and sends nothing.
+        source = session.get("listing_match_source")
+        if cached_prop and source in _PHOTO_LISTING_SOURCES:
             images_to_send = _listing_images(cached_prop, session)
             logger.info(
                 "caption-less photo images source=%s title=%s count=%s",
-                session.get("listing_match_source"),
+                source,
                 cached_prop.get("title"),
                 len(images_to_send),
             )
@@ -1614,7 +1771,7 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
     response_text = guard_own_staff_phone_reply(
         response_text,
         staff_hit=bool((sign_contact or {}).get("staff_hit")),
-        listing_matched=bool((sign_contact or {}).get("listing")),
+        listing_matched=bool(matched_prop),
         language=customer_lang,
         extra_numbers=(sign_contact or {}).get("phones") or [],
     )

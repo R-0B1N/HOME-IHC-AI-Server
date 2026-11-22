@@ -956,6 +956,7 @@ class ConversationQueueProcessor:
                     logger.info(f"Extracting search criteria from prompt: {model_text}")
                     criteria = extract_property_search_criteria(model_text, conversation_history)
                     logger.info(f"Extracted criteria: {criteria}")
+                    db_context["data"]["search_criteria"] = criteria
 
                     if criteria and any(criteria.values()):
                         matched_properties = search_properties(criteria, limit=15)
