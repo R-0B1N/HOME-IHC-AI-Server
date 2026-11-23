@@ -8,12 +8,128 @@ import os
 import logging
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Optional, Dict, Any, List
 
 from app.db.models import SessionLocal, Customer
-from app.services.chatwoot import send_message, send_private_note, send_whatsapp_template
+from app.services.chatwoot import (
+    get_contact_conversations,
+    get_conversation_messages,
+    send_message,
+    send_private_note,
+    send_whatsapp_template,
+)
+from app.services.db_services import normalize_phone_variants
 
 logger = logging.getLogger(__name__)
+
+_INCOMING_MESSAGE_TYPES = {0, "0", "incoming"}
+_OUTGOING_MESSAGE_TYPES = {1, "1", "outgoing", 3, "3", "template"}
+
+
+def canonical_nurture_intent(intent: str) -> str:
+    """Renter enquiries use the existing tenant nurture copy."""
+    cleaned = (intent or "buyer").strip().lower()
+    if cleaned == "renter":
+        return "tenant"
+    return cleaned or "buyer"
+
+
+def nurture_allowlist_variants() -> set:
+    """
+    NURTURE_TEST_CONTACTS is a comma-separated list of E.164 numbers.
+    Empty or unset is an empty set (staging then sends to nobody).
+    """
+    raw = os.getenv("NURTURE_TEST_CONTACTS", "") or ""
+    variants = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if part:
+            variants.update(normalize_phone_variants(part))
+    return variants
+
+
+def phone_in_nurture_allowlist(phone: str, variants: set) -> bool:
+    if not phone or not variants:
+        return False
+    return bool(set(normalize_phone_variants(str(phone))) & set(variants))
+
+
+def _message_direction(message: dict):
+    if not isinstance(message, dict) or message.get("private"):
+        return None
+    kind = message.get("message_type")
+    if kind in _INCOMING_MESSAGE_TYPES:
+        return "in"
+    if kind in _OUTGOING_MESSAGE_TYPES:
+        return "out"
+    return None
+
+
+def _parse_message_time(message: dict):
+    raw = message.get("created_at") if isinstance(message, dict) else None
+    if isinstance(raw, datetime):
+        dt = raw
+    elif isinstance(raw, (int, float)):
+        ts = float(raw)
+        if ts > 1e11:
+            ts = ts / 1000.0
+        dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+    elif isinstance(raw, str):
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except Exception:
+            try:
+                ts = float(raw)
+                if ts > 1e11:
+                    ts = ts / 1000.0
+                dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+            except Exception:
+                return None
+    else:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def resolve_inbound_clock(conversation_id, fetcher=None):
+    """
+    Last inbound customer message, and whether the latest public message is ours.
+
+    Returns None when the clock cannot be determined (fail closed).
+    Does not use customer.last_interaction: our own reply writes that field.
+    """
+    fetcher = fetcher or get_conversation_messages
+    try:
+        messages = fetcher(int(conversation_id)) if conversation_id else None
+    except Exception as exc:
+        logger.info("Nurture inbound clock unavailable for conv %s: %s", conversation_id, exc)
+        return None
+    if not isinstance(messages, list) or not messages:
+        logger.info("Nurture inbound clock undetermined for conv %s (no messages)", conversation_id)
+        return None
+    stamped = []
+    for message in messages:
+        direction = _message_direction(message)
+        when = _parse_message_time(message)
+        if direction and when:
+            stamped.append((when, direction))
+    if not stamped:
+        logger.info(
+            "Nurture inbound clock undetermined for conv %s (no public inbound or outbound)",
+            conversation_id,
+        )
+        return None
+    stamped.sort(key=lambda item: item[0])
+    inbound_times = [when for when, direction in stamped if direction == "in"]
+    latest_is_ours = stamped[-1][1] == "out"
+    if latest_is_ours:
+        return {"latest_is_ours": True, "last_inbound_at": inbound_times[-1] if inbound_times else None}
+    if not inbound_times:
+        logger.info("Nurture inbound clock undetermined for conv %s (no inbound message)", conversation_id)
+        return None
+    return {"latest_is_ours": False, "last_inbound_at": inbound_times[-1]}
 
 
 class LeadCadenceStrategy(ABC):
@@ -59,7 +175,7 @@ class HotCadenceStrategy(LeadCadenceStrategy):
 
     def get_message_content(self, customer_name: str, location: str = "", intent: str = "buyer") -> str:
         loc_str = f" in {location}" if location else ""
-        intent_clean = (intent or "buyer").lower()
+        intent_clean = canonical_nurture_intent(intent)
         if intent_clean in ["seller", "landowner"]:
             return (
                 f"Hi {customer_name}, Irene here from Home IHC! 😊 "
@@ -113,7 +229,7 @@ class WarmCadenceStrategy(LeadCadenceStrategy):
 
     def get_message_content(self, customer_name: str, location: str = "", intent: str = "buyer") -> str:
         loc_str = f" in {location}" if location else " in Pahang"
-        intent_clean = (intent or "buyer").lower()
+        intent_clean = canonical_nurture_intent(intent)
         if intent_clean in ["seller", "landowner"]:
             return (
                 f"Hi {customer_name}! Hope you are having a wonderful week. 😊 "
@@ -163,7 +279,7 @@ class ColdCadenceStrategy(LeadCadenceStrategy):
         return "7-14d Cooling Lead Re-Engagement"
 
     def get_message_content(self, customer_name: str, location: str = "", intent: str = "buyer") -> str:
-        intent_clean = (intent or "buyer").lower()
+        intent_clean = canonical_nurture_intent(intent)
         loc_str = f" in {location}" if location else " in Bentong and surrounding areas"
         if intent_clean in ["seller", "landowner"]:
             return (
@@ -269,7 +385,7 @@ class ReengagementTemplateDispatcher:
 
     def resolve_context_phrase(self, intent: str, location: str) -> str:
         """Constructs natural context phrase for variable {{2}} based on customer intent."""
-        intent_clean = (intent or "buyer").lower()
+        intent_clean = canonical_nurture_intent(intent)
         mapping = self.INTENT_CONTEXT_MAP.get(intent_clean, self.INTENT_CONTEXT_MAP["buyer"])
         loc = location or "Bentong"
         return mapping["context_phrase"].format(location=loc)
@@ -309,6 +425,32 @@ class ReengagementTemplateDispatcher:
         except Exception as e:
             logger.error(f"Failed to dispatch Meta re-engagement template to {to_phone}: {e}")
             return {"status": "error", "error": str(e), "parameters": params}
+
+
+def _copy_plain(value: Any) -> Any:
+    """Keep JSON-able values. Drop MagicMock and ORM internals."""
+    if isinstance(value, (str, int, float, bool, datetime)):
+        return value
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, list):
+        return list(value)
+    return None
+
+
+def _freeze_customer(row: Any) -> SimpleNamespace:
+    """Detach the fields run_cycle needs so the scan session can close."""
+    return SimpleNamespace(
+        id=_copy_plain(getattr(row, "id", None)),
+        contact_name=_copy_plain(getattr(row, "contact_name", None)),
+        phone_number=_copy_plain(getattr(row, "phone_number", None)),
+        conversation_ids=_copy_plain(getattr(row, "conversation_ids", None)),
+        metadata_json=_copy_plain(getattr(row, "metadata_json", None)) or {},
+        last_interaction=_copy_plain(getattr(row, "last_interaction", None)),
+        updated_at=_copy_plain(getattr(row, "updated_at", None)),
+        created_at=_copy_plain(getattr(row, "created_at", None)),
+        intent_category=_copy_plain(getattr(row, "intent_category", None)),
+    )
 
 
 class LeadNurturingManager:
@@ -359,6 +501,84 @@ class LeadNurturingManager:
             "cold": ColdCadenceStrategy(),
             "cooling": ColdCadenceStrategy()
         }
+        self._allowlist_notice_logged = False
+
+    def _log_empty_allowlist_once(self) -> None:
+        if self._allowlist_notice_logged:
+            return
+        logger.info(
+            "NURTURE_TEST_CONTACTS is unset; staging nurture will not send to anyone"
+        )
+        self._allowlist_notice_logged = True
+
+    def _staging_contact_permitted(self, customer) -> bool:
+        """Production is unchanged. Staging sends only to NURTURE_TEST_CONTACTS."""
+        if not self.is_staging:
+            return True
+        allow = nurture_allowlist_variants()
+        if not allow:
+            self._log_empty_allowlist_once()
+            return False
+        phone = getattr(customer, "id", None) or getattr(customer, "phone_number", None)
+        if not phone_in_nurture_allowlist(phone, allow):
+            logger.info(
+                "Staging nurture skipped %s; not in NURTURE_TEST_CONTACTS",
+                phone,
+            )
+            return False
+        return True
+
+    def _existing_conversation_id(self, customer, meta: dict):
+        """
+        Reuse a conversation this contact already has. Never create one.
+        """
+        conversation_id = meta.get("conversation_id")
+        if not conversation_id:
+            ids = getattr(customer, "conversation_ids", None)
+            if isinstance(ids, list) and ids:
+                conversation_id = ids[-1]
+            elif isinstance(ids, (int, str)) and str(ids).strip():
+                conversation_id = ids
+        if self.is_staging and meta.get("staging_conversation_id"):
+            conversation_id = meta.get("staging_conversation_id")
+        if conversation_id:
+            return conversation_id
+        contact_id = meta.get("chatwoot_contact_id") or meta.get("contact_id")
+        if not contact_id:
+            logger.info(
+                "[NURTURE SKIP] no existing conversation for %s; not creating one",
+                getattr(customer, "id", None),
+            )
+            return None
+        try:
+            existing = get_contact_conversations(int(contact_id))
+        except Exception as exc:
+            logger.info(
+                "[NURTURE SKIP] could not list conversations for contact %s: %s",
+                contact_id,
+                exc,
+            )
+            return None
+        inbox_id = int(os.getenv(
+            "STAGING_INBOX_ID" if self.is_staging else "WHATSAPP_INBOX_ID",
+            "4" if self.is_staging else "3",
+        ))
+        for conv in existing or []:
+            if not isinstance(conv, dict):
+                continue
+            if str(conv.get("inbox_id")) == str(inbox_id) and conv.get("id"):
+                logger.info(
+                    "Nurture reusing conversation %s for contact %s",
+                    conv.get("id"),
+                    contact_id,
+                )
+                return conv.get("id")
+        logger.info(
+            "[NURTURE SKIP] contact %s has no conversation in inbox %s; not creating one",
+            contact_id,
+            inbox_id,
+        )
+        return None
 
     def evaluate_customer(
         self,
@@ -384,7 +604,9 @@ class LeadNurturingManager:
             if phone_cand:
                 try:
                     from app.services.db_services import get_sender_role
-                    sender_role = get_sender_role(str(phone_cand), db=self.db_session)
+                    # Own short session. Never borrow the scan session: that
+                    # connection used to stay checked out across Chatwoot calls.
+                    sender_role = get_sender_role(str(phone_cand))
                     if sender_role in ["admin", "employee", "agent"]:
                         logger.info(
                             f"[NURTURE SUPPRESSED] Customer {phone_cand} is verified staff ({sender_role}). Skipping lead follow-up."
@@ -405,58 +627,36 @@ class LeadNurturingManager:
             except Exception:
                 pass
 
-        # Resolve active conversation_id across multiple sources
-        conversation_id = meta.get("conversation_id")
-        if not conversation_id and customer.conversation_ids:
-            if isinstance(customer.conversation_ids, list) and customer.conversation_ids:
-                conversation_id = customer.conversation_ids[-1]
-            elif isinstance(customer.conversation_ids, (int, str)):
-                conversation_id = customer.conversation_ids
+        if not self._staging_contact_permitted(customer):
+            return None
 
-        # In staging, guarantee conversation routes through Staging Inbox (Inbox 4)
-        if self.is_staging:
-            staging_inbox_id = int(os.getenv("STAGING_INBOX_ID", "4"))
-            if meta.get("staging_conversation_id"):
-                conversation_id = meta.get("staging_conversation_id")
-            elif meta.get("inbox_id") != staging_inbox_id:
-                try:
-                    from app.services.chatwoot import get_or_create_contact, create_conversation
-                    clean_p = customer.id or getattr(customer, "phone_number", "")
-                    cust_name = customer.contact_name or "Staging Customer"
-                    contact_id = get_or_create_contact(clean_p, cust_name)
-                    if contact_id:
-                        s_conv = create_conversation(contact_id, staging_inbox_id)
-                        if s_conv:
-                            conversation_id = s_conv
-                            meta["staging_conversation_id"] = s_conv
-                            customer.metadata_json = meta
-                except Exception as ce:
-                    logger.error(f"Failed to resolve staging conversation in Inbox {staging_inbox_id}: {ce}")
-
+        # Reuse an existing conversation. Never call create-conversation.
+        conversation_id = self._existing_conversation_id(customer, meta)
         if not conversation_id:
             return None
 
-        # Resolve last active timestamp safely across real models and MagicMock specs
-        candidates = [
-            getattr(customer, "last_interaction", None),
-            getattr(customer, "updated_at", None),
-            getattr(customer, "created_at", None),
-        ]
-        last_active = None
-        for cand in candidates:
-            if isinstance(cand, datetime):
-                last_active = cand
-                break
-            elif isinstance(cand, str):
-                try:
-                    last_active = datetime.fromisoformat(cand)
-                    break
-                except Exception:
-                    pass
-
-        if not last_active:
-            last_active = now
-        if getattr(last_active, "tzinfo", None) is None:
+        clock = resolve_inbound_clock(conversation_id)
+        if not clock:
+            logger.info(
+                "[NURTURE SKIP] inbound clock undetermined for %s conv %s",
+                getattr(customer, "id", None),
+                conversation_id,
+            )
+            return None
+        if clock.get("latest_is_ours"):
+            logger.info(
+                "[NURTURE SKIP] latest message in conv %s is ours; not following up",
+                conversation_id,
+            )
+            return None
+        last_active = clock.get("last_inbound_at")
+        if not isinstance(last_active, datetime):
+            logger.info(
+                "[NURTURE SKIP] no inbound timestamp for conv %s",
+                conversation_id,
+            )
+            return None
+        if last_active.tzinfo is None:
             last_active = last_active.replace(tzinfo=timezone.utc)
 
         elapsed_seconds = (now - last_active).total_seconds()
@@ -502,7 +702,7 @@ class LeadNurturingManager:
                 or "buyer"
             )
 
-        intent = (raw_intent if isinstance(raw_intent, str) else "buyer").lower()
+        intent = canonical_nurture_intent(raw_intent if isinstance(raw_intent, str) else "buyer")
 
         is_within_24h = MetaPolicyWindowGuard.is_within_24h(elapsed_hours)
 
@@ -598,6 +798,35 @@ class LeadNurturingManager:
 
         return action_taken
 
+    def _persist_nurture_metadata(self, customer: Any) -> None:
+        """Write nurture metadata in a session that is closed before return."""
+        customer_id = getattr(customer, "id", None)
+        if not customer_id:
+            return
+        meta = getattr(customer, "metadata_json", None) or {}
+        if not isinstance(meta, dict):
+            return
+        db = SessionLocal()
+        try:
+            row = db.query(Customer).filter(Customer.id == customer_id).first()
+            if row is None:
+                return
+            row.metadata_json = dict(meta)
+            try:
+                from sqlalchemy.orm.attributes import flag_modified
+                flag_modified(row, "metadata_json")
+            except Exception:
+                pass
+            db.commit()
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            db.close()
+
     def run_cycle(self) -> Dict[str, Any]:
         """
         Scans all database customers and processes due nurture cadences.
@@ -617,21 +846,38 @@ class LeadNurturingManager:
         except Exception as toggle_err:
             logger.warning(f"Could not check follow-up toggle status: {toggle_err}")
 
+        # Load every row, copy the fields the cycle needs, and close the
+        # session before any Chatwoot/WhatsApp call. A session passed in by
+        # the caller is closed here too: SQLAlchemy 2.0 keeps the checked-out
+        # connection alive until close(), so leaving it on the manager leaked
+        # one connection per hourly run until the pool (15 + 25) was full.
         db = self.db_session or SessionLocal()
-        should_close = self.db_session is None
+        now = datetime.now(timezone.utc)
+        try:
+            snapshots = [_freeze_customer(row) for row in db.query(Customer).all()]
+        except Exception as exc:
+            logger.error(f"Error executing nurturing cycle: {exc}")
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            db.close()
+
         nurtured_messages = 0
         templates_dispatched = 0
         private_notes = 0
-        now = datetime.now(timezone.utc)
-
+        if self.is_staging and not nurture_allowlist_variants():
+            self._log_empty_allowlist_once()
         try:
-            customers = db.query(Customer).all()
-            for c in customers:
-                eval_res = self.evaluate_customer(c, now=now)
+            for customer in snapshots:
+                eval_res = self.evaluate_customer(customer, now=now)
                 if not eval_res:
                     continue
 
-                action = self.dispatch_nurture(c, eval_res, now=now)
+                action = self.dispatch_nurture(customer, eval_res, now=now)
+                self._persist_nurture_metadata(customer)
                 if action == "message_sent":
                     nurtured_messages += 1
                 elif action in ["template_dispatched", "private_note_posted"]:
@@ -639,15 +885,9 @@ class LeadNurturingManager:
                     private_notes += 1
                 elif "note" in action:
                     private_notes += 1
-                db.commit()
-
         except Exception as exc:
             logger.error(f"Error executing nurturing cycle: {exc}")
-            db.rollback()
-            raise exc
-        finally:
-            if should_close:
-                db.close()
+            raise
 
         logger.info(
             f"Completed lead nurturing cycle: {nurtured_messages} 24h messages, "

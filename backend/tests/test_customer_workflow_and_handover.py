@@ -164,8 +164,8 @@ class TestCustomerWorkflowStep3QualifiedHandover(unittest.TestCase):
         scorer = AgentSpecializationScorer()
         mock_agents = [
             {
-                "name": "Ah Tuck",
-                "phone_number": "+60129663589",
+                "name": "Sale Agent",
+                "phone_number": "+60120000077",
                 "assigned_locations": ["Bentong", "Karak"],
                 "assigned_property_types": ["Land / Agriculture", "Commercial"],
             },
@@ -181,7 +181,7 @@ class TestCustomerWorkflowStep3QualifiedHandover(unittest.TestCase):
         mock_note = MagicMock()
         mock_label = MagicMock()
 
-        mock_agents[0]["email"] = "tuck@homeihc.com"
+        mock_agents[0]["email"] = "sale.agent@example.com"
         service = LeadHandoverService(
             scorer=scorer,
             get_active_agents_func=lambda: mock_agents,
@@ -209,10 +209,10 @@ class TestCustomerWorkflowStep3QualifiedHandover(unittest.TestCase):
         )
 
         self.assertEqual(res["status"], "success")
-        self.assertIn("+60129663589", res["routed_to"])
+        self.assertIn("+60120000077", res["routed_to"])
         self.assertIn("+601165144931", res["routed_to"])  # Irene Leong admin copy
         self.assertEqual(len(res["assigned_agents"]), 1)
-        self.assertEqual(res["assigned_agents"][0]["name"], "Ah Tuck")
+        self.assertEqual(res["assigned_agents"][0]["name"], "Sale Agent")
         # Template dispatch to specialist agent and admin copy using approved template
         self.assertEqual(mock_template.call_count, 3)
         first_call_kwargs = mock_template.call_args_list[0][1]
@@ -222,8 +222,8 @@ class TestCustomerWorkflowStep3QualifiedHandover(unittest.TestCase):
         mock_contact.assert_called_once_with(
             inbox_id=3,
             to_phone="+60179998888",
-            contact_name="Ah Tuck",
-            contact_phone="+60129663589",
+            contact_name="Sale Agent",
+            contact_phone="+60120000077",
             override_phone_number_id="1039310802596891",
         )
 
@@ -301,9 +301,15 @@ class TestCustomerWorkflowStep3QualifiedHandover(unittest.TestCase):
 
         self.assertEqual(res["status"], "below_threshold")
         self.assertFalse(res["assignment_verified"])
-        self.assertEqual(res["routed_to"], [])
+        self.assertEqual(res["assigned_agents"], [])
+        self.assertTrue(res["admin_only_handover"])
+        self.assertIn("+601165144931", res["routed_to"])
+        self.assertIn("+60123334444", res["routed_to"])
         self.assertFalse(res["is_fallback"])
-        self.assertIn("AI continues", res["diagnostic"])
+        self.assertNotIn("AI continues", res["diagnostic"])
+        self.assertIn("No specialist was named", res["diagnostic"])
+        self.assertIn("No customer contact was promised", res["diagnostic"])
+        mock_contact.assert_not_called()
 
 
 class TestCustomerWorkflowStep4OutOfScopeRedirection(unittest.TestCase):

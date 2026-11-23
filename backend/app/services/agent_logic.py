@@ -5,10 +5,21 @@ import os
 import datetime
 import redis
 from app.db.models import SessionLocal, Property, Customer
-from app.services.llm import llm_client, LLM_MODEL_NAME, _parse_json_from_llm, classify_turn_intent
+from app.services.llm import (
+    llm_client,
+    LLM_MODEL_NAME,
+    _parse_json_from_llm,
+    analyze_advert_text,
+    apply_deterministic_sign_criteria,
+    classify_turn_intent,
+    sign_and_customer_text,
+    customer_image_part,
+)
 from app.services.role_contract import (
     apply_role_evidence,
     hot_lead_qualified,
+    is_explicit_buy,
+    is_explicit_renter,
     is_explicit_seller_statement,
     is_listing_question,
     is_title_document,
@@ -16,8 +27,15 @@ from app.services.role_contract import (
     sanitize_unverified_reply,
     seller_is_earned,
     stated_towns,
+    UNVERIFIED_REPLY_FALLBACK,
 )
-from app.services.db_services import find_matching_property, find_similar_properties, search_properties
+from app.services.db_services import (
+    extract_phone_candidates,
+    find_matching_property,
+    find_similar_properties,
+    resolve_sign_contact,
+    search_properties,
+)
 from app.services.system_prompts import (
     detect_customer_language,
     is_explicit_handover_request,
@@ -28,14 +46,14 @@ from app.services.system_prompts import (
     get_multilingual_out_of_scope_redirect,
     get_multilingual_handover_wrapup,
     get_multilingual_disambiguation_request,
-    get_multilingual_ah_tuck_handover,
     build_system_prompt,
+    IMAGE_TURN_NO_MEDIA_REQUEST,
+    OWN_LISTING_PHONE_RULE,
     IRENE_MAIN_PHONE,
     IRENE_DISPLAY_PHONE,
     ADMIN_EMAIL,
-    AH_TUCK_NAME,
-    AH_TUCK_PHONE,
-    AH_TUCK_EMAIL
+    resolve_customer_language,
+    strip_vision_artifacts,
 )
 
 logger = logging.getLogger(__name__)
@@ -255,19 +273,21 @@ class MultiIntentMemoryTracker:
             except (ValueError, TypeError):
                 pass
 
-        # 5. Role: Only assign role when explicitly indicated or preserve existing_role (never blindly default to buyer)
+        # 5. Role: Only assign role when explicitly indicated or preserve existing_role (never blindly default to buyer).
+        # A photographed sign is the advertisement they asked about, not their own role.
+        role_text = re.sub(r"\[photo shows:.*?\]", " ", clean, flags=re.DOTALL)
         role = existing_role
-        if any(k in clean for k in ["property agent", "ejen hartanah", "我是中介", "我是经纪", "我是agent", "co-broke", "cobroke"]) or re.search(r'\b(?:i\s+am\s+(?:a\s+)?agent|agent\s*/\s*broker)\b', clean):
+        if any(k in role_text for k in ["property agent", "ejen hartanah", "我是中介", "我是经纪", "我是agent", "co-broke", "cobroke"]) or re.search(r'\b(?:i\s+am\s+(?:a\s+)?agent|agent\s*/\s*broker)\b', role_text):
             role = "agent"
-        elif any(k in clean for k in ["sell", "selling", "list my", "jual", "出让", "想卖", "放盘", "委托出售", "property owner", "pemilik hartanah", "我是业主", "我是卖家", "send u the piece of land", "geran"]):
+        elif any(k in role_text for k in ["sell", "selling", "list my", "jual", "出让", "想卖", "放盘", "委托出售", "property owner", "pemilik hartanah", "我是业主", "我是卖家", "send u the piece of land", "geran"]):
             role = "seller"
-        elif any(k in clean for k in ["rent out", "lease out", "bagi sewa", "sewakan", "出租", "放租", "招租"]):
+        elif any(k in role_text for k in ["rent out", "lease out", "bagi sewa", "sewakan", "出租", "放租", "招租"]):
             role = "landlord"
-        elif is_listing_question(clean):
+        elif is_listing_question(role_text):
             role = existing_role
-        elif any(k in clean for k in ["rent", "renting", "sewa", "租", "想要租"]):
+        elif any(k in role_text for k in ["rent", "renting", "sewa", "租", "想要租"]):
             role = "tenant"
-        elif any(k in clean for k in ["buy", "buying", "beli", "cari", "looking for", "personal buyer", "pembeli", "想买", "要买", "我是买家"]):
+        elif any(k in role_text for k in ["buy", "buying", "beli", "cari", "looking for", "personal buyer", "pembeli", "想买", "要买", "我是买家"]):
             role = "buyer"
 
         # 6. Check for concurrent multi-intent in a single prompt
@@ -655,6 +675,281 @@ def parse_viewing_schedule_datetime(text: str) -> datetime.datetime:
     return target_dt.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
 
+_PHOTO_REQUEST_NOTE = re.compile(
+    r"call the number|call this number|call that number|"
+    r"whatsapp (?:the |this |that )?number|"
+    r"number on the (?:sign|photo|banner)|"
+    r"hubungi nombor|telefon(?:kan)? nombor|"
+    r"打电话|致电|这个号码",
+    re.IGNORECASE,
+)
+
+_SIGN_FOLLOWUP = {
+    "zh": "这张招牌上的号码是 Home IHC 的。我们会先核对这个单位，然后再跟进。",
+    "ms": "Nombor pada papan ini ialah nombor Home IHC. Kami akan semak unit ini dan follow up dengan anda.",
+    "en": "This sign uses a Home IHC line. We will check that unit and follow up with you.",
+}
+
+
+def _is_captionless_photo(text: str, images=None) -> bool:
+    raw = text or ""
+    lowered = raw.lower()
+    has_photo = bool(images) or "[customer sent a photo.]" in lowered or "[photo shows:" in lowered
+    if not has_photo:
+        return False
+    return not strip_vision_artifacts(raw)
+
+
+def _listing_images(cached_prop: dict, session: dict) -> list:
+    prop_images = (cached_prop or {}).get("image_urls") or []
+    if not prop_images and cached_prop.get("id"):
+        db = SessionLocal()
+        try:
+            p_record = db.query(Property).filter(Property.id == cached_prop["id"]).first()
+            if p_record and p_record.image_urls:
+                prop_images = p_record.image_urls
+                cached_prop["image_urls"] = prop_images
+                session["interested_property"] = cached_prop
+        finally:
+            db.close()
+    return [
+        img for img in prop_images
+        if isinstance(img, str) and img.startswith("http") and not any(
+            ex in img.lower() for ex in ["logo", "icon", "favicon"]
+        )
+    ][:5]
+
+
+_PHOTO_LISTING_SOURCES = {"title", "address"}
+_BOTH_TRANSACTION = re.compile(
+    r"sale\s*(?:and|&|/)\s*rental|"
+    r"rental\s*(?:and|&|/)\s*sale|"
+    r"for sale\s*(?:and|&|/)\s*(?:for\s*)?rent|"
+    r"sale\s*(?:and|&|/)\s*rent|"
+    r"rent\s*(?:and|&|/)\s*sale|"
+    r"出租出售|出售出租|租售|售租",
+    re.IGNORECASE,
+)
+_RENT_OFFER = re.compile(r"for rent|\brent\b|\brental\b|\bsewa\b|disewa|出租|招租", re.IGNORECASE)
+_SALE_OFFER = re.compile(r"for sale|\bsale\b|\bdijual\b|出售", re.IGNORECASE)
+
+
+def _joined_fields(prop: dict, fields) -> str:
+    parts = []
+    for field in fields:
+        value = (prop or {}).get(field)
+        if isinstance(value, (list, tuple)):
+            parts.extend(str(item) for item in value if item)
+        elif value:
+            parts.append(str(value))
+    return " ".join(parts)
+
+
+def _listing_transaction_offers(prop: dict) -> set:
+    """Which of sale/rent the listing itself offers.
+
+    Read from the title, status, and transaction text. 'Sale and Rental' offers
+    both. A title or status that only says sale does not offer rent.
+    """
+    blob = _joined_fields(prop, ("title", "status", "listing_status", "transaction"))
+    if not blob:
+        return set()
+    if _BOTH_TRANSACTION.search(blob):
+        return {"sale", "rent"}
+    offers = set()
+    if _RENT_OFFER.search(blob):
+        offers.add("rent")
+    if _SALE_OFFER.search(blob):
+        offers.add("sale")
+    return offers
+
+
+def _category_families(blob: str) -> set:
+    lowered = (blob or "").lower()
+    if not lowered.strip():
+        return set()
+    families = set()
+    land = bool(re.search(r"\bland\b|\btanah\b|agricultural|agriculture|durian|orchard", lowered))
+    if re.search(r"shop|shoplot|kedai|commercial|retail|\boffice\b|店面|铺位", lowered):
+        families.add("commercial")
+    if re.search(r"factory|warehouse|industrial|kilang", lowered):
+        families.add("industrial")
+    if land:
+        families.add("land")
+    residential = bool(re.search(
+        r"\bhouse\b|\brumah\b|semi-d|semi d|terrace|bungalow|condo|apartment|\bresidence\b",
+        lowered,
+    ))
+    if "residential" in lowered and not land:
+        residential = True
+    if residential:
+        families.add("residential")
+    return families
+
+
+def _enquiry_category_families(criteria: dict) -> set:
+    if not isinstance(criteria, dict):
+        return set()
+    return _category_families(" ".join([
+        str(criteria.get("category") or ""),
+        str(criteria.get("property_type") or ""),
+    ]))
+
+
+def _listing_category_families(prop: dict) -> set:
+    return _category_families(_joined_fields(
+        prop,
+        ("title", "property_category", "property_type_sub", "zoning", "category", "property_type"),
+    ))
+
+
+def _wanted_photo_transaction(criteria: dict):
+    if not isinstance(criteria, dict):
+        return None
+    transaction = str(criteria.get("transaction") or "").strip().lower()
+    if transaction in {"rent", "sale"}:
+        return transaction
+    enquiry = str(criteria.get("enquiry") or "").strip().lower()
+    if enquiry in {"rental", "rent", "tenant"}:
+        return "rent"
+    if enquiry == "sale":
+        return "sale"
+    return None
+
+
+def _listing_specific_source(prop: dict, text: str) -> str:
+    blob = re.sub(r"\s+", " ", (text or "").lower())
+    title = re.sub(r"\s+", " ", str((prop or {}).get("title") or "").strip().lower())
+    if title and len(title) >= 8 and title in blob:
+        return "title"
+    for field in ("street_address", "address"):
+        address = re.sub(r"\s+", " ", str((prop or {}).get(field) or "").strip().lower())
+        if address and len(address) >= 8 and address in blob:
+            return "address"
+    return "title"
+
+
+def _captionless_photo_criteria(raw_text: str, supplied: dict = None) -> dict:
+    """Sign markers win. A parsed rent/sale or shop category is kept when the sign is silent."""
+    base = supplied if isinstance(supplied, dict) else {}
+    return apply_deterministic_sign_criteria(base, raw_text)
+
+
+def _photo_criteria_from_turn(raw_text: str, kwargs: dict) -> dict:
+    supplied = {}
+    if isinstance(kwargs, dict):
+        explicit = kwargs.get("search_criteria")
+        if isinstance(explicit, dict):
+            supplied = explicit
+        else:
+            db_context = kwargs.get("db_context")
+            data = db_context.get("data") if isinstance(db_context, dict) else None
+            if isinstance(data, dict) and isinstance(data.get("search_criteria"), dict):
+                supplied = data.get("search_criteria")
+    return _captionless_photo_criteria(raw_text, supplied)
+
+
+def evaluate_captionless_photo_listing(prop: dict, criteria: dict, text: str) -> dict:
+    """
+    Images on a caption-less photo require one specific listing (its title or
+    address is in this turn) that agrees with a known transaction and category.
+    Unknown transaction or category does not reject the listing.
+    """
+    if not prop:
+        return {"accept": False, "source": None, "reason": None}
+    source = _listing_specific_source(prop, text)
+    wanted = _wanted_photo_transaction(criteria)
+    offers = _listing_transaction_offers(prop)
+    if wanted and offers and wanted not in offers:
+        return {"accept": False, "source": source, "reason": "transaction_mismatch"}
+    enquiry_families = _enquiry_category_families(criteria)
+    listing_families = _listing_category_families(prop)
+    if enquiry_families and listing_families and not (enquiry_families & listing_families):
+        return {"accept": False, "source": source, "reason": "category_mismatch"}
+    return {"accept": True, "source": source, "reason": None}
+
+
+def reply_contains_staff_phone(reply: str, extra_numbers=None) -> bool:
+    """True when the reply contains Irene, Voon, or another staff/sign number."""
+    from app.services.db_services import normalize_phone_variants
+    from app.services.system_prompts import VOON_MAIN_PHONE
+
+    tracked = set()
+    for number in (IRENE_MAIN_PHONE, VOON_MAIN_PHONE, *(extra_numbers or [])):
+        tracked.update(normalize_phone_variants(number or ""))
+    digits = "".join(ch for ch in (reply or "") if ch.isdigit())
+    for variant in tracked:
+        vd = "".join(ch for ch in variant if ch.isdigit())
+        if vd and vd in digits:
+            return True
+    for candidate in extract_phone_candidates(reply or ""):
+        if set(normalize_phone_variants(candidate)) & tracked:
+            return True
+    return False
+
+
+def guard_own_staff_phone_reply(
+    reply: str,
+    staff_hit: bool = False,
+    listing_matched: bool = False,
+    language: str = "en",
+    extra_numbers=None,
+) -> str:
+    """
+    A reply must not send the customer back to a number painted on our own sign.
+    With no listing row, say Home IHC will check that unit and follow up.
+    """
+    text = reply or ""
+    if not text:
+        return text
+    has_digits = reply_contains_staff_phone(text, extra_numbers)
+    callish = bool(_PHOTO_REQUEST_NOTE.search(text))
+    replace = False
+    if staff_hit and not listing_matched:
+        replace = True
+    elif staff_hit and (has_digits or callish):
+        replace = True
+    elif has_digits and callish:
+        replace = True
+    if not replace:
+        return text
+    return _SIGN_FOLLOWUP.get(language, _SIGN_FOLLOWUP["en"])
+
+
+def _record_sign_enquiry(session, collected_data, raw_text, images, sign_contact) -> None:
+    """
+    A readable FOR RENT sign with no first-person ownership is a tenant enquiry.
+    A FOR SALE sign stays a buyer question. Neither becomes a seller.
+    """
+    advert = analyze_advert_text(raw_text)
+    own = strip_vision_artifacts(raw_text or "")
+    photo_turn = (
+        "[photo shows:" in (raw_text or "").lower()
+        or "[customer sent a photo.]" in (raw_text or "").lower()
+        or bool(images)
+    )
+    explicit_owner = is_explicit_seller_statement(own)
+    explicit_customer_role = explicit_owner or is_explicit_buy(own) or is_explicit_renter(own)
+    earned = seller_is_earned(session, collected_data)
+    if (advert["rental"] or advert["sale"]) and photo_turn:
+        session["identified_advert"] = True
+    if (sign_contact or {}).get("staff_hit") or (sign_contact or {}).get("listing"):
+        session["identified_advert"] = True
+    if not photo_turn or explicit_customer_role or earned:
+        return
+    if advert["rental"]:
+        collected_data["customer_category"] = "renter"
+        session["current_agent"] = "RENTER"
+        session.setdefault("renter_track", {})["status"] = "active"
+        if not earned:
+            session.pop("seller_evidence", None)
+            collected_data.pop("seller_evidence", None)
+    elif advert["sale"]:
+        if str(collected_data.get("customer_category") or "").lower() in {"seller", "owner", "landlord"}:
+            collected_data["customer_category"] = "buyer"
+            session["current_agent"] = "BUYER"
+
+
 def process_persona_state_machine(phone_number: str, text: str = "", session: dict = None, conversation_history: str = "", contact_name: str = None, raw_text: str = None, images: list = None, **kwargs) -> dict:
     """
     Enterprise-standard Conversational AI Engine for Home IHC.
@@ -668,16 +963,10 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
     session["last_customer_text"] = raw_text
     collected_data = session.setdefault("collected_data", {})
 
-    # Detect and track customer language
-    detected_lang = detect_customer_language(actual_text)
-    if actual_text:
-        if detected_lang in ["zh", "ms"]:
-            session["language"] = detected_lang
-        elif detected_lang == "en" and len(actual_text.split()) >= 2:
-            session["language"] = "en"
-        elif not session.get("language"):
-            session["language"] = detected_lang
-    customer_lang = session.get("language", detected_lang)
+    # Language follows the customer's own words. A CJK vision note must not overwrite it.
+    own_words = strip_vision_artifacts(actual_text)
+    captionless_photo = _is_captionless_photo(actual_text, images)
+    customer_lang = resolve_customer_language(session, actual_text, conversation_history)
 
     # 1. Payload Name Hook & Self-Introduction Extraction — populate name if valid
     if collected_data.get("name") and not is_valid_name(str(collected_data.get("name"))):
@@ -819,13 +1108,28 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
 
     # 2. Dynamic Semantic Turn Classification & Step 1 / 2 Category Selection Detection BEFORE Property Matching
     title_document = is_title_document(session.get("latest_document_extract"))
-    # A storefront photo is not a title document and must not force seller_intake.
-    turn_intent = classify_turn_intent(
-        prompt=raw_text,
-        conversation_history=conversation_history,
-        has_document=title_document,
-        document_extract=session.get("latest_document_extract") if title_document else None,
-    )
+    # The queue processor already classified this turn. Reuse that result unless
+    # role evidence on the customer's own words disagrees with it.
+    supplied_intent = kwargs.get("turn_intent")
+    reevaluate_intent = False
+    if isinstance(supplied_intent, str) and supplied_intent:
+        if is_explicit_seller_statement(own_words) and supplied_intent != "seller_intake":
+            reevaluate_intent = True
+        elif title_document and supplied_intent != "seller_intake":
+            reevaluate_intent = True
+    if isinstance(supplied_intent, str) and supplied_intent and not reevaluate_intent:
+        turn_intent = supplied_intent
+    else:
+        # A storefront photo is not a title document and must not force seller_intake.
+        turn_intent = classify_turn_intent(
+            prompt=raw_text,
+            conversation_history=conversation_history,
+            has_document=title_document,
+            document_extract=session.get("latest_document_extract") if title_document else None,
+        )
+    if "[photo shows:" in raw_text.lower() and turn_intent == "seller_intake":
+        if not is_explicit_seller_statement(own_words):
+            turn_intent = "buyer_search"
     session["turn_intent"] = turn_intent
 
     # Manage Persistent Dual-Track State Machine
@@ -863,7 +1167,38 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
 
     # 2.5 Match Specific Property in Database ONLY for Buyer / General turns (never inject inventory into Seller/Agent turns)
     matched_prop = None
-    if not is_seller_or_agent_turn:
+    sign_contact = {}
+    if captionless_photo or extract_phone_candidates(raw_text):
+        sign_contact = resolve_sign_contact(raw_text)
+    session["sign_contact"] = sign_contact
+    if captionless_photo and not is_seller_or_agent_turn:
+        # This turn only. A session is keyed by phone, so yesterday's Putrajaya
+        # listing must not ride along on a caption-less sign photo. A staff
+        # number on the sign is not a listing: agent_phone is shared.
+        photo_text = sign_and_customer_text(raw_text) or raw_text
+        criteria = _photo_criteria_from_turn(raw_text, kwargs)
+        titled = find_matching_property(photo_text)
+        decision = evaluate_captionless_photo_listing(titled, criteria, photo_text)
+        phone_picked_row = bool(sign_contact.get("listing")) or sign_contact.get("source") == "agent_phone"
+        if decision["accept"]:
+            matched_prop = titled
+            session["listing_match_source"] = decision["source"]
+            logger.info(
+                "caption-less photo listing match source=%s title=%s",
+                session.get("listing_match_source"),
+                matched_prop.get("title"),
+            )
+            session["interested_property"] = matched_prop
+        else:
+            matched_prop = None
+            session["listing_match_source"] = None
+            if decision["reason"]:
+                logger.info("photo match rejected reason=%s", decision["reason"])
+            elif phone_picked_row:
+                logger.info("photo match rejected reason=agent_phone_only")
+            else:
+                logger.info("caption-less photo listing match source=none")
+    elif not is_seller_or_agent_turn:
         matched_prop = find_matching_property(raw_text)
         if matched_prop:
             session["interested_property"] = matched_prop
@@ -1031,8 +1366,9 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
         }
 
     # Unidentified listing: ask which ad this is. A second ask is not a handover
-    # and does not name Ah Tuck. A turn count never qualifies a hot lead.
-    if turn_intent == "unidentified_listing" and not matched_prop:
+    # and does not name a specialist. A turn count never qualifies a hot lead.
+    # A photo is already the identification that template would request.
+    if turn_intent == "unidentified_listing" and not matched_prop and not images:
         session["unidentified_listing_turns"] = session.get("unidentified_listing_turns", 0) + 1
         disambig_msg = get_multilingual_disambiguation_request(customer_lang, current_user_name)
         MultiIntentMemoryTracker.persist_customer_memory(phone_number, session)
@@ -1053,6 +1389,9 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
         # A seller is listing their own property; purge any mistakenly cached inventory property
         session.pop("interested_property", None)
         cached_prop = None
+    elif captionless_photo:
+        # Do not reuse session['interested_property'] or a history title match.
+        cached_prop = matched_prop
     else:
         cached_prop = session.get("interested_property")
         # If no cached property and not a seller, try to resolve from conversation history
@@ -1107,6 +1446,8 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
             and not is_listing_question(raw_text)
         ):
             collected_data["customer_category"] = _active_role
+
+    _record_sign_enquiry(session, collected_data, raw_text, images, sign_contact)
 
     # Check if user explicitly wants to switch criteria
     is_switching_context = is_intent_switch or any(phrase in raw_text.lower() for phrase in [
@@ -1215,12 +1556,18 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
     asked_alternatives = llm_analysis.get("asked_alternatives", False)
     new_constraints = llm_analysis.get("new_constraints", {})
 
-    # Detect photo request via LLM or direct conversational keywords
-    # Guard: Only trigger photo dispatch during ongoing dialogue, not on first message
+    # Detect photo request via LLM or direct conversational keywords.
+    # The synthetic "[Customer sent a photo.]" placeholder contains the substring
+    # "photo" and must not count. Gate on the customer's own words.
     has_prior_conversation = bool(conversation_history and len(conversation_history.strip()) > 10)
-    is_photo_request = (bool(asked_photos) or any(w in raw_text.lower() for w in [
-        "picture", "pictures", "photo", "photos", "gambar", "foto", "image", "images", "see photo", "show photo", "相片", "照片"
-    ])) and has_prior_conversation
+    photo_words = (
+        "picture", "pictures", "photo", "photos", "gambar", "foto", "image", "images",
+        "see photo", "show photo", "相片", "照片",
+    )
+    own_lower = own_words.lower()
+    keyword_hit = any(word in own_lower for word in photo_words)
+    model_hit = bool(asked_photos) and bool(own_lower)
+    is_photo_request = (keyword_hit or model_hit) and has_prior_conversation
 
     images_to_send = []
 
@@ -1228,6 +1575,20 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
     if is_seller:
         # Sellers provide photos to Home IHC; do not dispatch inventory listing photos to a seller
         images_to_send = []
+    elif captionless_photo:
+        # Images only after a title or address match was accepted above.
+        # source=agent_phone is not a listing and sends nothing.
+        source = session.get("listing_match_source")
+        if cached_prop and source in _PHOTO_LISTING_SOURCES:
+            images_to_send = _listing_images(cached_prop, session)
+            logger.info(
+                "caption-less photo images source=%s title=%s count=%s",
+                source,
+                cached_prop.get("title"),
+                len(images_to_send),
+            )
+        else:
+            images_to_send = []
     elif is_photo_request and cached_prop:
         prop_images = cached_prop.get("image_urls") or []
         
@@ -1407,6 +1768,13 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
     resolved_agent = collected_data.get("customer_category") or session.get("current_agent") or "BUYER"
     session["current_agent"] = str(resolved_agent).upper()
     session["collected_data"] = collected_data
+    response_text = guard_own_staff_phone_reply(
+        response_text,
+        staff_hit=bool((sign_contact or {}).get("staff_hit")),
+        listing_matched=bool(matched_prop),
+        language=customer_lang,
+        extra_numbers=(sign_contact or {}).get("phones") or [],
+    )
 
     # Persist updated multi-intent memory and profile to Customer table
     MultiIntentMemoryTracker.persist_customer_memory(phone_number, session)
@@ -1438,6 +1806,26 @@ def completion_token_room(system_prompt: str, history: str, user_text: str, imag
         + (IMAGE_TOKEN_RESERVE if image_count else 0)
     )
     return CONTEXT_TOKEN_BUDGET - estimated_input
+
+
+def _customer_photo_fits_retry(active_plan: dict, images: list) -> bool:
+    """
+    Keep a shop photo on the short retry when the vision note is already in
+    the text and the image reserve still leaves a full reply. Land-title
+    retries without that note stay text-only.
+    """
+    if not images or not active_plan:
+        return False
+    user_text = active_plan.get("user_text") or ""
+    if "[Photo shows:" not in user_text:
+        return False
+    room = completion_token_room(
+        active_plan.get("system_prompt") or "",
+        active_plan.get("history") or "",
+        user_text,
+        1,
+    )
+    return room >= MIN_COMPLETION_TOKENS
 
 
 def fit_conversational_token_budget(
@@ -1572,7 +1960,109 @@ def _interpret_llm_content(content: str, finish_reason: str = None) -> dict:
     return parsed
 
 
-def _minimal_reply_prompt(customer_language: str, customer_name: str = None, is_seller: bool = False) -> str:
+_MEDIA_REQUEST = re.compile(
+    r"(?:"
+    r"\b(?:please\s+)?(?:share|provide|forward|upload)\b\s+"
+    r"(?:me\s+)?(?:a\s+|the\s+|your\s+|another\s+)?"
+    r"(?:screenshot|screen\s*shot|photo|picture|image|link)\b"
+    r"|\bsend\s+me\s+(?:a\s+|the\s+|your\s+|another\s+)?"
+    r"(?:screenshot|screen\s*shot|photo|picture|image|link)\b"
+    r"|screenshot,\s*photo,\s*or\s*link"
+    r"|广告截图|截图、照片|照片或链接"
+    r"|(?:截图|照片|链接).{0,12}发给我|发给我.{0,12}(?:截图|照片|链接)"
+    r"|tangkapan\s*skrin|pautan\s+iklan"
+    r")",
+    re.IGNORECASE,
+)
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?？！])\s+")
+
+
+def customer_media_request(text: str) -> bool:
+    return bool(_MEDIA_REQUEST.search(text or ""))
+
+
+def strip_customer_media_request(text: str) -> str:
+    """Drop sentences that ask the customer for a screenshot, photo, or link."""
+    if not text:
+        return text or ""
+    parts = _SENTENCE_SPLIT.split(text.strip())
+    kept = [part.strip() for part in parts if part.strip() and not customer_media_request(part)]
+    return re.sub(r"\s{2,}", " ", " ".join(kept)).strip()
+
+
+def visible_photo_text(source_text: str) -> str:
+    match = re.search(r"\[Photo shows:\s*(.*?)\]", source_text or "", re.DOTALL)
+    if not match:
+        return ""
+    body = re.sub(r"\s+", " ", match.group(1)).strip()
+    framing = "The customer is asking about this advertisement"
+    if framing in body:
+        body = body.split(framing)[0].strip(" .;")
+    return body.strip()
+
+
+def image_turn_acknowledgement(source_text: str, language: str = None) -> str:
+    """Reply used when the model only asked for another photo or the sanitizer emptied the text."""
+    visible = visible_photo_text(source_text)
+    own = strip_vision_artifacts(source_text or "")
+    if language in {"zh", "ms", "en"}:
+        language = language
+    elif own:
+        language = detect_customer_language(own)
+    else:
+        # Vision CJK stays inside the quotation. It does not choose the reply language.
+        language = "en"
+    if language == "zh":
+        if visible:
+            return f"我看到您发来的照片了。照片上的文字是：{visible}。我正在为您核对这间店面。"
+        return "我看到您发来的照片了。我正在为您核对这间店面。"
+    if language == "ms":
+        if visible:
+            return f"Saya nampak gambar yang anda hantar. Tulisan pada gambar: {visible}. Saya sedang semak iklan ini."
+        return "Saya nampak gambar yang anda hantar. Saya sedang semak iklan ini."
+    if visible:
+        return (
+            f"Thanks, I can see the photo. It reads: {visible}. "
+            "I am checking this listing against our records."
+        )
+    return (
+        "Thanks, I can see the photo you sent. "
+        "I am checking this listing against our records."
+    )
+
+
+def restore_image_turn_reply(response_text: str, source_text: str, language: str = None) -> str:
+    """
+    Keep a photo turn from asking for a photo, including after the promise
+    sanitizer deletes the only remaining sentence.
+    """
+    cleaned = strip_customer_media_request(response_text or "").strip()
+    if (
+        not cleaned
+        or cleaned == UNVERIFIED_REPLY_FALLBACK
+        or customer_media_request(cleaned)
+    ):
+        return image_turn_acknowledgement(source_text, language=language)
+    return cleaned
+
+
+def _guard_image_turn_model_reply(parsed: dict, source_text: str, language: str = None) -> dict:
+    if not isinstance(parsed, dict):
+        return parsed
+    cleaned = strip_customer_media_request(parsed.get("response") or "")
+    if not cleaned or customer_media_request(cleaned):
+        cleaned = image_turn_acknowledgement(source_text, language=language)
+    parsed["response"] = cleaned
+    parsed["asked_photos"] = False
+    return parsed
+
+
+def _minimal_reply_prompt(
+    customer_language: str,
+    customer_name: str = None,
+    is_seller: bool = False,
+    customer_sent_image: bool = False,
+) -> str:
     who = f" The customer's name is {customer_name}." if customer_name else ""
     if is_seller:
         track = (
@@ -1590,8 +2080,10 @@ def _minimal_reply_prompt(customer_language: str, customer_name: str = None, is_
         )
         intent_example = "buyer"
     lang = (customer_language or "en").upper()
+    photo_rule = f" {IMAGE_TURN_NO_MEDIA_REQUEST}" if customer_sent_image else ""
     return (
         f"You are Irene Leong of ERA Realtor / Home IHC.{who} Reply only in {lang}. {track} "
+        f"{photo_rule} {OWN_LISTING_PHONE_RULE} "
         "Write at most 4 complete sentences and end with punctuation. "
         f'Output JSON only: {{"response": "...", "intent": "{intent_example}"}}'
     )
@@ -1648,7 +2140,10 @@ def generate_conversational_response(
     db_context = kwargs.get("db_context") or {}
     memory_context = kwargs.get("memory_context") or {}
     hybrid_properties = kwargs.get("hybrid_properties") or []
-    customer_lang = kwargs.get("customer_language") or detect_customer_language(text)
+    customer_lang = kwargs.get("customer_language")
+    if not customer_lang:
+        evidence = strip_vision_artifacts(text or "")
+        customer_lang = detect_customer_language(evidence) if evidence else "en"
 
     prompt_kwargs = dict(
         cached_property=cached_property,
@@ -1664,12 +2159,18 @@ def generate_conversational_response(
         hybrid_properties=hybrid_properties,
     )
     images = kwargs.get("images") or []
+    prompt_kwargs["customer_sent_image"] = bool(images)
     is_seller_flag = bool(kwargs.get("is_seller")) or str(collected_data.get("customer_category") or "").lower() in {
         "seller", "owner", "landlord"
     }
     base_prompt = build_system_prompt(**prompt_kwargs)
     compact_prompt = build_system_prompt(**prompt_kwargs, compact=True)
-    minimal_prompt = _minimal_reply_prompt(customer_lang, customer_name, is_seller=is_seller_flag)
+    minimal_prompt = _minimal_reply_prompt(
+        customer_lang,
+        customer_name,
+        is_seller=is_seller_flag,
+        customer_sent_image=bool(images),
+    )
     plan = fit_conversational_token_budget(
         base_prompt=base_prompt,
         compact_prompt=compact_prompt,
@@ -1709,13 +2210,9 @@ def generate_conversational_response(
             user_content.append({"type": "text", "text": user_prompt_text})
             # One image per call. Vision tokens are reserved in the completion budget above.
             for img in images[:1]:
-                if isinstance(img, str):
-                    if img.startswith("http://") or img.startswith("https://") or img.startswith("data:"):
-                        user_content.append({"type": "image_url", "image_url": {"url": img}})
-                    else:
-                        user_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img}"}})
-                elif isinstance(img, dict) and img.get("url"):
-                    user_content.append({"type": "image_url", "image_url": {"url": img["url"]}})
+                part = customer_image_part(img)
+                if part:
+                    user_content.append(part)
             messages.append({"role": "user", "content": user_content})
         else:
             messages.append({"role": "user", "content": user_text or ""})
@@ -1759,6 +2256,34 @@ def generate_conversational_response(
             "response": fallback_msg,
         }
 
+    def _overflow_error(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return "400" in str(exc) or "maximum context length" in message or "context length" in message
+
+    def _retry_minimal():
+        # Shop-photo turns keep the image when the vision note is in the text
+        # and the reserve still leaves a full reply. A land-title retry has no
+        # [Photo shows:] note, so it stays text-only. If the image still
+        # overflows, the note remains in the user text.
+        keep_image = _customer_photo_fits_retry(minimal_plan, images)
+        try:
+            parsed_retry = _attempt(minimal_plan, include_images=keep_image)
+        except Exception as exc:
+            if not (keep_image and _overflow_error(exc)):
+                raise
+            logger.warning(
+                "Minimal photo retry exceeded the context window; keeping the vision text only"
+            )
+            parsed_retry = _attempt(minimal_plan, include_images=False)
+        if not parsed_retry and keep_image:
+            parsed_retry = _attempt(minimal_plan, include_images=False)
+        return parsed_retry
+
+    def _publish(parsed_reply: dict) -> dict:
+        if images and parsed_reply:
+            return _guard_image_turn_model_reply(parsed_reply, text or "", language=customer_lang)
+        return parsed_reply
+
     try:
         parsed = _attempt(plan, include_images=True)
         if not parsed and plan["tier"] != "minimal":
@@ -1766,22 +2291,19 @@ def generate_conversational_response(
                 "Conversational reply incomplete on %s prompt; retrying with minimal prompt",
                 plan["tier"],
             )
-            # Drop the photo on the retry. A land-title image can consume the
-            # context window; the customer's words are enough to finish the reply.
-            parsed = _attempt(minimal_plan, include_images=False)
+            parsed = _retry_minimal()
         if parsed and parsed.get("response"):
-            return parsed
+            return _publish(parsed)
         logger.error("LLM conversational reply stayed truncated after retry; sending a complete fallback")
-        return _fallback_payload()
+        return _publish(_fallback_payload())
     except Exception as e:
         logger.error(f"Error calling LLM for conversational response: {e}")
-        overflow = "400" in str(e) or "maximum context length" in str(e).lower()
-        if overflow and plan["tier"] != "minimal":
+        if _overflow_error(e) and plan["tier"] != "minimal":
             logger.warning("Attempting emergency retry with minimal context...")
             try:
-                parsed = _attempt(minimal_plan, include_images=False)
+                parsed = _retry_minimal()
                 if parsed and parsed.get("response"):
-                    return parsed
+                    return _publish(parsed)
             except Exception as retry_err:
                 logger.error(f"Emergency retry also failed: {retry_err}")
-        return _fallback_payload()
+        return _publish(_fallback_payload())

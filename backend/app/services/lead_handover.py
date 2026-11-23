@@ -333,6 +333,139 @@ class LeadHandoverService:
             logger.warning(f"Chatwoot assign_agent failed for {email}: {exc}")
             return False
 
+    def _alert_admins_no_specialist(
+        self,
+        conversation_id,
+        reason: str,
+        score: int,
+        db,
+        customer_name: str,
+        customer_phone: str,
+        intent: str,
+        location: str,
+        property_type: str,
+        budget: str,
+        conversation_summary: str,
+        cw_link: str,
+        inbox_id: int,
+        template_phone_number_id: str,
+    ) -> Dict[str, Any]:
+        """
+        Qualified lead, but no roster member covers this location and type.
+
+        Irene and the existing admin recipient list get a private alert.
+        The customer conversation is not assigned, no specialist is named,
+        and nothing promises that someone will contact the customer.
+
+        Recipients come from get_admin_recipients: Irene Leong is always
+        first (+601165144931, already configured), then active crm_users
+        admins with a phone, then DEFAULT_FALLBACK_ADMIN_NUMBERS. No phone
+        is invented here. The Chatwoot conversation is not assigned to Irene
+        or to a specialist; there is no assign-to-admin path that would keep
+        the customer reply from naming someone.
+        """
+        admin_list = self.get_admin_recipients(db=db)
+        note = (
+            f"Admin-only handover ({reason}, score {score}). "
+            "No specialist covers this location and property type. "
+            "No specialist was named. No customer contact was promised. "
+            "Private alert for admins only: "
+            + ", ".join(item.get("name") or "Admin" for item in admin_list)
+            + "."
+        )
+        remark = (
+            "Admin-only alert: no specialist covers this location and property type. "
+            "No specialist was named. No customer contact was promised."
+        )
+        if conversation_id:
+            try:
+                self.send_private_note_func(conversation_id, note)
+            except Exception as exc:
+                logger.warning(f"Could not post admin-only handover note: {exc}")
+
+        summary = (conversation_summary or "Inquiry").replace("\r", " ").replace("\n", " ").replace("\t", " ").strip()
+        summary_with_remark = f"{summary} | {remark}" if summary else remark
+        if len(summary_with_remark) > 500:
+            summary_with_remark = summary_with_remark[:497] + "..."
+
+        safe_customer_name = (customer_name or "").strip() or "Valued Customer"
+        safe_customer_phone = (customer_phone or "").strip() or "N/A"
+        safe_intent = (intent or "").strip().upper() or "BUYER"
+        safe_location = str(location or "").strip() or "Not Specified"
+        safe_property_type = str(property_type or "").strip() or "General Inquiry"
+        safe_budget = str(budget or "").strip() or "Not Specified"
+        safe_cw_link = (
+            (cw_link or "").strip()
+            or f"https://inbox.bentongland.com.my/app/accounts/1/conversations/{conversation_id}"
+        )
+        template_params = [
+            safe_customer_name,
+            safe_customer_phone,
+            safe_intent,
+            safe_location,
+            safe_property_type,
+            safe_budget,
+            summary_with_remark,
+            safe_cw_link,
+        ]
+
+        dispatched_phones = []
+        delivery_details = {}
+        for adm in admin_list:
+            target_phone = adm["phone"]
+            try:
+                res = self.send_template_func(
+                    inbox_id=inbox_id,
+                    to_phone=target_phone,
+                    template_name=os.getenv(
+                        "WHATSAPP_HANDOVER_TEMPLATE", "new_lead_alert_utility"
+                    ),
+                    parameters=template_params,
+                    language_code=os.getenv(
+                        "WHATSAPP_HANDOVER_TEMPLATE_LANGUAGE", "en"
+                    ),
+                    override_phone_number_id=template_phone_number_id,
+                )
+            except Exception as exc:
+                logger.warning(f"Admin-only handover alert failed for {target_phone}: {exc}")
+                delivery_details[target_phone] = {"status": "failed", "error": str(exc)}
+                continue
+            is_delivered = False
+            if res is not None:
+                if isinstance(res, dict):
+                    is_delivered = bool(res.get("messages") or res.get("id") or not res.get("error"))
+                else:
+                    is_delivered = True
+            if is_delivered:
+                dispatched_phones.append(target_phone)
+                msg_id = "wamid.ok"
+                if isinstance(res, dict) and res.get("messages"):
+                    msg_id = res["messages"][0].get("id", "wamid.ok")
+                delivery_details[target_phone] = {"status": "sent", "message_id": msg_id}
+            else:
+                delivery_details[target_phone] = {
+                    "status": "failed",
+                    "error": "Admin alert was not accepted",
+                }
+
+        return {
+            "status": reason,
+            "assigned_agents": [],
+            "winning_score": score,
+            "routed_to": dispatched_phones,
+            "targeted_numbers": [item["phone"] for item in admin_list],
+            "delivery_details": delivery_details,
+            "is_fallback": False,
+            "is_tie": False,
+            "assignment_verified": False,
+            "public_promise": False,
+            "admin_only_handover": True,
+            "admin_alert_recipients": admin_list,
+            "diagnostic": note,
+            "primary_agent_name": "",
+            "primary_agent_phone": "",
+        }
+
     def _diagnostic_result(
         self,
         conversation_id,
@@ -572,11 +705,23 @@ class LeadHandoverService:
                     reason = "intent_incompatible" if incompatible and not any(
                         c.get("compatible") for c in scored_candidates
                     ) else "below_threshold"
-                    return self._diagnostic_result(
-                        conversation_id,
-                        reason,
-                        max_score,
-                        admin_only=admin_only,
+                    # Nobody covers this location and type. Alert admins only.
+                    # A tie still uses _diagnostic_result below and does not alert.
+                    return self._alert_admins_no_specialist(
+                        conversation_id=conversation_id,
+                        reason=reason,
+                        score=max_score,
+                        db=db,
+                        customer_name=customer_name,
+                        customer_phone=customer_phone,
+                        intent=intent,
+                        location=location,
+                        property_type=property_type,
+                        budget=budget,
+                        conversation_summary=conversation_summary,
+                        cw_link=cw_link,
+                        inbox_id=inbox_id,
+                        template_phone_number_id=template_phone_number_id,
                     )
                 top_score = max(c["score"] for c in eligible)
                 top_candidates = [c for c in eligible if c["score"] == top_score]

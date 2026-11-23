@@ -410,10 +410,11 @@ class TestReportingEngine(unittest.TestCase):
 class TestLeadNurturingDaemon(unittest.TestCase):
     """Tests the lead nurturing daemon and WhatsApp 24-hour customer care policy guard."""
 
-    @patch("app.worker.tasks.SessionLocal")
+    @patch("app.services.db_services.get_sender_role", return_value="customer")
+    @patch("app.services.lead_nurturing.SessionLocal")
     @patch("app.worker.tasks.send_message")
     @patch("app.worker.tasks.send_private_note")
-    def test_lead_nurturing_within_and_outside_24h(self, mock_note, mock_msg, mock_session_local):
+    def test_lead_nurturing_within_and_outside_24h(self, mock_note, mock_msg, mock_session_local, mock_role):
         mock_db = MagicMock()
         mock_session_local.return_value = mock_db
 
@@ -452,8 +453,19 @@ class TestLeadNurturingDaemon(unittest.TestCase):
 
         mock_db.query.return_value.all.return_value = [cust_a, cust_b, cust_c]
 
-        result = run_lead_nurturing_daemon()
+        def _inbound(conversation_id):
+            anchor = cust_a.updated_at if int(conversation_id) == 1001 else cust_b.updated_at
+            return [{
+                "message_type": "incoming",
+                "private": False,
+                "content": "still looking",
+                "created_at": anchor.timestamp(),
+            }]
+
+        with patch("app.services.lead_nurturing.get_conversation_messages", side_effect=_inbound):
+            result = run_lead_nurturing_daemon()
         self.assertEqual(result["status"], "success")
+        mock_db.close.assert_called()
 
         # Customer A (within 24h): Automated message sent
         mock_msg.assert_called_once()

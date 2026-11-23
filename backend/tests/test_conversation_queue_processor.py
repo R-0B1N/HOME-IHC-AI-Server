@@ -61,27 +61,33 @@ class TestConversationQueueProcessor(unittest.TestCase):
         self.mock_redis.delete.assert_called_once_with("convo_queue_456")
 
     def test_fetch_queued_messages_empty(self):
-        mock_pipe = MagicMock()
-        mock_pipe.execute.return_value = [[], True, True]
-        self.mock_redis.pipeline.return_value = mock_pipe
+        self.mock_redis.get.return_value = None
+        self.mock_redis.set.return_value = True
+        self.mock_redis.lrange.return_value = []
 
         msgs = self.processor.fetch_queued_messages(conversation_id=789)
         self.assertIsNone(msgs)
+        self.mock_redis.ltrim.assert_not_called()
 
-    def test_fetch_queued_messages_atomically_pops(self):
-        mock_pipe = MagicMock()
+    def test_fetch_queued_messages_keeps_batch_until_ack(self):
         raw_list = [
-            json.dumps({"content": "Hello", "sender": {"phone_number": "+60123456789"}}).encode("utf-8"),
-            json.dumps({"content": "I want land"}).encode("utf-8"),
+            json.dumps({"id": 1, "content": "Hello", "sender": {"phone_number": "+60123456789"}}).encode("utf-8"),
+            json.dumps({"id": 2, "content": "I want land"}).encode("utf-8"),
         ]
-        mock_pipe.execute.return_value = [raw_list, True, True]
-        self.mock_redis.pipeline.return_value = mock_pipe
+        self.mock_redis.get.return_value = None
+        self.mock_redis.set.return_value = True
+        self.mock_redis.lrange.return_value = raw_list
+        self.mock_redis.llen.return_value = 0
 
         msgs = self.processor.fetch_queued_messages(conversation_id=789)
         self.assertIsNotNone(msgs)
         self.assertEqual(len(msgs), 2)
         self.assertEqual(msgs[0]["content"], "Hello")
         self.assertEqual(msgs[1]["content"], "I want land")
+        self.mock_redis.ltrim.assert_not_called()
+
+        self.processor.acknowledge_fetched_batch()
+        self.mock_redis.ltrim.assert_called_once_with("convo_queue_789", 2, -1)
 
     @patch("app.services.conversation_processor.transcribe_audio", return_value="Audio transcript text")
     @patch("requests.get")
@@ -96,11 +102,13 @@ class TestConversationQueueProcessor(unittest.TestCase):
             {"content": "", "attachments": [{"file_type": "image", "data_url": "https://example.com/photo.jpg"}]},
         ]
 
-        prompt, images, doc_struct, contact_info = self.processor.parse_multimodal_content(messages, 123)
+        prompt, images, doc_struct, contact_info, attachment_errors = self.processor.parse_multimodal_content(messages, 123)
         self.assertIn("Text message", prompt)
         self.assertIn("[Audio Transcript]: Audio transcript text", prompt)
         self.assertEqual(len(images), 1)
         self.assertEqual(contact_info["name"], "Test User")
+        self.assertEqual(attachment_errors, [])
+        self.assertEqual(mock_requests_get.call_args[0][0], "https://example.com/photo.jpg")
 
     @patch.object(ConversationQueueProcessor, "check_debounce", return_value=None)
     @patch.object(ConversationQueueProcessor, "check_master_ai_enabled", return_value=True)
@@ -128,7 +136,7 @@ class TestConversationQueueProcessor(unittest.TestCase):
         mock_check_debounce,
     ):
         mock_fetch_msgs.return_value = [{"content": "Looking for durian land"}]
-        mock_parse_multi.return_value = ("Looking for durian land", [], None, {"name": "Buyer"})
+        mock_parse_multi.return_value = ("Looking for durian land", [], None, {"name": "Buyer"}, [])
         mock_customer = MagicMock()
         mock_customer.id = "cust-1"
         mock_resolve_cust.return_value = (mock_customer, False, "+60121111111", "Buyer", {"inbox_id": 1})

@@ -15,6 +15,7 @@ testable stages:
 
 import base64
 import datetime
+import hashlib
 import json
 import logging
 import os
@@ -23,14 +24,18 @@ import urllib.parse
 from typing import Any, Dict, List, Optional, Tuple
 
 import redis
-import requests
 
 from app.db.models import Customer, Order, Property, SessionLocal, User
-from app.services.agent_logic import premature_seller_hot_lead, process_persona_state_machine
+from app.services.agent_logic import (
+    premature_seller_hot_lead,
+    process_persona_state_machine,
+    restore_image_turn_reply,
+)
 from app.services.role_contract import (
     hot_lead_qualified,
     is_placeholder,
     is_title_document,
+    public_intent_label,
     sanitize_unverified_reply,
     seller_is_earned,
 )
@@ -38,6 +43,7 @@ from app.services.chatwoot import (
     CHATWOOT_ACCOUNT_ID,
     apply_label,
     assign_agent,
+    fetch_chatwoot_attachment,
     get_agent_id_by_email,
     get_conversation_messages,
     send_chatwoot_image_attachment,
@@ -55,7 +61,9 @@ from app.services.document_parser import extract_text_from_document
 from app.services.lead_handover import dispatch_hot_lead_handover
 from app.services.llm import (
     LLM_MODEL_NAME,
+    append_photo_description,
     classify_turn_intent,
+    describe_customer_photos,
     extract_property_search_criteria,
     extract_valuer_data,
     llm_client,
@@ -67,6 +75,10 @@ from app.services.system_prompts import is_handover_promised
 logger = logging.getLogger(__name__)
 
 TIMEOUT_SECONDS = 10
+
+PHOTO_DOWNLOAD_FALLBACK = (
+    "Sorry, I couldn't open the photo you sent. Please send the photo again."
+)
 
 REQUIRED_PERSONA_KEYS = {
     "buyer": ["name", "buyer_location", "buyer_property_type", "buyer_budget", "purchase_entity"],
@@ -91,6 +103,11 @@ PERSONA_ALIAS_MAP = {
     "expected_rental": ["budget", "asking_price"],
 }
 
+PROCESSING_ERROR_FALLBACK = (
+    "Sorry, something went wrong on our side. Please send your message again, "
+    "or we'll get back to you shortly."
+)
+
 PLACEHOLDER_FIELD_VALUES = {
     "property inquiry",
     "to be advised",
@@ -102,6 +119,17 @@ PLACEHOLDER_FIELD_VALUES = {
     "null",
     "unknown",
 }
+
+
+def _attachment_filename(attachment: Dict[str, Any]) -> str:
+    """Best-effort filename from Chatwoot attachment fields or the data_url path."""
+    for key in ("data_file_name", "file_name", "filename", "title"):
+        value = attachment.get(key)
+        if value:
+            return str(value)
+    data_url = str(attachment.get("data_url") or "")
+    name = urllib.parse.urlsplit(data_url).path.rstrip("/").split("/")[-1]
+    return urllib.parse.unquote(name) if name else ""
 
 
 class ConversationQueueProcessor:
@@ -127,6 +155,13 @@ class ConversationQueueProcessor:
             redis_host = os.getenv("REDIS_HOST", "redis")
             redis_port = int(os.getenv("REDIS_PORT", "6379"))
             self.redis_client = redis.Redis(host=redis_host, port=redis_port, db=0)
+
+        self._fetched_messages: List[Dict[str, Any]] = []
+        self._fetched_batch_count = 0
+        self._fetched_conversation_id: Optional[int] = None
+        self._manual_bypass = False
+        self._reply_claimed = False
+        self._local_owner_id: Optional[str] = None
 
     def check_debounce(
         self, conversation_id: int, task_scheduled_time: float
@@ -189,49 +224,269 @@ class ConversationQueueProcessor:
 
         return True
 
+    def _processing_owner_id(self) -> str:
+        """Celery retries keep the same task id, so the retry can re-enter its own lock."""
+        request = getattr(self.celery_task, "request", None)
+        task_id = getattr(request, "id", None) if request is not None else None
+        if task_id:
+            return str(task_id)
+        if not self._local_owner_id:
+            self._local_owner_id = f"inline-{id(self)}"
+        return self._local_owner_id
+
+    def release_processing_lock(self, conversation_id: Optional[int] = None) -> None:
+        conv_id = conversation_id if conversation_id is not None else self._fetched_conversation_id
+        if conv_id is None:
+            return
+        lock_key = f"convo_processing_{conv_id}"
+        try:
+            current = self.redis_client.get(lock_key)
+        except Exception:
+            return
+        current_id = current.decode("utf-8") if isinstance(current, bytes) else (current or "")
+        if current_id == self._processing_owner_id():
+            try:
+                self.redis_client.delete(lock_key)
+            except Exception:
+                pass
+
     def fetch_queued_messages(self, conversation_id: int) -> Optional[List[Dict[str, Any]]]:
         """
-        Atomically pops all messages from Redis for this conversation and removes keys.
+        Read the queued batch without deleting it.
+
+        Deletion used to happen here, so a later DB timeout retried against an
+        empty list and the customer's photo was gone. The batch stays until
+        acknowledge_fetched_batch(). Messages RPUSHed during processing remain
+        at the tail. A per-conversation lock stops a second task from sending
+        a second reply for the same batch; Celery retries share the task id
+        and are allowed back in.
         """
         queue_key = f"convo_queue_{conversation_id}"
-        active_key = f"convo_active_{conversation_id}"
+        lock_key = f"convo_processing_{conversation_id}"
+        task_id = self._processing_owner_id()
 
-        pipe = self.redis_client.pipeline()
-        pipe.lrange(queue_key, 0, -1)
-        pipe.delete(queue_key)
-        pipe.delete(active_key)
-        results = pipe.execute()
+        existing = self.redis_client.get(lock_key)
+        existing_id = existing.decode("utf-8") if isinstance(existing, bytes) else (existing or "")
+        if existing_id and existing_id != task_id:
+            logger.info(
+                "Conversation %s is already being processed. Skipping.",
+                conversation_id,
+            )
+            return None
+        if not existing_id:
+            locked = self.redis_client.set(lock_key, task_id, nx=True, ex=300)
+            if not locked:
+                logger.info(
+                    "Conversation %s processing lock was taken concurrently. Skipping.",
+                    conversation_id,
+                )
+                return None
+        else:
+            try:
+                self.redis_client.expire(lock_key, 300)
+            except Exception:
+                pass
 
-        raw_messages = results[0]
+        raw_messages = self.redis_client.lrange(queue_key, 0, -1) or []
         if not raw_messages:
             logger.info(f"Queue for conversation {conversation_id} is empty. Skipping.")
+            self._fetched_messages = []
+            self._fetched_batch_count = 0
+            self._fetched_conversation_id = conversation_id
+            self.release_processing_lock(conversation_id)
             return None
 
-        messages = [json.loads(msg) for msg in raw_messages]
+        messages = []
+        for msg in raw_messages:
+            if isinstance(msg, bytes):
+                msg = msg.decode("utf-8")
+            messages.append(json.loads(msg))
+        self._fetched_messages = messages
+        self._fetched_batch_count = len(messages)
+        self._fetched_conversation_id = conversation_id
         logger.info(f"Aggregating {len(messages)} messages for conversation {conversation_id}")
         return messages
 
+    def acknowledge_fetched_batch(self) -> int:
+        """
+        Drop only the prefix that was read. Newer RPUSH messages stay in order.
+        Returns how many messages were left behind.
+        """
+        conv_id = self._fetched_conversation_id
+        count = int(self._fetched_batch_count or 0)
+        remaining = 0
+        if conv_id is not None and count > 0:
+            queue_key = f"convo_queue_{conv_id}"
+            self.redis_client.ltrim(queue_key, count, -1)
+            remaining = int(self.redis_client.llen(queue_key) or 0)
+            if remaining <= 0:
+                self.redis_client.delete(queue_key)
+                self.redis_client.delete(f"convo_active_{conv_id}")
+                remaining = 0
+        self._fetched_batch_count = 0
+        self._fetched_messages = []
+        self.release_processing_lock(conv_id)
+        if remaining and conv_id is not None and self.celery_task and hasattr(self.celery_task, "apply_async"):
+            try:
+                self.celery_task.apply_async(
+                    args=[conv_id, time.time()],
+                    countdown=self.timeout_seconds,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not schedule follow-up for conversation %s: %s",
+                    conv_id,
+                    exc,
+                )
+        return remaining
+
+    @staticmethod
+    def should_acknowledge(status: Optional[str], reason: Optional[str]) -> bool:
+        if status in {"success", "fallback_sent"}:
+            return True
+        if status == "skipped" and reason in {
+            "bypass_ai is true",
+            "empty aggregated input",
+            "attachment download failed",
+        }:
+            return True
+        return False
+
+    def _batch_fingerprint(self) -> str:
+        parts = []
+        for msg in self._fetched_messages or []:
+            if isinstance(msg, dict) and msg.get("id") is not None:
+                parts.append(str(msg.get("id")))
+            else:
+                parts.append(json.dumps(msg, sort_keys=True, default=str)[:180])
+        raw = "|".join(parts) or "empty"
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+    def _claim_public_reply(self, conversation_id: int) -> bool:
+        key = f"convo_reply_once_{conversation_id}_{self._batch_fingerprint()}"
+        self._reply_guard_key = key
+        claimed = bool(self.redis_client.set(key, "1", nx=True, ex=86400))
+        return claimed
+
+    def _release_public_reply(self) -> None:
+        self._reply_claimed = False
+        key = getattr(self, "_reply_guard_key", None)
+        if not key:
+            return
+        try:
+            self.redis_client.delete(key)
+        except Exception:
+            pass
+
+    def _fallback_allowed(self, conversation_id: int) -> bool:
+        if self._manual_bypass or self._reply_claimed:
+            return False
+        try:
+            from app.api.settings import get_system_toggle
+            if not get_system_toggle("master_ai_enabled", default=True):
+                logger.info(
+                    "Skipping error fallback for conversation %s because master AI is off.",
+                    conversation_id,
+                )
+                return False
+        except Exception as exc:
+            logger.warning(
+                "Could not read master AI toggle before fallback for %s: %s",
+                conversation_id,
+                exc,
+            )
+        return True
+
+    def fail_unrecoverable(self, conversation_id: int, exc: BaseException) -> Dict[str, Any]:
+        """
+        Retries are exhausted. Tell the customer once, turn typing off, and
+        drop this batch so a later task cannot answer it a second time.
+        """
+        batch_size = int(self._fetched_batch_count or 0)
+        logger.error(
+            "Unrecoverable conversation processing failure conversation_id=%s batch_size=%s error=%s",
+            conversation_id,
+            batch_size,
+            exc,
+        )
+        sent = False
+        if batch_size and self._fallback_allowed(conversation_id):
+            guard = f"convo_error_fallback_{conversation_id}_{self._batch_fingerprint()}"
+            try:
+                first = bool(self.redis_client.set(guard, "1", nx=True, ex=86400))
+            except Exception as guard_exc:
+                logger.error(
+                    "Error-fallback guard failed for conversation %s: %s",
+                    conversation_id,
+                    guard_exc,
+                )
+                first = False
+            if first:
+                try:
+                    send_message(conversation_id, PROCESSING_ERROR_FALLBACK)
+                    sent = True
+                except Exception as send_exc:
+                    logger.error(
+                        "Failed to send error fallback for conversation %s: %s",
+                        conversation_id,
+                        send_exc,
+                    )
+                    try:
+                        self.redis_client.delete(guard)
+                    except Exception:
+                        pass
+        try:
+            toggle_typing_status(conversation_id, "off")
+        except Exception as typing_exc:
+            logger.warning(
+                "Failed to turn typing off after unrecoverable error for %s: %s",
+                conversation_id,
+                typing_exc,
+            )
+        if batch_size:
+            try:
+                self.acknowledge_fetched_batch()
+            except Exception as ack_exc:
+                logger.error(
+                    "Failed to drop batch after unrecoverable error for %s: %s",
+                    conversation_id,
+                    ack_exc,
+                )
+        else:
+            self.release_processing_lock(conversation_id)
+        return {
+            "status": "fallback_sent" if sent else "failed",
+            "conversation_id": conversation_id,
+            "batch_size": batch_size,
+            "fallback_sent": sent,
+        }
+
     def parse_multimodal_content(
         self, messages: List[Dict[str, Any]], conversation_id: int
-    ) -> Tuple[str, List[str], Optional[Dict[str, Any]], Dict[str, Any]]:
+    ) -> Tuple[str, List[str], Optional[Dict[str, Any]], Dict[str, Any], List[Dict[str, str]]]:
         """
         Parses text, audio attachments (transcription), image attachments (base64),
         and document attachments (extraction & mobile preview).
+
+        Returns attachment download errors as the last element. Each error has
+        file_type, filename, and error.
         """
         combined_text = []
         combined_images = []
         contact_info = messages[0].get("sender", {}) if messages else {}
         latest_doc_struct = None
+        attachment_errors: List[Dict[str, str]] = []
 
         for msg_payload in messages:
             content = msg_payload.get("content", "")
             if content:
                 combined_text.append(content)
 
-            attachments = msg_payload.get("attachments", [])
+            attachments = msg_payload.get("attachments") or []
             for attachment in attachments:
                 file_type = attachment.get("file_type")
                 data_url = attachment.get("data_url")
+                filename = _attachment_filename(attachment)
 
                 if file_type == "audio":
                     logger.info("Audio attachment detected. Downloading and transcribing...")
@@ -240,27 +495,40 @@ class ConversationQueueProcessor:
                         if transcription_text:
                             combined_text.append(f"[Audio Transcript]: {transcription_text}")
                     except Exception as e:
-                        logger.error(f"Failed to process audio attachment: {e}")
+                        logger.error(
+                            "Failed to process audio attachment: file_type=%s filename=%s error=%s",
+                            file_type,
+                            filename,
+                            e,
+                        )
+                        attachment_errors.append(
+                            {"file_type": str(file_type or ""), "filename": filename, "error": str(e)}
+                        )
 
                 elif file_type == "image":
                     logger.info("Image attachment detected. Downloading and encoding...")
                     try:
-                        img_resp = requests.get(data_url, timeout=30)
-                        img_resp.raise_for_status()
-                        b64_image = base64.b64encode(img_resp.content).decode("utf-8")
+                        img_resp = fetch_chatwoot_attachment(data_url, timeout=30)
+                        image_bytes = img_resp.content or b""
+                        if not isinstance(image_bytes, (bytes, bytearray)) or not image_bytes:
+                            raise ValueError("empty image response")
+                        b64_image = base64.b64encode(image_bytes).decode("utf-8")
                         combined_images.append(b64_image)
                     except Exception as e:
-                        logger.error(f"Failed to process image attachment: {e}")
+                        logger.error(
+                            "Failed to process image attachment: file_type=%s filename=%s error=%s",
+                            file_type,
+                            filename,
+                            e,
+                        )
+                        attachment_errors.append(
+                            {"file_type": str(file_type or ""), "filename": filename, "error": str(e)}
+                        )
 
                 elif file_type == "file":
                     logger.info("Document/PDF attachment detected.")
                     try:
-                        file_name_val = (
-                            attachment.get("data_file_name")
-                            or attachment.get("file_name")
-                            or attachment.get("title")
-                            or ""
-                        )
+                        file_name_val = filename
                         content_type_val = attachment.get("content_type", "")
                         extension_val = attachment.get("extension", "")
                         doc_result = extract_text_from_document(
@@ -320,7 +588,15 @@ class ConversationQueueProcessor:
                                     f"Could not dispatch inline document preview: {prev_err}"
                                 )
                     except Exception as e:
-                        logger.error(f"Failed to extract document text/images: {e}")
+                        logger.error(
+                            "Failed to extract document text/images: file_type=%s filename=%s error=%s",
+                            file_type,
+                            filename,
+                            e,
+                        )
+                        attachment_errors.append(
+                            {"file_type": str(file_type or ""), "filename": filename, "error": str(e)}
+                        )
 
         final_prompt_text = "\n".join(combined_text).strip()
         if not final_prompt_text and combined_images:
@@ -333,7 +609,53 @@ class ConversationQueueProcessor:
                 final_prompt_text = "[Customer sent a photo.]"
             logger.info(f"Synthesized prompt for {len(combined_images)} image attachment(s).")
 
-        return final_prompt_text, combined_images, latest_doc_struct, contact_info
+        return final_prompt_text, combined_images, latest_doc_struct, contact_info, attachment_errors
+
+    def text_with_customer_photo(
+        self,
+        final_prompt_text: str,
+        combined_images: List[str],
+        latest_doc_struct: Optional[Dict[str, Any]],
+    ) -> str:
+        """
+        One vision read for a customer photo. Title documents already have a
+        structured extract and skip this call. Failure leaves the original text.
+        """
+        if not combined_images or is_title_document(latest_doc_struct):
+            return final_prompt_text
+        description = ""
+        try:
+            description = describe_customer_photos(combined_images)
+        except Exception as exc:
+            logger.warning("Photo vision transcription failed: %s", exc)
+            description = ""
+        return append_photo_description(final_prompt_text, description)
+
+    def _send_photo_download_fallback(self, conversation_id: int) -> Dict[str, Any]:
+        """
+        One public reply when attachments were present and none of them decoded.
+        Turns typing off and does not call the vision/LLM path.
+        """
+        try:
+            send_message(conversation_id, PHOTO_DOWNLOAD_FALLBACK)
+        except Exception as exc:
+            logger.error(
+                "Failed to send photo retry fallback for conversation %s: %s",
+                conversation_id,
+                exc,
+            )
+        try:
+            toggle_typing_status(conversation_id, "off")
+        except Exception as exc:
+            logger.warning(
+                "Failed to turn typing status off after photo download fallback: %s",
+                exc,
+            )
+        return {
+            "status": "fallback_sent",
+            "reason": "attachment download failed",
+            "conversation_id": conversation_id,
+        }
 
     def resolve_customer(
         self,
@@ -406,6 +728,7 @@ class ConversationQueueProcessor:
         is_bypassed = bool(
             customer and customer.metadata_json and customer.metadata_json.get("manual_bypass_ai")
         )
+        self._manual_bypass = is_bypassed
         return customer, is_bypassed, phone_number, contact_name, metadata
 
     def build_rbac_and_context(
@@ -416,12 +739,14 @@ class ConversationQueueProcessor:
         final_prompt_text: str,
         latest_doc_struct: Optional[Dict[str, Any]],
         combined_images: List[str],
+        analysis_text: Optional[str] = None,
     ) -> Tuple[str, Dict[str, Any], str, str, bool, float]:
         """
         Constructs RBAC data context (Admin, Agent, Customer) and executes semantic turn classification.
         Returns (role, db_context, conversation_history, turn_intent, is_seller_intent, reset_cutoff_ts).
         """
         role = get_sender_role(phone_number)
+        model_text = final_prompt_text if analysis_text is None else analysis_text
         db_context: Dict[str, Any] = {"role": role, "data": {}}
         conversation_history = ""
         turn_intent = "general"
@@ -507,6 +832,10 @@ class ConversationQueueProcessor:
                         for o in db.query(Order).filter(Order.customer_id == customer.id).all()
                     ]
 
+                # Return the connection before Chatwoot history and LLM calls.
+                db.close()
+                db = None
+
                 # Fetch and filter conversation history
                 logger.info(f"Fetching conversation history for {conversation_id}")
                 try:
@@ -586,7 +915,7 @@ class ConversationQueueProcessor:
                 # Semantic Turn Classification
                 title_document = is_title_document(latest_doc_struct)
                 turn_intent = classify_turn_intent(
-                    prompt=final_prompt_text,
+                    prompt=model_text,
                     conversation_history=conversation_history,
                     has_document=title_document,
                     document_extract=latest_doc_struct if title_document else None,
@@ -624,28 +953,34 @@ class ConversationQueueProcessor:
                         ),
                     }
                 else:
-                    logger.info(f"Extracting search criteria from prompt: {final_prompt_text}")
-                    criteria = extract_property_search_criteria(final_prompt_text, "")
+                    logger.info(f"Extracting search criteria from prompt: {model_text}")
+                    criteria = extract_property_search_criteria(model_text, conversation_history)
                     logger.info(f"Extracted criteria: {criteria}")
+                    db_context["data"]["search_criteria"] = criteria
 
                     if criteria and any(criteria.values()):
                         matched_properties = search_properties(criteria, limit=15)
                         logger.info(f"Found {len(matched_properties)} matching properties.")
                         db_context["data"]["properties"] = matched_properties
                     else:
-                        db_context["data"]["properties"] = [
-                            {
-                                "id": str(p.id),
-                                "name": p.title,
-                                "price": p.asking_price_myr,
-                                "status": p.listing_status,
-                            }
-                            for p in db.query(Property).filter(
-                                Property.listing_status == "Available"
-                            ).limit(10).all()
-                        ]
+                        summary_db = self.session_factory()
+                        try:
+                            db_context["data"]["properties"] = [
+                                {
+                                    "id": str(p.id),
+                                    "name": p.title,
+                                    "price": p.asking_price_myr,
+                                    "status": p.listing_status,
+                                }
+                                for p in summary_db.query(Property).filter(
+                                    Property.listing_status == "Available"
+                                ).limit(10).all()
+                            ]
+                        finally:
+                            summary_db.close()
         finally:
-            db.close()
+            if db is not None:
+                db.close()
 
         return (
             role,
@@ -720,6 +1055,7 @@ class ConversationQueueProcessor:
                 role=role,
                 db_context=db_context,
                 images=combined_images,
+                turn_intent=turn_intent,
             )
             session = agent_result.get("updated_session", session)
 
@@ -785,6 +1121,10 @@ class ConversationQueueProcessor:
                 lead_temp = "Warm"
             else:
                 lead_temp = "Cold"
+            # A readable FOR RENT / FOR SALE sign, or our own number on that sign,
+            # is a specific enquiry. Vague unmatched messages stay cold.
+            if lead_temp == "Cold" and session.get("identified_advert"):
+                lead_temp = "Warm"
 
             # Check explicit human contact phrases & inspection requests
             user_wants_immediate_human = any(
@@ -858,6 +1198,13 @@ class ConversationQueueProcessor:
                     session["handover_requested"] = reason or (
                         "explicit_human" if user_wants_immediate_human else "viewing"
                     )
+
+            if combined_images:
+                response_text = restore_image_turn_reply(
+                    response_text,
+                    final_prompt_text,
+                    language=session.get("language"),
+                )
 
             SessionManager.save_session(phone_number, session)
 
@@ -972,6 +1319,19 @@ class ConversationQueueProcessor:
                 pass
         return handover_initiated, lead_temp, response_text
 
+    def verified_specialist_identity(self, handover_result: Optional[Dict[str, Any]]) -> Tuple[str, str]:
+        """Public name and phone, only after Chatwoot assignment succeeded."""
+        if not handover_result or not handover_result.get("assignment_verified"):
+            return "", ""
+        agents = handover_result.get("assigned_agents") or []
+        if agents:
+            first = agents[0] or {}
+            return first.get("name") or "", first.get("phone_number") or ""
+        return (
+            handover_result.get("primary_agent_name") or "",
+            handover_result.get("primary_agent_phone") or "",
+        )
+
     def route_hot_lead(
         self,
         conversation_id: int,
@@ -1008,6 +1368,7 @@ class ConversationQueueProcessor:
         budget_val = (
             collected.get("budget")
             or collected.get("buyer_budget")
+            or collected.get("rent_budget")
             or collected.get("asking_price")
             or collected.get("expected_rental")
         )
@@ -1075,6 +1436,17 @@ class ConversationQueueProcessor:
         """
         Dispatches property images, Chatwoot message response, and autonomous viewing form if booked.
         """
+        if not self._claim_public_reply(conversation_id):
+            logger.info(
+                "Public reply already sent for conversation %s. Skipping duplicate send.",
+                conversation_id,
+            )
+            try:
+                toggle_typing_status(conversation_id, "off")
+            except Exception:
+                pass
+            return
+
         # 1. Transcoded images
         if images_to_send:
             for idx, img_url in enumerate(images_to_send):
@@ -1093,8 +1465,10 @@ class ConversationQueueProcessor:
         logger.info(f"Sending response to conversation {conversation_id}")
         try:
             send_message(conversation_id, response_text)
+            self._reply_claimed = True
         except Exception as me:
             logger.error(f"Failed to send response message to conv {conversation_id}: {me}")
+            self._release_public_reply()
 
         # 3. Viewing Form Dispatch
         if agent_result.get("schedule_viewing") and customer:
@@ -1180,8 +1554,9 @@ class ConversationQueueProcessor:
         if role in ["admin", "employee", "agent"]:
             labels_to_apply.append(role)
         else:
-            if intent in ["buyer", "seller", "tenant", "agent", "bank valuer"]:
-                labels_to_apply.append(intent.lower())
+            label_intent = public_intent_label(intent)
+            if label_intent in ["buyer", "seller", "tenant", "agent", "bank valuer"]:
+                labels_to_apply.append(label_intent)
 
             if handover_initiated:
                 labels_to_apply.append("handover_initiated")
@@ -1230,11 +1605,18 @@ class ConversationQueueProcessor:
             combined_images,
             latest_doc_struct,
             contact_info,
+            attachment_errors,
         ) = self.parse_multimodal_content(messages, conversation_id)
 
         if not final_prompt_text:
+            if attachment_errors:
+                return self._send_photo_download_fallback(conversation_id)
             logger.info("No text, audio, or images to process. Skipping.")
             return {"status": "skipped", "reason": "empty aggregated input"}
+
+        turn_text = self.text_with_customer_photo(
+            final_prompt_text, combined_images, latest_doc_struct
+        )
 
         # Turn typing on
         try:
@@ -1274,6 +1656,7 @@ class ConversationQueueProcessor:
             final_prompt_text,
             latest_doc_struct,
             combined_images,
+            analysis_text=turn_text,
         )
 
         # 7. Execute Persona State Machine
@@ -1289,7 +1672,7 @@ class ConversationQueueProcessor:
             phone_number=phone_number,
             contact_name=contact_name,
             role=role,
-            final_prompt_text=final_prompt_text,
+            final_prompt_text=turn_text,
             conversation_history=conversation_history,
             latest_doc_struct=latest_doc_struct,
             turn_intent=turn_intent,
@@ -1313,7 +1696,7 @@ class ConversationQueueProcessor:
                 customer=customer,
                 phone_number=phone_number,
                 contact_name=contact_name,
-                final_prompt_text=final_prompt_text,
+                final_prompt_text=turn_text,
                 session=session,
                 intent=intent,
                 handover_initiated=handover_initiated,
@@ -1332,18 +1715,11 @@ class ConversationQueueProcessor:
                 conversation_summary=conversation_summary_text,
                 valuer_data=valuer_data,
                 metadata=metadata,
-                final_prompt_text=final_prompt_text,
+                final_prompt_text=turn_text,
             )
 
-        assigned_agent_name = ""
-        assigned_agent_phone = ""
         assignment_verified = bool(handover_result and handover_result.get("assignment_verified"))
-        if assignment_verified and handover_result.get("assigned_agents"):
-            assigned_agent_name = handover_result["assigned_agents"][0].get("name", "")
-            assigned_agent_phone = handover_result["assigned_agents"][0].get("phone_number", "")
-        elif assignment_verified and handover_result.get("primary_agent_name"):
-            assigned_agent_name = handover_result.get("primary_agent_name", "")
-            assigned_agent_phone = handover_result.get("primary_agent_phone", "")
+        assigned_agent_name, assigned_agent_phone = self.verified_specialist_identity(handover_result)
 
         handover_initiated, lead_temp, response_text = self.gate_public_handover(
             handover_initiated=handover_initiated,

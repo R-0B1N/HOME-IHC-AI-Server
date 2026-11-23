@@ -18,10 +18,10 @@ COMPANY_FULL_NAME = "Home IHC Sdn. Bhd. / BentongLand"
 DIGITAL_NAME_CARD_URL = "https://my.mecard.my/1733211127"
 IRENE_MAIN_PHONE = "+601165144931"
 IRENE_DISPLAY_PHONE = "+60 11-6514 4931"
+# Voon's line, printed on Home IHC boards as 011-630 44931. Kept here so a
+# photographed sign can be recognised without a schema or compose change.
+VOON_MAIN_PHONE = "+601163044931"
 ADMIN_EMAIL = "homeihc13@gmail.com"
-AH_TUCK_NAME = "Ah Tuck"
-AH_TUCK_PHONE = "+60129663589"
-AH_TUCK_EMAIL = "tuck@homeihc.com"
 
 # Malaysian Dialect & Domain Lexicon
 MALAY_KEYWORDS = {
@@ -169,6 +169,58 @@ def detect_customer_language(text: str) -> str:
         return "ms"
 
     return "en"
+
+
+_PHOTO_SHOWS_NOTE = re.compile(r"\[photo shows:.*?\]", re.IGNORECASE | re.DOTALL)
+_PHOTO_PLACEHOLDER = re.compile(r"\[customer sent a photo\.?\]", re.IGNORECASE)
+
+
+def strip_vision_artifacts(text: str) -> str:
+    """Customer words only. Drops the vision note and the caption-less placeholder."""
+    cleaned = _PHOTO_SHOWS_NOTE.sub(" ", text or "")
+    cleaned = _PHOTO_PLACEHOLDER.sub(" ", cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def customer_language_evidence(text: str, conversation_history: str = "") -> str:
+    """
+    Language evidence is the customer's own caption plus earlier user lines.
+    [Photo shows: ...] and [Customer sent a photo.] never count, so CJK on a
+    sign cannot overwrite the language the customer actually writes.
+    """
+    parts = []
+    own = strip_vision_artifacts(text or "")
+    if own:
+        parts.append(own)
+    for line in (conversation_history or "").splitlines():
+        stripped = line.strip()
+        if not stripped.lower().startswith("user:"):
+            continue
+        body = strip_vision_artifacts(stripped.split(":", 1)[1] if ":" in stripped else stripped)
+        if body:
+            parts.append(body)
+    return " ".join(parts).strip()
+
+
+def resolve_customer_language(session: dict, text: str, conversation_history: str = "") -> str:
+    """
+    Update session['language'] from customer words. An empty remainder keeps the
+    stored language, or English when nothing has been stored yet.
+    """
+    session = session if isinstance(session, dict) else {}
+    evidence = customer_language_evidence(text, conversation_history)
+    if not evidence:
+        if not session.get("language"):
+            session["language"] = "en"
+        return session.get("language") or "en"
+    detected = detect_customer_language(evidence)
+    if detected in ("zh", "ms"):
+        session["language"] = detected
+    elif detected == "en" and len(evidence.split()) >= 2:
+        session["language"] = "en"
+    elif not session.get("language"):
+        session["language"] = detected
+    return session.get("language") or detected or "en"
 
 
 def is_explicit_handover_request(text: str) -> bool:
@@ -419,18 +471,21 @@ def get_multilingual_disambiguation_request(language: str, customer_name: str = 
         )
 
 
-def get_multilingual_ah_tuck_handover(language: str, customer_name: str = None) -> str:
-    """
-    Returns immediate handover message to commercial specialist Ah Tuck.
-    """
-    name_str = f"{customer_name}，" if customer_name else ""
-    if language == "zh":
-        return f"{name_str}我已经把您的店面咨询直接转交给负责该区商业店面的资深主管 阿Tuck (012-9663589)。他会立刻通过 WhatsApp 或电话联系您协助处理！"
-    elif language == "ms":
-        return f"{name_str}Saya telah majukan pertanyaan kedai anda kepada Pengurus Kanan Komersial kami, Ah Tuck (012-9663589). Beliau akan segera menghubungi anda melalui WhatsApp atau panggilan!"
-    else:
-        return f"{name_str}I have forwarded your shop inquiry directly to our Senior Commercial Lead, Ah Tuck (012-9663589). He will reach out to you via WhatsApp or phone right away to assist you!"
+# Shown on every prompt tier that can actually be sent when a photo is attached.
+# The full directive prompt does not fit the 2048-token window, so the compact
+# and minimal tiers must carry the same prohibition.
+IMAGE_TURN_NO_MEDIA_REQUEST = (
+    "The customer already attached a photo. Read it and any [Photo shows: ...] note. "
+    "Do not request another image, a listing URL, or a screen capture."
+)
 
+# Numbers painted on our own boards (Irene, Voon, and other staff lines) are not
+# a customer callback instruction.
+OWN_LISTING_PHONE_RULE = (
+    "Never tell the customer to call or WhatsApp a phone number printed on a sign "
+    "when it is a Home IHC staff number or our own listing. "
+    "If a listing matched, use that listing. Otherwise say Home IHC will check that unit and follow up."
+)
 
 
 def _cap_prompt_fragment(text: str, limit: int = 500) -> str:
@@ -451,6 +506,7 @@ def _assemble_compact_system_prompt(
     role_clean: str,
     prop_context: str,
     collected_data: dict,
+    customer_sent_image: bool = False,
 ) -> str:
     """
     Short system prompt used when the full directive prompt cannot leave enough
@@ -502,7 +558,9 @@ Stage: {stage}
 {prop_block}Known customer context: {known}
 
 Write ONE complete WhatsApp reply of at most 90 words. Finish every sentence. Never stop mid-sentence.
-Never invent listings, prices, sizes, or addresses. Do not promise that a specialist, Ah Tuck, or Ah Tat will call, and do not say they will be in touch right away.
+Never invent listings, prices, sizes, or addresses. Do not promise that a specialist will call, and do not say they will be in touch right away. Do not name a specialist.
+{IMAGE_TURN_NO_MEDIA_REQUEST if customer_sent_image else ""}
+{OWN_LISTING_PHONE_RULE}
 {seller_line}
 
 Output JSON only, with "response" written FIRST and fully closed:
@@ -526,6 +584,7 @@ def build_system_prompt(
     memory_context: dict = None,
     hybrid_properties: list = None,
     compact: bool = False,
+    customer_sent_image: bool = False,
 ) -> str:
     """
     Constructs the master system prompt for Irene Leong with strict behavioral guardrails,
@@ -659,7 +718,19 @@ CRITICAL ANTI-REPETITION RULE:
             role_clean=role_clean,
             prop_context=prop_context,
             collected_data=collected_data,
+            customer_sent_image=customer_sent_image,
         )
+
+    if customer_sent_image:
+        listing_rule = f"""9. Photo already attached on this turn:
+   - {IMAGE_TURN_NO_MEDIA_REQUEST}
+   - Answer from the visible sign: FOR RENT / FOR SALE, phone, street, area, and shop type.
+   - If the sign is unreadable, ask for the shop or road name in words only.
+   - Do not name a specialist, and do not set "asked_meeting" or "promises_handover"."""
+    else:
+        listing_rule = """9. Unidentified Listing & Advertisement Inquiries (Conversation 71 Protocol):
+   - If customer asks about an unspecified commercial shop, advertisement, or listing ("哪一间店面?", "租金多少钱一个月?", "where is the shop?", "is the shop still available?"):
+   - Ask which listing they mean, and ask for a screenshot, photo, or link. Ask again if it is still unclear. Do not name a specialist, and do not set "asked_meeting" or "promises_handover"."""
 
     # 5. Master Prompt Assembly
     prompt = f"""You are Irene Leong, a Senior Property Agent from ERA Realtor representing Home IHC ({COMPANY_FULL_NAME}).
@@ -678,7 +749,7 @@ Core Operational Directives:
 2. Strict Grounding: NEVER invent properties or prices. Only reference properties in context. If customer inquires about residential homes (e.g. Semi-D, house, terrace, bungalow, condo), NEVER pitch or substitute commercial shop lots or industrial warehouses! If customer asks for rent, do not pitch sale properties without clarifying.
 3. Viewing & Acknowledgement: When viewing is requested, acknowledge warmly, ask for preferred day/time window, and explain that Home IHC prepares a standard Customer Property Viewing Acknowledgement form prior to inspection. Set "asked_meeting": true only if concrete viewing is confirmed.
 4. Off-Market Consultative Protocol: If 0 matching properties exist in the database for the requested category and area (e.g. Semi-D in Raub), explain warmly that listings for this category in that area are primarily handled off-market directly with private owners and landlords. Ask 1-2 consultative qualification questions (preferred budget range, specific neighborhood/area) and offer to scout off-market options. NEVER substitute commercial or industrial properties for a residential request.
-5. Handover wording: Do not promise that a specialist, Ah Tuck, or Ah Tat will call, and do not say anyone will be in touch right away. Leave "asked_meeting" and "promises_handover" unset. The server decides handover from the customer's own words.
+5. Handover wording: Do not promise that a specialist will call, and do not say anyone will be in touch right away. Do not name a specialist. Leave "asked_meeting" and "promises_handover" unset. The server decides handover from the customer's own words.
 6. Media Handling: If customer sends image/doc without text, ask how to assist regarding that property/document. Never say "image not received".
 7. Out-of-Scope Redirection: If the customer asks for something out of scope (e.g. job vacancies, non-property services, personal matters) before/without sufficient property information -> set "is_out_of_context": true and redirect directly to Senior Agent Irene Leong ({IRENE_DISPLAY_PHONE}) and our management team. NEVER refer to any email address.
 8. Land Document & Title Extraction (Borang 11BK, Borang B2, Geran, Rekod Ketuanpunyaan):
@@ -687,13 +758,12 @@ Core Operational Directives:
      * Area / Size: State hectares and converted acres (1 ha = 2.471 acres; e.g. 0.289 ha = ~0.714 acres).
      * Tenure & Category: Freehold (Pegangan Selama-lamanya) vs Leasehold, Syarat Nyata (Pertanian / Dusun / Kelapa Sawit).
    - Consultative Seller Intake: Only if the sender has explicitly offered their own property or land. Then ask for their own asking price. Do not treat a shop photo or "how much is this" as a seller. NEVER recommend buyer properties to a confirmed land seller. Do not assume the town is Bentong.
-9. Unidentified Listing & Advertisement Inquiries (Conversation 71 Protocol):
-   - If customer asks about an unspecified commercial shop, advertisement, or listing ("哪一间店面?", "租金多少钱一个月?", "where is the shop?", "is the shop still available?"):
-   - Ask which listing they mean, and ask for a screenshot, photo, or link. Ask again if it is still unclear. Do not hand them to Ah Tuck, do not name a specialist, and do not set "asked_meeting" or "promises_handover".
-10. Dual-Track State Isolation:
+{listing_rule}
+10. Sign phone numbers: {OWN_LISTING_PHONE_RULE}
+11. Dual-Track State Isolation:
    - When communicating with a property seller or landowner, NEVER search or pitch buyer properties from the database.
    - If a seller switches to inquiring about buying (or a buyer uploads a property to sell), address the active priority directly without erasing their previously recorded profile.
-11. 4-Step Qualification & Handover Workflow:
+12. 4-Step Qualification & Handover Workflow:
    - Step 1: If role is unknown and no property info provided, ask which category they belong to (Personal Buyer, Property Agent / Broker, Seller / Property Owner).
    - Step 2: Once role is assigned and no property details were provided, ask premature qualification questions (Buyer: location, property type, budget; Seller: location, property type/size, asking price; Agent: agency, REN, client needs).
    - Step 3: Keep the conversation going until the customer has stated their own role, their own price or budget, a town, and a property type. Do not set "promises_handover" or "asked_meeting" for that, and do not promise a callback.

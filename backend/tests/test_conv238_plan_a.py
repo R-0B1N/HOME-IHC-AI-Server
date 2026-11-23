@@ -227,7 +227,9 @@ class Conv238Orchestration(unittest.TestCase):
         minimal = _minimal_reply_prompt("en", is_seller=False)
         self.assertNotIn('"intent": "seller"', minimal)
         full = build_system_prompt(collected_data={}, customer_language="en", role="customer")
-        self.assertIn("Do not hand them to Ah Tuck", full)
+        self.assertIn("Do not name a specialist", full)
+        self.assertNotIn("Ah Tuck", full)
+        self.assertNotIn("tuck@homeihc.com", full)
         self.assertNotIn("012-9663589", full)
         plan = fit_conversational_token_budget(full, compact, minimal, "", "is it still available？", 0)
         self.assertEqual(plan["tier"], "compact")
@@ -282,7 +284,8 @@ class RoutingGate(unittest.TestCase):
             {"name": "Yap", "email": "y@example.com", "phone_number": "+60110000004",
              "assigned_locations": ["Mentakab"], "assigned_property_types": ["Rental"]},
         ]
-        seller_shop = self._service(roster).dispatch(
+        shop_service = self._service(roster)
+        seller_shop = shop_service.dispatch(
             conversation_id=238,
             customer_name="Customer",
             customer_phone="+60000000238",
@@ -295,8 +298,13 @@ class RoutingGate(unittest.TestCase):
         )
         self.assertFalse(seller_shop["assignment_verified"])
         self.assertEqual(seller_shop["assigned_agents"], [])
-        self.assertEqual(seller_shop["routed_to"], [])
+        self.assertTrue(seller_shop.get("admin_only_handover"))
+        self.assertIn("+601165144931", seller_shop["routed_to"])
+        self.assertNotIn("+60129663589", seller_shop["routed_to"])
+        self.assertNotIn("Ah Tat", seller_shop["diagnostic"])
+        self.assertNotIn("will contact", seller_shop["diagnostic"].lower())
         self.assertIn(seller_shop["status"], {"intent_incompatible", "below_threshold"})
+        shop_service.send_contact_func.assert_not_called()
 
         tied = [
             {"name": "Ada", "email": "ada@example.com", "phone_number": "+60110000011",

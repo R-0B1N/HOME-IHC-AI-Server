@@ -503,8 +503,22 @@ class MetaWhatsAppPolicyGuardScenario(BaseScenario):
             "bypass_ai": False,
         }
 
-        # Evaluate Customer A
-        eval_a = manager.evaluate_customer(cust_a, now=now)
+        def _policy_messages(conversation_id):
+            anchor = cust_a.updated_at if int(conversation_id) == 2001 else cust_b.updated_at
+            return [{
+                "message_type": "incoming",
+                "private": False,
+                "content": "still looking",
+                "created_at": anchor.timestamp(),
+            }]
+
+        with patch(
+            "app.services.lead_nurturing.get_conversation_messages",
+            side_effect=_policy_messages,
+        ):
+            eval_a = manager.evaluate_customer(cust_a, now=now)
+            eval_b = manager.evaluate_customer(cust_b, now=now)
+
         assertions.append(BacktestAssertion(
             name="Customer A Eligibility Evaluation",
             expected=True,
@@ -522,8 +536,6 @@ class MetaWhatsAppPolicyGuardScenario(BaseScenario):
             details="Automated follow-up message sent within 24h window.",
         ))
 
-        # Evaluate Customer B
-        eval_b = manager.evaluate_customer(cust_b, now=now)
         assertions.append(BacktestAssertion(
             name="Customer B Eligibility Evaluation",
             expected=True,

@@ -167,7 +167,17 @@ class TestHandoverAndDashboardToggles(unittest.TestCase):
         
         # 4. Genuine Customer: Successfully evaluated
         mock_get_role.return_value = "customer"
-        res_cust = manager.evaluate_customer(emp_cust, now=now)
+        inbound_at = now - timedelta(days=4)
+        with patch(
+            "app.services.lead_nurturing.get_conversation_messages",
+            return_value=[{
+                "message_type": "incoming",
+                "private": False,
+                "content": "still looking",
+                "created_at": inbound_at.timestamp(),
+            }],
+        ):
+            res_cust = manager.evaluate_customer(emp_cust, now=now)
         self.assertIsNotNone(res_cust, "Genuine prospective customer must be evaluated for follow-up")
         self.assertEqual(res_cust["conversation_id"], 2001)
 

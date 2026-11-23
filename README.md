@@ -57,6 +57,8 @@ flowchart TD
 ### E. Lead Qualification & Nurturing (`LeadNurturingManager`)
 - Automated classification into Hot (18h–72h), Warm (3–7d), and Cold (7–14d) follow-up cadences.
 - Strict enforcement of Meta WhatsApp 24-hour Customer Care Policy window (direct messaging $\le 24$h; internal Chatwoot private notes $> 24$h).
+- Follow-ups are timed from the last inbound customer message and are not sent when the latest conversation message is ours. Nurture reuses the contact's existing Chatwoot conversation and does not open a new one.
+- Staging is default-deny. Set `NURTURE_TEST_CONTACTS` to a comma-separated list of E.164 numbers (for example `+60126761818`). On staging, follow-ups go only to those numbers; leave it unset and staging sends to nobody. Production ignores this variable. The worker reads it from the environment, so no compose change is required.
 
 ---
 

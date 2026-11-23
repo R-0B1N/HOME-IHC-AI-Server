@@ -5,6 +5,9 @@ import json
 from openai import OpenAI
 import re
 
+from app.services.chatwoot import fetch_chatwoot_attachment
+from app.services.system_prompts import strip_vision_artifacts
+
 logger = logging.getLogger(__name__)
 
 _vllm_env = os.getenv("VLLM_BASE_URL") or os.getenv("OLLAMA_BASE_URL") or "http://crm-vllm:8000/v1"
@@ -20,6 +23,122 @@ llm_client = OpenAI(
     base_url=VLLM_BASE_URL
 )
 
+# One short vision read of a customer photo. Separate from the reply call.
+# Default ON. Set PHOTO_VISION_ENABLED=0 to skip the call; failure still
+# returns an empty description and the turn continues.
+PHOTO_VISION_MAX_TOKENS = 80
+_PHOTO_VISION_IMAGES = 2
+_NO_VISION_TEXT = re.compile(
+    r"^(?:none|n/?a|empty|no(?:\s+visible)?\s+text|unreadable|not readable|"
+    r"i (?:can(?:not|'t)|could not) (?:read|see)(?:\s+any)?(?:\s+text)?\.?)$",
+    re.IGNORECASE,
+)
+
+
+def photo_vision_enabled() -> bool:
+    raw = os.getenv("PHOTO_VISION_ENABLED", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def customer_image_part(img):
+    """OpenAI image_url part for a base64 string, data/http URL, or {url} dict."""
+    if isinstance(img, str) and img.strip():
+        if img.startswith(("http://", "https://", "data:")):
+            url = img
+        else:
+            url = f"data:image/jpeg;base64,{img}"
+        return {"type": "image_url", "image_url": {"url": url}}
+    if isinstance(img, dict) and img.get("url"):
+        return {"type": "image_url", "image_url": {"url": img["url"]}}
+    return None
+
+
+def _clean_vision_text(raw: str) -> str:
+    text = (raw or "").strip()
+    text = re.sub(r"^```(?:text|json)?", "", text, flags=re.IGNORECASE).strip()
+    if text.endswith("```"):
+        text = text[:-3].strip()
+    text = text.strip('"').strip("'").strip()
+    text = re.sub(r"\s+", " ", text)
+    if not text or _NO_VISION_TEXT.match(text):
+        return ""
+    return text[:400]
+
+
+def describe_customer_photos(images) -> str:
+    """
+    Transcribe a customer photo in one small request: FOR RENT / FOR SALE,
+    phone numbers, place names, shop type, and any other visible text.
+
+    Returns "" when vision is off, there is no image, or the call times out
+    or errors. Never raises.
+    """
+    if not photo_vision_enabled() or not images:
+        return ""
+    parts = [{
+        "type": "text",
+        "text": (
+            "Transcribe only text that is visibly printed on this photo. "
+            "Include FOR RENT or FOR SALE (出租/招租/出售), phone numbers, "
+            "street or area names, and the shop type. One short line. "
+            "If nothing is readable, reply with none. Do not guess and do not ask a question."
+        ),
+    }]
+    added = 0
+    for img in list(images)[:_PHOTO_VISION_IMAGES]:
+        part = customer_image_part(img)
+        if part:
+            parts.append(part)
+            added += 1
+    if added == 0:
+        return ""
+    try:
+        response = llm_client.chat.completions.create(
+            model=LLM_MODEL_NAME,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You read visible text on property advertisement photos for Home IHC. "
+                        "Output one plain line of transcription and nothing else."
+                    ),
+                },
+                {"role": "user", "content": parts},
+            ],
+            max_tokens=PHOTO_VISION_MAX_TOKENS,
+            temperature=0.0,
+            timeout=12.0,
+        )
+        content = ""
+        if response and response.choices:
+            content = response.choices[0].message.content or ""
+        description = _clean_vision_text(content)
+        logger.info("Photo vision transcribed %s characters", len(description))
+        return description
+    except Exception as exc:
+        logger.warning("Photo vision transcription failed: %s", exc)
+        return ""
+
+
+def append_photo_description(text: str, description: str) -> str:
+    """Append a [Photo shows: ...] note for classifiers, search, and the reply text."""
+    description = re.sub(r"\s+", " ", (description or "").strip())
+    if not description:
+        return text or ""
+    if description[-1] not in ".!?":
+        description += "."
+    note = (
+        "[Photo shows: "
+        f"{description} "
+        "The customer is asking about this advertisement, not offering their own property.]"
+    )
+    base = (text or "").strip()
+    if "[Photo shows:" in base:
+        return base
+    if not base:
+        return note
+    return f"{base}\n{note}"
+
 def transcribe_audio(audio_url: str) -> str:
     """
     Downloads audio and sends to Whisper (or audio transcription engine).
@@ -27,16 +146,17 @@ def transcribe_audio(audio_url: str) -> str:
     in Mandarin, Cantonese, Hokkien, Bahasa Melayu, and English.
     """
     logger.info(f"Transcribing audio from {audio_url}")
-    
+
+    # Download failures propagate so the conversation processor can log them
+    # and ask the customer to send the photo again. Whisper failures still
+    # return an empty transcript.
+    audio_resp = fetch_chatwoot_attachment(audio_url, timeout=30)
+
     try:
-        # 1. Download audio
-        audio_resp = requests.get(audio_url, timeout=30)
-        audio_resp.raise_for_status()
-        
-        # 2. POST to whisper API with domain vocabulary biasing
+        # POST to whisper API with domain vocabulary biasing
         multilingual_prompt = (
             "Irene Leong, ERA Realtor, Home IHC, BentongLand, Pahang, Kuantan, Bentong, Raub, Karak, Temerloh, Mentakab, Triang, Bera. "
-            "店面, 铺位, 铺头, 双层排屋, 农业地, 榴莲园, 佣金, 一个月佣金, 租金, 一个月租金, 顶手费, 招租, 出租, 买卖, 一间, 一个月, 订金, 押金, 发展地, 商业地, 睇楼, 屋主, 业主, 阿Tuck 012-9663589. "
+            "店面, 铺位, 铺头, 双层排屋, 农业地, 榴莲园, 佣金, 一个月佣金, 租金, 一个月租金, 顶手费, 招租, 出租, 买卖, 一间, 一个月, 订金, 押金, 发展地, 商业地, 睇楼, 屋主, 业主. "
             "Tanah, kedai, sewa, jual, sewa sebulan, komisen agent, deposit 2+1, geran freehold leasehold, Musang King. "
             "Tiàm-thâu, Chhu, Chhut-cho͘, Bóe, Bē, Thô͘-tī. Shoplot, commercial shop, rental, one month advance commission, ROI."
         )
@@ -210,6 +330,82 @@ def generate_response(prompt: str, contact_info: dict, db_context: dict = None, 
         logger.error(f"Failed to communicate with LLM: {e}")
         raise e
 
+_RENT_MARKERS = ("for rent", "untuk disewa", "出租", "招租")
+_SALE_MARKERS = ("for sale", "dijual", "出售")
+_SHOP_MARKERS = ("shoplot", "shop lot", "shop-lot", "kedai", "店面")
+
+
+def _blank_criteria_value(value) -> bool:
+    return value is None or str(value).strip().lower() in {"", "null", "none"}
+
+
+def sign_and_customer_text(prompt: str) -> str:
+    """Vision-note body plus the customer's own caption. History is not included."""
+    prompt = prompt or ""
+    notes = re.findall(r"\[Photo shows:\s*(.*?)\]", prompt, flags=re.IGNORECASE | re.DOTALL)
+    own = strip_vision_artifacts(prompt)
+    parts = [re.sub(r"\s+", " ", note).strip() for note in notes if note and note.strip()]
+    if own:
+        parts.append(own)
+    return " ".join(parts).strip()
+
+
+def _contains_marker(text: str, markers) -> bool:
+    lowered = (text or "").lower()
+    for marker in markers:
+        if marker.lower() in lowered or marker in (text or ""):
+            return True
+    return False
+
+
+def _has_shop_word(text: str) -> bool:
+    if _contains_marker(text, _SHOP_MARKERS):
+        return True
+    if re.search(r"\bshop\b", (text or "").lower()):
+        return True
+    return "店" in (text or "")
+
+
+def analyze_advert_text(prompt: str) -> dict:
+    """
+    Deterministic reading of a sign note plus the customer's own words.
+    A rental marker does not require a town. 出租 inside the note is a rental
+    enquiry, not a landlord role.
+    """
+    text = sign_and_customer_text(prompt)
+    rental = _contains_marker(text, _RENT_MARKERS)
+    sale = _contains_marker(text, _SALE_MARKERS) and not rental
+    return {
+        "text": text,
+        "rental": rental,
+        "sale": sale,
+        "commercial": _has_shop_word(text),
+    }
+
+
+def apply_deterministic_sign_criteria(criteria: dict, prompt: str) -> dict:
+    """Overlay rental/sale/commercial fields the model left null."""
+    base = criteria if isinstance(criteria, dict) else {}
+    out = {
+        "location": None if _blank_criteria_value(base.get("location")) else base.get("location"),
+        "property_type": None if _blank_criteria_value(base.get("property_type")) else base.get("property_type"),
+        "category": None if _blank_criteria_value(base.get("category")) else base.get("category"),
+        "max_price": None if _blank_criteria_value(base.get("max_price")) else base.get("max_price"),
+    }
+    advert = analyze_advert_text(prompt)
+    if advert["rental"]:
+        out["transaction"] = "rent"
+        out["enquiry"] = "rental"
+    elif advert["sale"]:
+        out["transaction"] = "sale"
+        out["enquiry"] = "sale"
+    if advert["commercial"]:
+        out["category"] = "commercial"
+        if _blank_criteria_value(out.get("property_type")):
+            out["property_type"] = "shop"
+    return out
+
+
 def extract_property_search_criteria(prompt: str, conversation_history: str = "") -> dict:
     """
     Extracts property search criteria from the user's prompt using the LLM.
@@ -259,16 +455,17 @@ def extract_property_search_criteria(prompt: str, conversation_history: str = ""
                     cat = "industrial"
                 elif any(k in pt_lower for k in ["land", "durian", "orchard", "agricultural"]):
                     cat = "agricultural"
-            return {
+            parsed_criteria = {
                 "location": parsed.get("location"),
                 "property_type": prop_t,
                 "category": cat,
                 "max_price": parsed.get("max_price")
             }
-        return {}
+            return apply_deterministic_sign_criteria(parsed_criteria, prompt)
+        return apply_deterministic_sign_criteria({}, prompt)
     except Exception as e:
         logger.error(f"Failed to extract search criteria: {e}")
-        return {}
+        return apply_deterministic_sign_criteria({}, prompt)
 
 def extract_multi_intent_context(prompt: str, conversation_history: str = "", existing_profile: dict = None) -> dict:
     """
@@ -330,13 +527,15 @@ def extract_multi_intent_context(prompt: str, conversation_history: str = "", ex
         except (ValueError, TypeError):
             pass
 
-    # Role extraction
+    # Role extraction. A photographed 出租 / FOR RENT is the advert, not the sender's role.
+    role_text = re.sub(r"\[photo shows:.*?\]", " ", clean_text, flags=re.DOTALL)
+    role_text = re.sub(r"\[customer sent a photo\.?\]", " ", role_text)
     detected_role = "buyer"
-    if any(k in clean_text for k in ["sell", "selling", "list my", "jual", "出让", "想卖", "放盘"]):
+    if any(k in role_text for k in ["sell", "selling", "list my", "jual", "出让", "想卖", "放盘"]):
         detected_role = "seller"
-    elif any(k in clean_text for k in ["rent out", "lease out", "for rent", "bagi sewa", "sewakan", "出租", "放租"]):
+    elif any(k in role_text for k in ["rent out", "lease out", "for rent", "bagi sewa", "sewakan", "出租", "放租"]):
         detected_role = "landlord"
-    elif any(k in clean_text for k in ["rent", "renting", "sewa", "租", "想要租"]):
+    elif any(k in role_text for k in ["rent", "renting", "sewa", "租", "想要租"]):
         detected_role = "tenant"
 
     # Multi-intent switch detection against existing profile
@@ -660,6 +859,24 @@ def classify_intent(text: str, conversation_history: str = "") -> str:
         return "GENERAL"
 
 
+def _log_turn_intent(category: str, source: str) -> str:
+    """One INFO line per classification. source is llm or fallback. No confidence."""
+    logger.info("classify_turn_intent category=%s source=%s", category, source)
+    return category
+
+
+def _sign_photo_category(prompt: str, category: str) -> str:
+    """A photographed FOR RENT / FOR SALE board is not the customer offering their own unit."""
+    if category != "seller_intake":
+        return category
+    if "[photo shows:" not in (prompt or "").lower():
+        return category
+    from app.services.role_contract import is_explicit_seller_statement
+    if is_explicit_seller_statement(strip_vision_artifacts(prompt or "")):
+        return category
+    return "buyer_search"
+
+
 def classify_turn_intent(
     prompt: str, 
     conversation_history: str = "", 
@@ -677,7 +894,7 @@ def classify_turn_intent(
     - 'general': Greetings, company questions, or general inquiry.
     """
     if has_document or (document_extract and any(document_extract.values())):
-        return "seller_intake"
+        return _log_turn_intent("seller_intake", "fallback")
         
     system_prompt = """You are an expert Real Estate intent and turn classifier for Home IHC Sdn Bhd (Pahang, Malaysia).
 Analyze the user's current message and conversational context. Output strictly a JSON object with a single string field "category".
@@ -689,6 +906,8 @@ Categories:
 4. "agent_inquiry": Fellow agent or broker seeking co-broking.
 5. "valuer_inquiry": Bank valuer asking for transaction comparisons or bank values.
 6. "general": General greetings, thank you, or conversational pleasantries.
+
+If the message contains "[Photo shows: ...]", the customer already sent a photo of an advertisement. Do not use unidentified_listing just because the caption is empty. FOR RENT / FOR SALE / 出租 / 招租 / 出售 on that sign is buyer_search unless the customer explicitly says they own the property or want to list it.
 
 Output format:
 {"category": "seller_intake" | "buyer_search" | "unidentified_listing" | "agent_inquiry" | "valuer_inquiry" | "general"}"""
@@ -710,13 +929,23 @@ Output format:
         if parsed and parsed.get("category"):
             cat = str(parsed["category"]).lower().strip()
             if cat in ["seller_intake", "buyer_search", "unidentified_listing", "agent_inquiry", "valuer_inquiry", "general"]:
-                return cat
+                corrected = _sign_photo_category(prompt, cat)
+                source = "llm" if corrected == cat else "fallback"
+                return _log_turn_intent(corrected, source)
     except Exception as e:
         logger.warning(f"LLM turn classification fallback triggered: {e}")
 
     # Deterministic semantic fallback
     p_lower = (prompt or "").lower()
-    
+
+    # A photographed advertisement is a question about that listing. A FOR SALE
+    # sign must not become seller_intake when the vision call is all we have.
+    if "[photo shows:" in p_lower:
+        from app.services.role_contract import is_explicit_seller_statement
+        # Ownership has to be in the customer's own words. 出售 / 出租 on the sign is the advert.
+        if not is_explicit_seller_statement(strip_vision_artifacts(prompt or "")):
+            return _log_turn_intent("buyer_search", "fallback")
+
     # 1. Unidentified listing inquiry (Conversation 71 pattern)
     if any(k in p_lower for k in [
         "哪一间店面", "哪间店面", "哪里的店面", "那个店面", "那间店面", "那一间店面", "那一间店", "那间店", "那一间",
@@ -724,21 +953,23 @@ Output format:
         "where is the shop", "where is that shop", "which shop", "how much is the shop", "how much for that shop", "that shop",
         "kedai yang mana", "kedai kat mana", "berapa sewa kedai itu", "is that shop still available", "kedai itu", "kedai tu"
     ]):
-        return "unidentified_listing"
+        return _log_turn_intent("unidentified_listing", "fallback")
 
-    # 2. Seller intake
-    if any(k in p_lower for k in [
+    # 2. Seller intake. Keyword scan uses the customer's own words so a sign's 出售
+    # cannot become seller_intake after the photo short-circuit above.
+    seller_text = strip_vision_artifacts(prompt or "").lower()
+    if any(k in seller_text for k in [
         "出售", "想卖", "放盘", "出让", "割爱", "卖地", "卖屋", "酒楼出售", "厂房出售", "店铺出售",
         "jual", "nak jual", "owner nak jual", "tuan tanah", "valuation", "nilai tanah", "let go", "sell my", "sell land", "sell property"
     ]):
-        return "seller_intake"
+        return _log_turn_intent("seller_intake", "fallback")
 
     # 3. Buyer search
     if any(k in p_lower for k in [
         "buy", "rent", "cari", "sewa", "beli", "nak cari", "looking for", "interested to buy", "ada tanah", "ada rumah", "ada kedai",
         "买", "租", "找", "想买", "想租", "想找", "有地吗", "有房子吗", "有店面吗", "有榴莲园吗", "有卖吗", "卖吗"
     ]):
-        return "buyer_search"
+        return _log_turn_intent("buyer_search", "fallback")
 
-    return "general"
+    return _log_turn_intent("general", "fallback")
 
