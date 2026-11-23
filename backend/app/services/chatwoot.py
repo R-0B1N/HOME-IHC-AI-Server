@@ -1,8 +1,19 @@
+import json
 import logging
 import os
 import urllib.parse
 
 import requests
+
+from app.services.contact_identity import (
+    is_authentication_template,
+    is_bsuid,
+    meta_destination_fields,
+    to_e164,
+)
+from app.services.outbound_block import is_outbound_blocked
+
+IHC_BACKEND_SOURCE = {"source": "ihc_backend"}
 
 logger = logging.getLogger(__name__)
 
@@ -228,6 +239,9 @@ def send_message(conversation_id: int, content: str):
     Sends a message back to the Chatwoot conversation.
     In staging, guards against dispatching public messages to production inboxes.
     """
+    if is_outbound_blocked(conversation_id):
+        logger.info("outbound blocked; public message not posted conversation_id=%s", conversation_id)
+        return {"skipped": "outbound_blocked"}
     is_staging = (
         os.getenv("ENVIRONMENT", "").lower() == "staging"
         or os.getenv("APP_ENV") == "staging"
@@ -269,7 +283,8 @@ def send_message(conversation_id: int, content: str):
     payload = {
         "content": content,
         "message_type": "outgoing",
-        "private": False
+        "private": False,
+        "content_attributes": dict(IHC_BACKEND_SOURCE),
     }
     
     try:
@@ -313,11 +328,16 @@ def send_message_with_attachment(conversation_id: int, content: str, file_name: 
     headers = {
         "api_access_token": CHATWOOT_API_TOKEN,
     }
+    if not is_private and is_outbound_blocked(conversation_id):
+        logger.info("outbound blocked; public attachment not posted conversation_id=%s", conversation_id)
+        return {"skipped": "outbound_blocked"}
     data = {
         "content": content,
         "message_type": "outgoing",
-        "private": "true" if is_private else "false"
+        "private": "true" if is_private else "false",
     }
+    if not is_private:
+        data["content_attributes"] = json.dumps(IHC_BACKEND_SOURCE)
     files = {
         "attachments[]": (file_name, file_content, content_type)
     }
@@ -354,16 +374,17 @@ def send_whatsapp_image(inbox_id: int, to_phone: str, image_url: str, caption: s
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
-    clean_to_phone = to_phone.replace("+", "").replace(" ", "").replace("-", "")
+    dest = meta_destination_fields(to_phone)
+    clean_to_phone = dest.get("to") or "bsuid"
     
     payload = {
         "messaging_product": "whatsapp",
-        "to": clean_to_phone,
         "type": "image",
         "image": {
             "link": image_url
-        }
+        },
     }
+    payload.update(dest)
     if caption:
         payload["image"]["caption"] = caption
         
@@ -387,7 +408,8 @@ def send_whatsapp_document(inbox_id: int, to_phone: str, document_url: str = Non
         return None
         
     api_key, phone_number_id = resolve_whatsapp_phone_number_id(inbox_id, override_phone_number_id)
-    clean_to_phone = to_phone.replace("+", "").replace(" ", "").replace("-", "")
+    dest = meta_destination_fields(to_phone)
+    clean_to_phone = dest.get("to") or ""
 
     # If document_url is provided, use WhatsApp Cloud API direct link
     if document_url and api_key and phone_number_id:
@@ -398,13 +420,13 @@ def send_whatsapp_document(inbox_id: int, to_phone: str, document_url: str = Non
         }
         payload = {
             "messaging_product": "whatsapp",
-            "to": clean_to_phone,
             "type": "document",
             "document": {
                 "link": document_url,
                 "filename": file_name
             }
         }
+        payload.update(dest)
         if caption:
             payload["document"]["caption"] = caption
         try:
@@ -416,9 +438,10 @@ def send_whatsapp_document(inbox_id: int, to_phone: str, document_url: str = Non
             logger.error(f"Failed to send native whatsapp document via URL to {clean_to_phone}: {e}")
 
     # Fallback / file_content dispatch via Chatwoot conversation
-    if file_content:
+    if file_content and "recipient" not in dest:
         try:
-            contact_id = get_or_create_contact(clean_to_phone, f"Staff/Admin ({clean_to_phone})")
+            contact_phone = to_e164(to_phone) or to_phone
+            contact_id = get_or_create_contact(contact_phone, f"Staff/Admin ({contact_phone})")
             if contact_id:
                 conv_id = create_conversation(contact_id, inbox_id)
                 if conv_id:
@@ -517,11 +540,11 @@ def send_whatsapp_contact(inbox_id: int, to_phone: str, contact_name: str, conta
     }
     
     clean_contact_phone = contact_phone.replace("+", "").replace(" ", "").replace("-", "")
-    clean_to_phone = to_phone.replace("+", "").replace(" ", "").replace("-", "")
+    dest = meta_destination_fields(to_phone)
+    clean_to_phone = dest.get("to") or "bsuid"
     
     payload = {
         "messaging_product": "whatsapp",
-        "to": clean_to_phone,
         "type": "contacts",
         "contacts": [
             {
@@ -539,6 +562,7 @@ def send_whatsapp_contact(inbox_id: int, to_phone: str, contact_name: str, conta
             }
         ]
     }
+    payload.update(dest)
     
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=10)
@@ -594,7 +618,13 @@ def send_whatsapp_template(
         "Content-Type": "application/json"
     }
     
-    clean_to_phone = to_phone.replace("+", "").replace(" ", "").replace("-", "")
+    dest = meta_destination_fields(to_phone)
+    if "recipient" in dest and is_authentication_template(template_name):
+        err_msg = "131062 skipped: authentication template is not sent to a BSUID"
+        logger.info("Skipping authentication template kind=bsuid")
+        _LAST_WHATSAPP_ERROR = err_msg
+        return {"skipped": "bsuid_authentication_template"}
+    clean_to_phone = dest.get("to") or "bsuid"
     
     # Construct template components
     components = []
@@ -653,7 +683,6 @@ def send_whatsapp_template(
 
     payload = {
         "messaging_product": "whatsapp",
-        "to": clean_to_phone,
         "type": "template",
         "template": {
             "name": template_name,
@@ -663,6 +692,7 @@ def send_whatsapp_template(
             "components": components
         }
     }
+    payload.update(dest)
     
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=15)
@@ -859,29 +889,53 @@ def toggle_typing_status(conversation_id: int, status: str):
     except Exception as e:
         logger.warning(f"Failed to toggle typing status in Chatwoot conversation {conversation_id}: {e}")
 
+def _put_contact_phone(contact_id: int, e164: str) -> None:
+    """Fill a blank Chatwoot phone. Never overwrite a different number."""
+    if not contact_id or not e164:
+        return
+    url = f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts/{contact_id}"
+    headers = {
+        "api_access_token": CHATWOOT_API_TOKEN,
+        "Content-Type": "application/json",
+    }
+    try:
+        requests.put(url, headers=headers, json={"phone_number": e164}, timeout=10)
+    except requests.exceptions.RequestException as exc:
+        logger.warning("Could not fill blank Chatwoot phone for contact %s: %s", contact_id, exc)
+
+
 def get_or_create_contact(phone_number: str, name: str = "Unknown") -> int:
     """
     Looks up a contact by phone number, or creates one if it doesn't exist.
-    Returns the contact_id.
+    Returns the contact_id. Phone values are E.164. A BSUID is not stored as a phone.
     """
+    if is_bsuid(phone_number):
+        logger.info("Refusing Chatwoot phone contact for kind=bsuid")
+        return None
+    e164 = to_e164(phone_number)
+    query = e164 or phone_number
     search_url = f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts/search"
     headers = {
         "api_access_token": CHATWOOT_API_TOKEN,
         "Content-Type": "application/json"
     }
     try:
-        search_response = requests.get(search_url, headers=headers, params={"q": phone_number})
+        search_response = requests.get(search_url, headers=headers, params={"q": query})
         search_response.raise_for_status()
         results = search_response.json().get("payload", [])
         if results:
-            return results[0].get("id")
+            contact = results[0] or {}
+            existing = str(contact.get("phone_number") or "").strip()
+            if e164 and not existing:
+                _put_contact_phone(contact.get("id"), e164)
+            return contact.get("id")
     except requests.exceptions.RequestException as e:
         logger.error(f"Failed to search for contact in Chatwoot: {e}")
     
     # If not found or search failed, try creating
     create_url = f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts"
     payload = {
-        "phone_number": phone_number,
+        "phone_number": e164 or phone_number,
         "name": name
     }
     try:

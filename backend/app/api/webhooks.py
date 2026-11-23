@@ -172,7 +172,11 @@ async def chatwoot_webhook(request: Request):
         return {"status": "typing_off_recorded"}
         
     # Handle conversation metadata events
-    if event_name in ["conversation_created", "conversation_status_changed", "conversation_updated", "message_updated", "webwidget_triggered", "contact_created"]:
+    if event_name == "message_updated":
+        from app.services.delivery_failure import handle_message_updated
+        return handle_message_updated(payload)
+
+    if event_name in ["conversation_created", "conversation_status_changed", "conversation_updated", "webwidget_triggered", "contact_created"]:
         logger.info(f"Received metadata event: {event_name}. No immediate action required by AI.")
         return {"status": "ignored", "reason": f"metadata event {event_name} not handled"}
 

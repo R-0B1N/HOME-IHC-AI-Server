@@ -30,11 +30,14 @@ from app.services.role_contract import (
     UNVERIFIED_REPLY_FALLBACK,
 )
 from app.services.db_services import (
+    default_suppression_numbers,
     extract_phone_candidates,
     find_matching_property,
     find_similar_properties,
+    reply_quotes_printed_number,
     resolve_sign_contact,
     search_properties,
+    suppressed_phone_like,
 )
 from app.services.system_prompts import (
     detect_customer_language,
@@ -685,10 +688,47 @@ _PHOTO_REQUEST_NOTE = re.compile(
 )
 
 _SIGN_FOLLOWUP = {
-    "zh": "这张招牌上的号码是 Home IHC 的。我们会先核对这个单位，然后再跟进。",
-    "ms": "Nombor pada papan ini ialah nombor Home IHC. Kami akan semak unit ini dan follow up dengan anda.",
-    "en": "This sign uses a Home IHC line. We will check that unit and follow up with you.",
+    "zh": "这张招牌上的号码是 Home IHC 的。团队成员会核对这个单位，并在这个对话里回复。",
+    "ms": "Nombor pada papan ini ialah nombor Home IHC. Seorang ahli pasukan akan semak unit ini dan membalas dalam sembang ini.",
+    "en": "This sign uses a Home IHC line. A team member will check that unit and reply in this chat.",
 }
+
+
+_SIGN_PROMISE = re.compile(
+    r"follow up|get back to you|check and get back|跟进",
+    re.IGNORECASE,
+)
+
+
+def _public_sign_reply(text: str, language: str) -> str:
+    """Drop a false follow-up promise. Keep any other sentence about the sign."""
+    parts = _SENTENCE_SPLIT.split((text or "").strip()) if text else []
+    kept = []
+    for part in parts:
+        if not part.strip():
+            continue
+        if _SIGN_PROMISE.search(part) or _PHOTO_REQUEST_NOTE.search(part):
+            continue
+        kept.append(part.strip())
+    cleaned = " ".join(kept).strip()
+    if cleaned:
+        return cleaned
+    return _SIGN_FOLLOWUP.get(language or "en", _SIGN_FOLLOWUP["en"])
+
+
+def _recognised_sign_photo(raw_text: str, sign_contact: dict) -> bool:
+    """A caption-less turn that actually looks like a board, not any photo."""
+    advert = analyze_advert_text(raw_text or "")
+    if advert.get("rental") or advert.get("sale"):
+        return True
+    if (sign_contact or {}).get("staff_hit") or (sign_contact or {}).get("phones"):
+        return True
+    from app.services.db_services import extract_phone_like_runs, is_invalid_length_malaysian_01x
+
+    runs = extract_phone_like_runs(raw_text or "")
+    if runs or any(is_invalid_length_malaysian_01x(run) for run in runs):
+        return True
+    return False
 
 
 def _is_captionless_photo(text: str, images=None) -> bool:
@@ -894,15 +934,21 @@ def guard_own_staff_phone_reply(
     listing_matched: bool = False,
     language: str = "en",
     extra_numbers=None,
+    captionless: bool = False,
+    photo_text: str = "",
 ) -> str:
     """
     A reply must not send the customer back to a number painted on our own sign.
-    With no listing row, say Home IHC will check that unit and follow up.
+    With no listing row, say a team member will check that unit in this chat.
+    Fuzzy staff matches and invalid-length 01x strings are suppression only.
     """
     text = reply or ""
     if not text:
         return text
+    staff_numbers = default_suppression_numbers(extra_numbers)
     has_digits = reply_contains_staff_phone(text, extra_numbers)
+    fuzzy = suppressed_phone_like(text, staff_numbers)
+    printed = captionless and reply_quotes_printed_number(text, photo_text)
     callish = bool(_PHOTO_REQUEST_NOTE.search(text))
     replace = False
     if staff_hit and not listing_matched:
@@ -910,6 +956,24 @@ def guard_own_staff_phone_reply(
     elif staff_hit and (has_digits or callish):
         replace = True
     elif has_digits and callish:
+        replace = True
+    elif captionless and not listing_matched and (fuzzy or (callish and printed)):
+        replace = True
+    elif captionless and listing_matched and (fuzzy or (callish and (printed or has_digits))):
+        kept = []
+        for part in _SENTENCE_SPLIT.split(text.strip()):
+            if not part.strip():
+                continue
+            if suppressed_phone_like(part, staff_numbers):
+                continue
+            if _PHOTO_REQUEST_NOTE.search(part) and (
+                reply_quotes_printed_number(part, photo_text) or reply_contains_staff_phone(part, extra_numbers)
+            ):
+                continue
+            kept.append(part.strip())
+        text = " ".join(kept).strip()
+        if text:
+            return text
         replace = True
     if not replace:
         return text
@@ -1168,6 +1232,7 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
     # 2.5 Match Specific Property in Database ONLY for Buyer / General turns (never inject inventory into Seller/Agent turns)
     matched_prop = None
     sign_contact = {}
+    this_turn_photo_no_match = False
     if captionless_photo or extract_phone_candidates(raw_text):
         sign_contact = resolve_sign_contact(raw_text)
     session["sign_contact"] = sign_contact
@@ -1193,11 +1258,19 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
             matched_prop = None
             session["listing_match_source"] = None
             if decision["reason"]:
-                logger.info("photo match rejected reason=%s", decision["reason"])
+                reject_reason = decision["reason"]
+                logger.info("photo match rejected reason=%s", reject_reason)
             elif phone_picked_row:
+                reject_reason = "agent_phone_only"
                 logger.info("photo match rejected reason=agent_phone_only")
             else:
+                reject_reason = "no_candidate"
                 logger.info("caption-less photo listing match source=none")
+                logger.info("photo match rejected reason=no_candidate")
+            if _recognised_sign_photo(raw_text, sign_contact):
+                this_turn_photo_no_match = True
+                session["photo_no_match"] = True
+                session["photo_reject_reason"] = reject_reason
     elif not is_seller_or_agent_turn:
         matched_prop = find_matching_property(raw_text)
         if matched_prop:
@@ -1287,10 +1360,18 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
         for stale_k in ("buyer_budget", "buyer_property_type", "property_of_interest"):
             collected_data.pop(stale_k, None)
     elif turn_intent == "buyer_search":
-        buyer_track["status"] = "active"
-        buyer_track["last_active"] = datetime.datetime.utcnow().isoformat()
-        session["current_agent"] = "BUYER"
-        collected_data["customer_category"] = "buyer"
+        existing_category = str(collected_data.get("customer_category") or "").lower()
+        existing_agent = str(session.get("current_agent") or "").upper()
+        keep_renter = existing_category in {"renter", "tenant"} or existing_agent == "RENTER"
+        if keep_renter and not is_explicit_buy(own_words):
+            collected_data["customer_category"] = "renter"
+            session["current_agent"] = "RENTER"
+            session.setdefault("renter_track", {})["status"] = "active"
+        else:
+            buyer_track["status"] = "active"
+            buyer_track["last_active"] = datetime.datetime.utcnow().isoformat()
+            session["current_agent"] = "BUYER"
+            collected_data["customer_category"] = "buyer"
     elif turn_intent in ["agent_inquiry", "agent"]:
         agent_track = session.setdefault("agent_track", {})
         agent_track["status"] = "active"
@@ -1444,6 +1525,7 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
             and _active_role not in {"seller", "landlord", "owner"}
             and _curr_cat not in ["seller", "agent"]
             and not is_listing_question(raw_text)
+            and not (_curr_cat in {"renter", "tenant"} and not is_explicit_buy(own_words))
         ):
             collected_data["customer_category"] = _active_role
 
@@ -1719,7 +1801,9 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
     # seller Turn-1 that only names land and a town still must not.
     qualified_now = hot_lead_qualified(current_role, collected_data, raw_text)
     handover_reason = None
-    if user_wants_immediate_human:
+    if this_turn_photo_no_match:
+        handover_reason = "photo_no_match"
+    elif user_wants_immediate_human:
         handover_reason = "explicit_human"
     elif has_viewing_confirmation:
         handover_reason = "viewing"
@@ -1746,10 +1830,13 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
     elif handover_reason == "qualified":
         handover = True
         session["state"] = "COMPLETED"
+    elif handover_reason == "photo_no_match":
+        handover = True
 
     if handover:
         session["handover"] = True
-        session["state"] = "COMPLETED"
+        if handover_reason != "photo_no_match":
+            session["state"] = "COMPLETED"
 
     # Track viewing acknowledgement status if user expressed inspection intent
     if user_books_cached_viewing or bool(asked_meeting) or any(k in raw_text.lower() for k in ["viewing", "看房", "睇楼", "tengok rumah", "tengok tanah", "arrange viewing", "schedule viewing"]):
@@ -1774,7 +1861,11 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
         listing_matched=bool(matched_prop),
         language=customer_lang,
         extra_numbers=(sign_contact or {}).get("phones") or [],
+        captionless=captionless_photo,
+        photo_text=raw_text,
     )
+    if this_turn_photo_no_match:
+        response_text = _public_sign_reply(response_text, customer_lang)
 
     # Persist updated multi-intent memory and profile to Customer table
     MultiIntentMemoryTracker.persist_customer_memory(phone_number, session)
@@ -2073,12 +2164,14 @@ def _minimal_reply_prompt(
         intent_example = "seller"
     else:
         track = (
-            "Do not call them a seller, owner, or landlord. A photo, 'is it still available', "
-            "or 'how much is this' is a buyer question or an unresolved buy-versus-rent question. "
+            "Do not call them a seller, owner, or landlord. "
+            "A FOR RENT sign is a tenant question, not a buyer question. "
+            "'Is it still available' or 'how much is this' is a buyer question "
+            "or an unresolved buy-versus-rent question. "
             "Do not ask for land size, a title, or an asking price. "
             "Answer their latest property question using only facts you were given."
         )
-        intent_example = "buyer"
+        intent_example = "tenant" if customer_sent_image else "buyer"
     lang = (customer_language or "en").upper()
     photo_rule = f" {IMAGE_TURN_NO_MEDIA_REQUEST}" if customer_sent_image else ""
     return (

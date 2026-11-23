@@ -315,6 +315,8 @@ class BuyerReportGenerator(BaseExcelReportGenerator):
         last_int_dt = getattr(c, "last_interaction", None) or getattr(c, "updated_at", None)
         updated_str = last_int_dt.strftime("%Y-%m-%d %H:%M") if last_int_dt else ""
         phone = getattr(c, "phone_number", None) or getattr(c, "id", "")
+        if meta.get("phone_missing") or str(getattr(c, "id", "") or "").startswith("cw:"):
+            phone = "no phone"
 
         row = [
             str(c.id),

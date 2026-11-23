@@ -26,7 +26,11 @@ class SessionManager:
 
     @staticmethod
     def get_session_key(phone_number: str) -> str:
-        return f"session:{phone_number}"
+        identity = str(phone_number or "").strip()
+        if not identity:
+            # Never share one session across every phoneless contact.
+            identity = "missing"
+        return f"session:{identity}"
 
     @staticmethod
     def get_lock_key(phone_number: str) -> str:

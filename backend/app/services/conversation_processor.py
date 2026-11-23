@@ -31,7 +31,11 @@ from app.services.agent_logic import (
     process_persona_state_machine,
     restore_image_turn_reply,
 )
+from app.services.contact_identity import resolve_contact_identity
+from app.services.handover_assignee import handover_without_specialist
+from app.services.outbound_block import customer_outbound_blocked, is_outbound_blocked
 from app.services.role_contract import (
+    filter_unearned_followup,
     hot_lead_qualified,
     is_placeholder,
     is_title_document,
@@ -668,12 +672,24 @@ class ConversationQueueProcessor:
         Resolves or creates Customer record, checks bypass_ai, and records document extract metadata.
         Returns (customer, is_bypassed, phone_number, contact_name, metadata).
         """
-        phone_number = contact_info.get("phone_number", "")
         contact_name = contact_info.get("name", "Unknown")
         email = contact_info.get("email")
 
         first_msg = messages[0] if messages else {}
-        convo_data = first_msg.get("conversation", {})
+        convo_data = first_msg.get("conversation", {}) if isinstance(first_msg, dict) else {}
+        if not isinstance(convo_data, dict):
+            convo_data = {}
+        identity = resolve_contact_identity(
+            sender=contact_info if isinstance(contact_info, dict) else {},
+            conversation=convo_data,
+            conversation_id=conversation_id,
+            inbox_id=(
+                (first_msg.get("inbox") or {}).get("id")
+                if isinstance(first_msg, dict) and isinstance(first_msg.get("inbox"), dict)
+                else convo_data.get("inbox_id")
+            ),
+        )
+        phone_number = identity["customer_id"]
         session_id = convo_data.get("uuid") or convo_data.get("session_id") or "Unknown"
 
         is_staging_env = (
@@ -694,9 +710,14 @@ class ConversationQueueProcessor:
         metadata = {
             "session_id": session_id,
             "inbox_id": inbox_id_val,
-            "contact_id": contact_info.get("id"),
+            "contact_id": identity.get("chatwoot_contact_id") or contact_info.get("id"),
             "environment": "staging" if is_staging_env else "production",
+            "phone_missing": bool(identity.get("phone_missing")),
+            "source_id_kind": identity.get("source_id_kind") or identity.get("kind"),
+            "identity_kind": identity.get("kind"),
         }
+        if identity.get("phone_missing"):
+            metadata["chatwoot_contact_id"] = identity.get("chatwoot_contact_id")
 
         customer = get_or_create_customer(
             phone_number=phone_number,
@@ -1036,8 +1057,12 @@ class ConversationQueueProcessor:
                         session["locked_lead_temp"] = c_meta.get("lead_temp")
                     if c_meta.get("assigned_agent"):
                         session["assigned_agent_name"] = c_meta.get("assigned_agent")
-                    if c_meta.get("assigned_agent_phone"):
-                        session["assigned_agent_phone"] = c_meta.get("assigned_agent_phone")
+                if c_meta.get("assigned_agent_phone"):
+                    session["assigned_agent_phone"] = c_meta.get("assigned_agent_phone")
+                if c_meta.get("photo_agent_alerted_at"):
+                    session["photo_agent_alerted"] = True
+                if c_meta.get("outbound_blocked") or c_meta.get("nurture_stopped"):
+                    session["outbound_blocked"] = True
 
             was_already_handed_over = bool(session.get("handover_completed"))
 
@@ -1166,7 +1191,8 @@ class ConversationQueueProcessor:
                 reason = agent_result.get("handover_reason")
                 contract_ok = hot_lead_qualified(intent, collected, final_prompt_text)
                 out_of_scope = str(intent).strip().lower() in {"out_of_scope", "out_of_context"}
-                legitimate = out_of_scope or user_wants_immediate_human or user_books_inspection or (
+                photo_no_match = reason == "photo_no_match" or bool(session.get("photo_no_match"))
+                legitimate = photo_no_match or out_of_scope or user_wants_immediate_human or user_books_inspection or (
                     reason == "explicit_human" and user_wants_immediate_human
                 ) or (
                     reason == "viewing" and user_books_inspection
@@ -1179,7 +1205,11 @@ class ConversationQueueProcessor:
                     final_prompt_text,
                     role=intent,
                 ):
-                    if not user_wants_immediate_human and not user_books_inspection:
+                    if (
+                        not photo_no_match
+                        and not user_wants_immediate_human
+                        and not user_books_inspection
+                    ):
                         legitimate = False
                     handover_from_state = False
                     session["handover"] = False
@@ -1193,10 +1223,14 @@ class ConversationQueueProcessor:
                     response_text = sanitize_unverified_reply(response_text)
                 else:
                     handover_initiated = True
-                    lead_temp = "Hot"
+                    if not photo_no_match:
+                        lead_temp = "Hot"
                     # Pause and the public name wait until assign_agent succeeds.
+                    # A sign with no specialist stays Warm and is not muted.
                     session["handover_requested"] = reason or (
-                        "explicit_human" if user_wants_immediate_human else "viewing"
+                        "photo_no_match" if photo_no_match else (
+                            "explicit_human" if user_wants_immediate_human else "viewing"
+                        )
                     )
 
             if combined_images:
@@ -1304,7 +1338,10 @@ class ConversationQueueProcessor:
         A public specialist name is allowed only after assign_agent succeeds.
         Otherwise the AI keeps the conversation and the reply does not promise contact.
         """
-        if handover_initiated and not assignment_verified and str(intent).strip().lower() not in {
+        photo_no_match = (session or {}).get("handover_requested") == "photo_no_match" or bool(
+            (session or {}).get("photo_no_match")
+        )
+        if handover_initiated and not assignment_verified and not photo_no_match and str(intent).strip().lower() not in {
             "out_of_scope", "out_of_context", "agent", "agent_inquiry", "broker",
         }:
             handover_initiated = False
@@ -1436,6 +1473,17 @@ class ConversationQueueProcessor:
         """
         Dispatches property images, Chatwoot message response, and autonomous viewing form if booked.
         """
+        if is_outbound_blocked(conversation_id) or customer_outbound_blocked(customer) or (
+            isinstance(getattr(customer, "metadata_json", None), dict)
+            and (customer.metadata_json.get("outbound_blocked") or customer.metadata_json.get("nurture_stopped"))
+        ):
+            logger.info("outbound blocked; public message not posted conversation_id=%s", conversation_id)
+            try:
+                toggle_typing_status(conversation_id, "off")
+            except Exception:
+                pass
+            return
+
         if not self._claim_public_reply(conversation_id):
             logger.info(
                 "Public reply already sent for conversation %s. Skipping duplicate send.",
@@ -1512,6 +1560,8 @@ class ConversationQueueProcessor:
         assigned_agent: Optional[str] = None,
         assigned_agent_phone: Optional[str] = None,
         is_post_handover_concierge: bool = False,
+        photo_no_match: bool = False,
+        assignment_verified: bool = False,
     ) -> None:
         """
         Persists customer lead temperature, handover_completed/bypass_ai state, assigned agent, and applies conversation priority/labels.
@@ -1524,11 +1574,16 @@ class ConversationQueueProcessor:
                     meta = db_cust.metadata_json.copy() if db_cust.metadata_json else {}
                     if not is_post_handover_concierge:
                         meta["lead_temp"] = lead_temp
-                    if handover_initiated:
+                    if handover_initiated and not (photo_no_match and not assignment_verified):
                         meta["bypass_ai"] = True
                         meta["handover_completed"] = True
                         meta["locked_intent"] = intent
                         meta["lead_temp"] = lead_temp or "hot"
+                    if photo_no_match:
+                        meta["photo_agent_alerted_at"] = (
+                            meta.get("photo_agent_alerted_at")
+                            or datetime.datetime.utcnow().isoformat()
+                        )
                     if assigned_agent:
                         meta["assigned_agent"] = assigned_agent
                     if assigned_agent_phone:
@@ -1557,6 +1612,9 @@ class ConversationQueueProcessor:
             label_intent = public_intent_label(intent)
             if label_intent in ["buyer", "seller", "tenant", "agent", "bank valuer"]:
                 labels_to_apply.append(label_intent)
+
+            if photo_no_match:
+                labels_to_apply.append("photo-needs-agent")
 
             if handover_initiated:
                 labels_to_apply.append("handover_initiated")
@@ -1705,7 +1763,39 @@ class ConversationQueueProcessor:
 
         # 9. Dynamic Hot Lead Handover
         handover_result = None
-        if role not in ["admin", "employee", "agent"] and handover_initiated and not is_post_handover_concierge:
+        photo_turn = agent_result.get("handover_reason") == "photo_no_match"
+        photo_no_match = photo_turn or bool(session.get("photo_no_match"))
+        already_photo_alerted = bool(session.get("photo_agent_alerted"))
+        if (
+            role not in ["admin", "employee", "agent"]
+            and handover_initiated
+            and not is_post_handover_concierge
+            and photo_turn
+            and not already_photo_alerted
+        ):
+            sign_contact = session.get("sign_contact") or {}
+            reject_reason = session.get("photo_reject_reason") or "no_candidate"
+            note = (
+                f"Caption-less sign photo needs an agent. reason={reject_reason}. "
+                f"Sign text: {turn_text}. "
+                f"Phones: {', '.join(sign_contact.get('phones') or []) or 'none'}."
+            )
+            handover_result = handover_without_specialist(
+                conversation_id,
+                reason="photo_no_match",
+                note=note,
+                customer_name=contact_name,
+                customer_phone="" if (metadata or {}).get("phone_missing") else phone_number,
+                intent=intent,
+                conversation_summary=note,
+                inbox_id=(metadata or {}).get("inbox_id") or 1,
+            )
+            session["photo_agent_alerted"] = True
+            try:
+                SessionManager.save_session(phone_number, session)
+            except Exception:
+                pass
+        elif role not in ["admin", "employee", "agent"] and handover_initiated and not is_post_handover_concierge and not photo_turn:
             handover_result = self.route_hot_lead(
                 conversation_id=conversation_id,
                 contact_name=contact_name,
@@ -1729,6 +1819,12 @@ class ConversationQueueProcessor:
             session=session,
             response_text=response_text,
             phone_number=phone_number,
+        )
+        response_text = filter_unearned_followup(
+            response_text,
+            handover_happened=bool(handover_initiated),
+            photo_no_match=photo_no_match,
+            language=session.get("language") or "en",
         )
 
         if handover_initiated and assignment_verified and (assigned_agent_name or assigned_agent_phone):
@@ -1774,6 +1870,8 @@ class ConversationQueueProcessor:
             assigned_agent=assigned_agent_name or None,
             assigned_agent_phone=assigned_agent_phone or None,
             is_post_handover_concierge=is_post_handover_concierge,
+            photo_no_match=photo_no_match,
+            assignment_verified=assignment_verified,
         )
 
         return {
