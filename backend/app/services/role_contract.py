@@ -434,12 +434,20 @@ def apply_role_evidence(session: dict, collected: dict, text: str, document_extr
         if not earned:
             _clear_unearned_seller(session, collected)
     elif role == "ambiguous":
-        if not earned:
+        existing = str(collected.get("customer_category") or "").lower()
+        if existing in {"renter", "tenant"} and not is_explicit_buy(text):
+            collected["customer_category"] = "renter"
+            session["current_agent"] = "RENTER"
+        elif not earned:
             collected["customer_category"] = "ambiguous"
             session["current_agent"] = "AMBIGUOUS"
             _clear_unearned_seller(session, collected)
     elif role == "none" and not earned:
-        if str(collected.get("customer_category") or "").lower() in {"seller", "owner"}:
+        existing = str(collected.get("customer_category") or "").lower()
+        if existing in {"renter", "tenant"}:
+            collected["customer_category"] = "renter"
+            session["current_agent"] = "RENTER"
+        elif existing in {"seller", "owner"}:
             _clear_unearned_seller(session, collected)
 
     _ground_customer_budget(collected, text, role, assessment)
@@ -567,4 +575,40 @@ def sanitize_unverified_reply(text: str) -> str:
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     if cleaned:
         return cleaned
+    return UNVERIFIED_REPLY_FALLBACK
+
+
+_UNEARNED_FOLLOWUP = re.compile(
+    r"will check|follow up|get back to you|akan semak|follow up dengan(?: anda)?|跟进",
+    re.IGNORECASE,
+)
+
+_FOLLOWUP_SENTENCE = re.compile(r"(?<=[.!?。！？])\s+")
+
+
+def filter_unearned_followup(
+    text: str,
+    *,
+    handover_happened: bool,
+    photo_no_match: bool = False,
+    language: str = "en",
+) -> str:
+    """Drop 'follow up soon' / 'check and get back' unless a handover was armed.
+
+    A photo no-match that did not actually hand over is replaced with the
+    team-member sentence. Every other unearned promise uses the generic fallback.
+    """
+    if handover_happened or not text or not _UNEARNED_FOLLOWUP.search(text):
+        return text
+    kept = []
+    for part in _FOLLOWUP_SENTENCE.split(text.strip()):
+        if part.strip() and not _UNEARNED_FOLLOWUP.search(part):
+            kept.append(part.strip())
+    cleaned = " ".join(kept).strip()
+    if cleaned:
+        return cleaned
+    if photo_no_match:
+        from app.services.agent_logic import _SIGN_FOLLOWUP
+
+        return _SIGN_FOLLOWUP.get(language or "en", _SIGN_FOLLOWUP["en"])
     return UNVERIFIED_REPLY_FALLBACK

@@ -8,6 +8,7 @@ from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.attributes import flag_modified
 from app.db.models import SessionLocal, Customer, Admin, Employee, InteractionLog, Property, User
+from app.services.contact_identity import is_synthetic_customer_id
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,15 @@ def get_or_create_customer(phone_number: str, contact_name: str, email: str = No
     """
     db: Session = SessionLocal()
     try:
+        if is_synthetic_customer_id(phone_number):
+            return _get_or_create_exact_customer(
+                db,
+                customer_id=str(phone_number).strip(),
+                contact_name=contact_name,
+                email=email,
+                conversation_id=conversation_id,
+                metadata=metadata,
+            )
         if not phone_number:
             logger.warning("No phone number provided to get_or_create_customer")
             return None
@@ -100,6 +110,54 @@ def get_or_create_customer(phone_number: str, contact_name: str, email: str = No
         return None
     finally:
         db.close()
+
+def _get_or_create_exact_customer(db, customer_id, contact_name, email, conversation_id, metadata):
+    """Phoneless rows are keyed by ``cw:{contact_id}`` and never by a digit LIKE."""
+    customer = db.query(Customer).filter(Customer.id == customer_id).first()
+    merged_meta = dict(metadata or {})
+    merged_meta.setdefault("phone_missing", True)
+    if not customer:
+        logger.info("Creating phoneless customer kind=chatwoot")
+        customer = Customer(
+            id=customer_id,
+            country="Unknown",
+            contact_name=contact_name,
+            email=email,
+            conversation_ids=[conversation_id] if conversation_id else [],
+            metadata_json=merged_meta,
+        )
+        db.add(customer)
+        try:
+            db.commit()
+            db.refresh(customer)
+        except IntegrityError:
+            db.rollback()
+            customer = db.query(Customer).filter(Customer.id == customer_id).first()
+            if not customer:
+                return None
+    if customer:
+        updated = False
+        if contact_name and contact_name.lower() not in ["unknown", "john doe"] and customer.contact_name != contact_name:
+            customer.contact_name = contact_name
+            updated = True
+        if conversation_id:
+            conv_ids = list(customer.conversation_ids or [])
+            if conversation_id not in conv_ids:
+                conv_ids.append(conversation_id)
+                customer.conversation_ids = conv_ids
+                flag_modified(customer, "conversation_ids")
+                updated = True
+        if merged_meta:
+            current_meta = dict(customer.metadata_json or {})
+            current_meta.update(merged_meta)
+            customer.metadata_json = current_meta
+            flag_modified(customer, "metadata_json")
+            updated = True
+        if updated:
+            db.commit()
+            db.refresh(customer)
+    return customer
+
 
 def log_interaction(customer_id: str, message_in: str, message_out: str):
     """
@@ -205,6 +263,132 @@ def _is_local_malaysian_mobile(digits: str) -> bool:
     return digits.startswith("01") and len(digits) in (10, 11) and digits[2].isdigit()
 
 
+def levenshtein(left: str, right: str, limit: int = 2) -> int:
+    """Edit distance, capped. Callers only care whether the distance is within ``limit``."""
+    if left == right:
+        return 0
+    if abs(len(left) - len(right)) > limit:
+        return limit + 1
+    previous = list(range(len(right) + 1))
+    for i, ca in enumerate(left, 1):
+        current = [i]
+        row_min = current[0]
+        for j, cb in enumerate(right, 1):
+            cost = 0 if ca == cb else 1
+            current.append(min(
+                previous[j] + 1,
+                current[j - 1] + 1,
+                previous[j - 1] + cost,
+            ))
+            if current[-1] < row_min:
+                row_min = current[-1]
+        if row_min > limit:
+            return limit + 1
+        previous = current
+    return previous[-1]
+
+
+def extract_phone_like_runs(text: str) -> list:
+    """Digit runs that look like a phone, including an invalid-length 01x misread.
+
+    Valid mobiles stay in ``extract_phone_candidates``. This wider set is only
+    for suppression, never for choosing a listing or a customer id.
+    """
+    if not text:
+        return []
+    groups = list(re.finditer(r"\d+", text))
+    spans = []
+    for i in range(len(groups)):
+        digits = ""
+        for j in range(i, min(i + 5, len(groups))):
+            if j > i:
+                between = text[groups[j - 1].end():groups[j].start()]
+                if between and not re.fullmatch(r"[\s\-.()+]+", between):
+                    break
+            digits += groups[j].group()
+            if 8 <= len(digits) <= 16 and (digits.startswith("01") or digits.startswith("60")):
+                spans.append((groups[i].start(), groups[j].end(), digits))
+    spans.sort(key=lambda item: (item[0], -(item[1] - item[0])))
+    chosen = []
+    cursor = -1
+    seen_starts = set()
+    for start, end, digits in spans:
+        if start < cursor or start in seen_starts:
+            continue
+        chosen.append(digits)
+        seen_starts.add(start)
+        cursor = end
+    return chosen
+
+
+def is_invalid_length_malaysian_01x(digits: str) -> bool:
+    """A 01x string that is not a 10- or 11-digit Malaysian mobile."""
+    local = "".join(ch for ch in str(digits or "") if ch.isdigit())
+    if local.startswith("60") and len(local) > 2:
+        local = "0" + local[2:]
+    if not (local.startswith("01") and len(local) >= 3 and local[2].isdigit()):
+        return False
+    return len(local) not in (10, 11)
+
+
+def _digit_forms(number: str) -> set:
+    forms = set()
+    for variant in normalize_phone_variants(number or ""):
+        digits = "".join(ch for ch in variant if ch.isdigit())
+        if not digits:
+            continue
+        forms.add(digits)
+        if digits.startswith("60") and len(digits) > 2:
+            forms.add("0" + digits[2:])
+        elif digits.startswith("0") and len(digits) > 1:
+            forms.add("60" + digits[1:])
+    return forms
+
+
+def within_staff_edit_distance(digits: str, staff_numbers, limit: int = 2) -> bool:
+    """True when ``digits`` is within ``limit`` edits of a staff or agent number."""
+    left_forms = _digit_forms(digits)
+    if not left_forms:
+        raw = "".join(ch for ch in str(digits or "") if ch.isdigit())
+        left_forms = {raw} if raw else set()
+    right_forms = set()
+    for number in staff_numbers or []:
+        right_forms |= _digit_forms(number)
+    for left in left_forms:
+        for right in right_forms:
+            if levenshtein(left, right, limit) <= limit:
+                return True
+    return False
+
+
+def default_suppression_numbers(extra_numbers=None) -> list:
+    from app.services.system_prompts import IRENE_MAIN_PHONE, VOON_MAIN_PHONE
+
+    numbers = [IRENE_MAIN_PHONE, VOON_MAIN_PHONE]
+    numbers.extend(extra_numbers or [])
+    return numbers
+
+
+def suppressed_phone_like(text: str, staff_numbers) -> bool:
+    """Fuzzy staff hit or an invalid-length 01x string. Suppression only."""
+    for run in extract_phone_like_runs(text or ""):
+        if is_invalid_length_malaysian_01x(run):
+            return True
+        if within_staff_edit_distance(run, staff_numbers):
+            return True
+    return False
+
+
+def reply_quotes_printed_number(reply: str, photo_text: str) -> bool:
+    photo_runs = set(extract_phone_like_runs(photo_text or ""))
+    photo_runs.update(extract_phone_candidates(photo_text or ""))
+    if not photo_runs:
+        return False
+    reply_runs = set(extract_phone_like_runs(reply or ""))
+    reply_runs.update(extract_phone_candidates(reply or ""))
+    return bool(photo_runs & reply_runs)
+
+
 def _postgres_reachable() -> bool:
     host = os.getenv("DB_HOST", os.getenv("POSTGRES_HOST", "postgres"))
     try:
@@ -298,14 +482,14 @@ def get_sender_role(phone_number: str, db: Session = None) -> str:
     Returns 'admin', 'agent', 'employee', 'viewer', or 'customer'.
     Only active accounts (is_active=True) in crm_users are granted non-customer roles.
     """
+    if not phone_number or is_synthetic_customer_id(phone_number):
+        return "customer"
+
     close_db = False
     if db is None:
         db = SessionLocal()
         close_db = True
     try:
-        if not phone_number:
-            return "customer"
-            
         variants = normalize_phone_variants(phone_number)
         if not variants:
             return "customer"

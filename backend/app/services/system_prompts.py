@@ -483,8 +483,10 @@ IMAGE_TURN_NO_MEDIA_REQUEST = (
 # a customer callback instruction.
 OWN_LISTING_PHONE_RULE = (
     "Never tell the customer to call or WhatsApp a phone number printed on a sign "
-    "when it is a Home IHC staff number or our own listing. "
-    "If a listing matched, use that listing. Otherwise say Home IHC will check that unit and follow up."
+    "or in a photo, including a Home IHC staff number. "
+    "If a listing matched, use that listing. Otherwise say a team member will check "
+    "that unit and reply in this chat. Do not say you will follow up soon, and do "
+    "not say you will check and get back to them."
 )
 
 
@@ -547,8 +549,9 @@ def _assemble_compact_system_prompt(
         seller_line = (
             "The sender is not a confirmed seller. Do not say they want to sell. "
             "Do not ask for land size, a title, or an asking price. "
-            "'Is it still available' and 'how much is this', with or without a photo, "
-            "are a buyer question or an unresolved buy-versus-rent question."
+            "'Is it still available' and 'how much is this' "
+            "are a buyer question or an unresolved buy-versus-rent question. "
+            "A FOR RENT sign is a tenant question, not a buyer question."
         )
     return f"""You are Irene Leong, Senior Property Agent at ERA Realtor representing Home IHC ({COMPANY_FULL_NAME}).
 Role: {role_line}

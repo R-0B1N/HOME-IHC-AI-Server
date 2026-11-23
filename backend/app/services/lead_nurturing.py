@@ -594,6 +594,13 @@ class LeadNurturingManager:
         now = now or datetime.now(timezone.utc)
         meta = customer.metadata_json or {}
 
+        # A failed 131026 or a phoneless BSUID is never nurtured, including force_due.
+        # Symbolic customer ids that still have a real phone stay eligible.
+        if meta.get("outbound_blocked") or meta.get("nurture_stopped") or meta.get("phone_missing"):
+            return None
+        if str(getattr(customer, "id", "") or "").startswith("cw:"):
+            return None
+
         # Respect human handover / bypass AI unless forced in test
         if meta.get("bypass_ai") and not force_due:
             return None
@@ -727,6 +734,11 @@ class LeadNurturingManager:
         Executes follow-up dispatch according to Meta 24-hour compliance rules.
         """
         now = now or datetime.now(timezone.utc)
+        meta = dict(getattr(customer, "metadata_json", None) or {})
+        if meta.get("nurture_stopped") or meta.get("outbound_blocked") or meta.get("phone_missing"):
+            return "nurture_stopped"
+        if str(getattr(customer, "id", "") or "").startswith("cw:"):
+            return "nurture_stopped"
         conversation_id = eval_result["conversation_id"]
         cust_name = eval_result["contact_name"]
         phone = eval_result["phone_number"]
@@ -750,14 +762,19 @@ class LeadNurturingManager:
                 logger.error(f"Failed to dispatch nurturing message to conv {conversation_id}: {e}")
                 action_taken = "message_failed"
         else:
-            # Outside 24 hours: Dispatch approved Meta Re-engagement Template directly to WhatsApp
-            t_res = self.template_dispatcher.dispatch(
-                to_phone=phone,
-                customer_name=cust_name,
-                location=location,
-                template_name=template_name,
-                intent=intent
-            )
+            # Outside 24 hours: Dispatch approved Meta Re-engagement Template directly to WhatsApp.
+            # A destination that is not a phone still gets the private note, and no template.
+            from app.services.contact_identity import to_e164
+            if to_e164(phone):
+                t_res = self.template_dispatcher.dispatch(
+                    to_phone=phone,
+                    customer_name=cust_name,
+                    location=location,
+                    template_name=template_name,
+                    intent=intent,
+                )
+            else:
+                t_res = {"status": "skipped", "error": "no phone", "result": None}
             template_success = t_res.get("status") == "success" and bool(t_res.get("result"))
 
             dispatch_status = "✅ Dispatched to WhatsApp" if template_success else f"❌ Template Dispatch Failed ({t_res.get('error', 'Translation/Language mismatch')})"
