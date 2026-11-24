@@ -2,11 +2,44 @@ name: Server Diagnostics
 
 on:
   workflow_dispatch:
+    inputs:
+      since:
+        description: "Optional: PROD worker/API logs since (RFC3339 e.g. 2026-11-23T13:00:00Z, or relative e.g. 30m / 2h). Empty = no --since."
+        required: false
+        default: ""
+        type: string
+      tail:
+        description: "Lines of PROD worker/API logs to tail (digits, max 20000)"
+        required: false
+        default: "150"
+        type: string
 
 jobs:
   diagnostics:
     runs-on: ubuntu-latest
     steps:
+      - name: Validate inputs
+        env:
+          IN_SINCE: ${{ inputs.since }}
+          IN_TAIL: ${{ inputs.tail }}
+        run: |
+          set -euo pipefail
+          SINCE_RE='^([0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]{1,9})?)?(Z|[+-][0-9]{2}:?[0-9]{2})?)?|[0-9]{1,5}[smh])$'
+          if [ -n "$IN_SINCE" ] && ! printf '%s' "$IN_SINCE" | grep -Eq "$SINCE_RE"; then
+            echo "::error::Invalid 'since' input. Use RFC3339 (2026-11-23T13:00:00Z) or relative (30m, 2h)."
+            exit 1
+          fi
+          TAIL_VAL="${IN_TAIL:-150}"
+          if ! printf '%s' "$TAIL_VAL" | grep -Eq '^[0-9]{1,5}$' || [ "$TAIL_VAL" -lt 1 ] || [ "$TAIL_VAL" -gt 20000 ]; then
+            echo "::error::Invalid 'tail' input. Use digits 1-20000."
+            exit 1
+          fi
+          {
+            echo "DIAG_SINCE=$IN_SINCE"
+            echo "DIAG_TAIL=$TAIL_VAL"
+          } >> "$GITHUB_ENV"
+          echo "since='${IN_SINCE:-<none>}' tail=$TAIL_VAL"
+
       - name: Connect to Tailscale
         uses: tailscale/github-action@v3
         with:
@@ -20,7 +53,13 @@ jobs:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SSH_PASSWORD }}
+          envs: DIAG_SINCE,DIAG_TAIL
           script: |
+            # Defensive re-validation on the server (inputs were already validated on the runner).
+            DIAG_TAIL="${DIAG_TAIL:-150}"
+            if ! printf '%s' "$DIAG_TAIL" | grep -Eq '^[0-9]{1,5}$' || [ "$DIAG_TAIL" -gt 20000 ]; then DIAG_TAIL=150; fi
+            if [ -n "${DIAG_SINCE:-}" ] && ! printf '%s' "$DIAG_SINCE" | grep -Eq '^([0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]{1,9})?)?(Z|[+-][0-9]{2}:?[0-9]{2})?)?|[0-9]{1,5}[smh])$'; then DIAG_SINCE=""; fi
+
             echo "==================== 1. ALL RUNNING CONTAINERS ===================="
             docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
             
@@ -34,11 +73,19 @@ jobs:
             docker exec whatsapp_ai_redis_staging redis-cli keys "*" 2>&1 || true
             docker exec whatsapp_ai_redis_staging redis-cli get master_ai_enabled 2>&1 || true
             
-            echo "==================== 5. PRODUCTION WORKER LOGS ===================="
-            docker logs whatsapp_ai_worker_production --tail 150 2>&1 || true
+            echo "==================== 5. PRODUCTION WORKER LOGS (tail=${DIAG_TAIL} since=${DIAG_SINCE:-none}) ===================="
+            if [ -n "${DIAG_SINCE:-}" ]; then
+              docker logs --timestamps --since "$DIAG_SINCE" --tail "$DIAG_TAIL" whatsapp_ai_worker_production 2>&1 || true
+            else
+              docker logs --timestamps --tail "$DIAG_TAIL" whatsapp_ai_worker_production 2>&1 || true
+            fi
             
-            echo "==================== 6. PRODUCTION API LOGS ===================="
-            docker logs whatsapp_ai_api_production --tail 150 2>&1 || true
+            echo "==================== 6. PRODUCTION API LOGS (tail=${DIAG_TAIL} since=${DIAG_SINCE:-none}) ===================="
+            if [ -n "${DIAG_SINCE:-}" ]; then
+              docker logs --timestamps --since "$DIAG_SINCE" --tail "$DIAG_TAIL" whatsapp_ai_api_production 2>&1 || true
+            else
+              docker logs --timestamps --tail "$DIAG_TAIL" whatsapp_ai_api_production 2>&1 || true
+            fi
             
             echo "==================== 7. CHATWOOT WEBHOOK DISPATCH LOGS ===================="
             docker logs crm-chatwoot-web --tail 80 2>&1 || true
@@ -46,4 +93,83 @@ jobs:
             echo "==================== 8. VLLM MODEL CONTAINER LOGS ===================="
             docker logs crm-vllm --tail 50 2>&1 || docker ps -a | grep vllm || echo "vLLM container check"
 
+            # ---------------- READ-ONLY CHATWOOT CHECKS (no writes, no restarts, no db:*, no compose) ----------------
+            set +e
+            redact() {
+              sed -E \
+                -e 's/((secret|token|password|passwd|api[_-]?key|key)[A-Za-z0-9_]*["'"'"']?[[:space:]]*(=>|=|:)[[:space:]]*).*/\1***REDACTED***/I' \
+                -e 's/[A-Za-z0-9+\/_=-]{40,}/***REDACTED_LONG***/g'
+            }
 
+            echo "==================== 9. CHATWOOT CONTAINERS: IMAGE / DIGEST / COMPOSE LABELS / MOUNTS ===================="
+            for c in crm-chatwoot-web crm-chatwoot-worker; do
+              echo "--- $c ---"
+              docker inspect --format 'config_image={{.Config.Image}}
+            image_id={{.Image}}
+            started_at={{.State.StartedAt}}
+            compose_project={{index .Config.Labels "com.docker.compose.project"}}
+            compose_working_dir={{index .Config.Labels "com.docker.compose.project.working_dir"}}
+            compose_config_files={{index .Config.Labels "com.docker.compose.project.config_files"}}' "$c" 2>&1 | sed 's/^[[:space:]]*//' || echo "inspect failed for $c"
+              IMG_ID=$(docker inspect --format '{{.Image}}' "$c" 2>/dev/null)
+              if [ -n "$IMG_ID" ]; then
+                echo "repo_digests=$(docker image inspect --format '{{json .RepoDigests}}' "$IMG_ID" 2>&1)"
+              fi
+              echo "mounts (source -> destination):"
+              docker inspect --format '{{range .Mounts}}  {{.Source}} -> {{.Destination}} [{{.Type}} rw={{.RW}}]{{println}}{{end}}' "$c" 2>&1 || echo "  mounts unavailable"
+            done
+
+            echo "==================== 10. CHATWOOT CUSTOM INITIALIZERS (redacted) ===================="
+            P24=/opt/crm/chatwoot/disable_24_hour_window.rb
+            echo "--- $P24 ---"
+            if [ -r "$P24" ]; then ls -l "$P24"; sha256sum "$P24"; redact < "$P24"; else echo "not readable/not found: $P24"; fi
+            ASP=$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/app/config/initializers/active_storage_proxy.rb"}}{{.Source}}{{end}}{{end}}' crm-chatwoot-web 2>/dev/null)
+            echo "--- active_storage_proxy.rb host path: ${ASP:-not mounted} ---"
+            if [ -n "$ASP" ] && [ -r "$ASP" ]; then ls -l "$ASP"; sha256sum "$ASP"; redact < "$ASP"; fi
+            echo "--- other initializer bind mounts into /app/config ---"
+            docker inspect --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}' crm-chatwoot-web 2>/dev/null | grep '/app/config' || echo "none"
+
+            echo "==================== 11. DISK + DB SIZES ===================="
+            df -h / 2>&1
+            DROOT=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)
+            echo "docker_root_dir=${DROOT:-unknown}"
+            if [ -n "$DROOT" ]; then df -h "$DROOT" 2>&1; fi
+            df -h /opt 2>&1
+            timeout 120 docker system df 2>&1 || echo "docker system df failed/timed out"
+            echo "--- all databases on crm-postgres (credentials resolved inside container, not printed) ---"
+            timeout 60 docker exec crm-postgres sh -c 'psql -U "${POSTGRES_USER:-postgres}" -d postgres -Atc "select datname, pg_size_pretty(pg_database_size(datname)) from pg_database where not datistemplate order by pg_database_size(datname) desc"' 2>&1 | redact || echo "crm-postgres size query failed"
+            echo "--- chatwoot DB (via rails runner in crm-chatwoot-web, read-only SELECTs) ---"
+            timeout 120 docker exec -i crm-chatwoot-web bundle exec rails runner 'eval(STDIN.read)' 2>&1 <<'RUBY' | redact || echo "chatwoot rails runner (db size) failed/timed out"
+            c = ActiveRecord::Base.connection
+            v = (Chatwoot.config[:version] rescue "n/a")
+            puts "chatwoot_version=#{v}"
+            puts "db_name=#{c.current_database}"
+            puts "db_size=#{c.select_value("select pg_size_pretty(pg_database_size(current_database()))")}"
+            puts "schema_version=#{c.select_value("select max(version) from schema_migrations")}"
+            %w[conversations messages contacts contact_inboxes attachments].each do |t|
+              puts "rows_estimate #{t}=#{c.select_value("select reltuples::bigint from pg_class where relname = #{c.quote(t)}")}"
+            end
+            RUBY
+
+            echo "==================== 12. CAPTAIN USAGE (read-only; env/config shown as SET/UNSET only) ===================="
+            timeout 120 docker exec -i crm-chatwoot-web bundle exec rails runner 'eval(STDIN.read)' 2>&1 <<'RUBY' | redact || echo "chatwoot rails runner (captain) failed/timed out"
+            c = ActiveRecord::Base.connection
+            puts "accounts=#{Account.count}"
+            Account.find_each do |a|
+              flags = %w[captain_integration captain_integration_v2].map { |f| "#{f}=#{(a.feature_enabled?(f) rescue "n/a")}" }.join(" ")
+              puts "account #{a.id}: #{flags}"
+            end
+            %w[captain_assistants captain_inboxes captain_documents captain_assistant_responses captain_scenarios captain_custom_tools].each do |t|
+              puts "table #{t}=#{c.table_exists?(t) ? c.select_value("select count(*) from #{t}") : "no_table"}"
+            end
+            if c.table_exists?("captain_assistants")
+              puts "assistants_with_v1_instructions=#{c.select_value("select count(*) from captain_assistants where coalesce(config->>'instructions','') <> ''")}"
+            end
+            keys = %w[CAPTAIN_OPEN_AI_API_KEY CAPTAIN_OPEN_AI_ENDPOINT CAPTAIN_OPEN_AI_MODEL CAPTAIN_EMBEDDING_MODEL CAPTAIN_FIRECRAWL_API_KEY OPENAI_API_KEY]
+            keys.each do |k|
+              env_state = ENV[k].to_s.empty? ? "UNSET" : "SET"
+              cfg = (InstallationConfig.find_by(name: k) rescue nil)
+              cfg_state = cfg.nil? ? "ABSENT" : (cfg.value.to_s.empty? ? "EMPTY" : "SET")
+              puts "#{k}: env=#{env_state} installation_config=#{cfg_state}"
+            end
+            RUBY
+            echo "==================== END READ-ONLY CHATWOOT CHECKS ===================="
