@@ -1,0 +1,49 @@
+name: Restart Production Workers
+
+# Manual-only. Restarts the production Celery worker and beat containers
+# in place (same image, no rebuild, no compose/env changes), then prints
+# read-only status. No push/schedule triggers by design.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: restart-production-workers
+  cancel-in-progress: false
+
+jobs:
+  restart:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: Restart worker and beat via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          command_timeout: 10m
+          timeout: 10m
+          script: |
+            set -e
+            cd ~/whatsapp-ai-prod
+            echo "=== RESTARTING whatsapp_ai_worker_production + whatsapp_ai_beat_production ==="
+            docker restart whatsapp_ai_worker_production whatsapp_ai_beat_production
+            set +e
+
+            echo "=== SLEEPING 30s TO CAPTURE WORKER STARTUP ==="
+            sleep 30
+
+            echo "=== PRODUCTION CONTAINERS STATUS ==="
+            docker ps --filter name=_production --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
+
+            echo "=== PRODUCTION WORKER LOGS (LAST 80 LINES) ==="
+            docker logs --tail 80 whatsapp_ai_worker_production 2>&1 || echo "No worker logs"
+
+            echo "=== RESTART COMPLETE ==="
