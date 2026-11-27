@@ -78,6 +78,28 @@ from app.services.system_prompts import is_handover_promised
 
 logger = logging.getLogger(__name__)
 
+PHOTO_ALERT_DEDUPE_SECONDS = 24 * 60 * 60
+PHOTO_HANDOVER_LABELS = ("photo-needs-agent", "handover_initiated")
+
+
+def photo_admin_alert_skipped(alerted_at, handover_in_place, now=None) -> bool:
+    """Skip a second admin template only when the last alert is recent and the handover stuck.
+
+    A stale flag from an earlier photo, or a handover that never landed, must not skip.
+    """
+    if not handover_in_place or not alerted_at:
+        return False
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    try:
+        parsed = datetime.datetime.fromisoformat(str(alerted_at))
+    except ValueError:
+        return False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=datetime.timezone.utc)
+    return (now - parsed).total_seconds() < PHOTO_ALERT_DEDUPE_SECONDS
+
 TIMEOUT_SECONDS = 10
 
 PHOTO_DOWNLOAD_FALLBACK = (
@@ -1060,7 +1082,9 @@ class ConversationQueueProcessor:
                 if c_meta.get("assigned_agent_phone"):
                     session["assigned_agent_phone"] = c_meta.get("assigned_agent_phone")
                 if c_meta.get("photo_agent_alerted_at"):
-                    session["photo_agent_alerted"] = True
+                    session["photo_agent_alerted_at"] = c_meta.get("photo_agent_alerted_at")
+                if c_meta.get("photo_handover_in_place"):
+                    session["photo_handover_in_place"] = True
                 if c_meta.get("outbound_blocked") or c_meta.get("nurture_stopped"):
                     session["outbound_blocked"] = True
 
@@ -1562,6 +1586,8 @@ class ConversationQueueProcessor:
         is_post_handover_concierge: bool = False,
         photo_no_match: bool = False,
         assignment_verified: bool = False,
+        keep_photo_handover_labels: bool = False,
+        photo_handover_in_place: bool = False,
     ) -> None:
         """
         Persists customer lead temperature, handover_completed/bypass_ai state, assigned agent, and applies conversation priority/labels.
@@ -1579,11 +1605,14 @@ class ConversationQueueProcessor:
                         meta["handover_completed"] = True
                         meta["locked_intent"] = intent
                         meta["lead_temp"] = lead_temp or "hot"
-                    if photo_no_match:
+                    if photo_no_match or keep_photo_handover_labels:
                         meta["photo_agent_alerted_at"] = (
                             meta.get("photo_agent_alerted_at")
-                            or datetime.datetime.utcnow().isoformat()
+                            or datetime.datetime.now(datetime.timezone.utc).isoformat()
                         )
+                        meta["photo_handover_labels"] = True
+                    if photo_handover_in_place:
+                        meta["photo_handover_in_place"] = True
                     if assigned_agent:
                         meta["assigned_agent"] = assigned_agent
                     if assigned_agent_phone:
@@ -1613,11 +1642,12 @@ class ConversationQueueProcessor:
             if label_intent in ["buyer", "seller", "tenant", "agent", "bank valuer"]:
                 labels_to_apply.append(label_intent)
 
-            if photo_no_match:
-                labels_to_apply.append("photo-needs-agent")
+            if photo_no_match or keep_photo_handover_labels or handover_initiated:
+                for sticky in PHOTO_HANDOVER_LABELS:
+                    if sticky not in labels_to_apply and (photo_no_match or keep_photo_handover_labels or sticky == "handover_initiated" and handover_initiated):
+                        labels_to_apply.append(sticky)
 
             if handover_initiated:
-                labels_to_apply.append("handover_initiated")
                 if assignee_email:
                     try:
                         agent_id = get_agent_id_by_email(assignee_email)
@@ -1636,7 +1666,13 @@ class ConversationQueueProcessor:
                     logger.warning(f"Failed to set priority: {e}")
 
         if labels_to_apply:
-            logger.info(f"Applying labels {labels_to_apply} to conversation {conversation_id}")
+            logger.info(
+                "Applying labels %s to conversation %s photo-needs-agent=%s handover_initiated=%s",
+                labels_to_apply,
+                conversation_id,
+                "photo-needs-agent" in labels_to_apply,
+                "handover_initiated" in labels_to_apply,
+            )
             apply_label(conversation_id, labels_to_apply)
 
     def process(self, conversation_id: int, task_scheduled_time: float) -> Dict[str, Any]:
@@ -1765,13 +1801,23 @@ class ConversationQueueProcessor:
         handover_result = None
         photo_turn = agent_result.get("handover_reason") == "photo_no_match"
         photo_no_match = photo_turn or bool(session.get("photo_no_match"))
-        already_photo_alerted = bool(session.get("photo_agent_alerted"))
+        skip_photo_alert = photo_admin_alert_skipped(
+            session.get("photo_agent_alerted_at"),
+            bool(session.get("photo_handover_in_place")),
+        )
+        if photo_turn:
+            logger.info(
+                "photo handover already_alerted=%s handover_in_place=%s recent_skip=%s action=%s",
+                bool(session.get("photo_agent_alerted_at")),
+                bool(session.get("photo_handover_in_place")),
+                skip_photo_alert,
+                "skip_alert" if skip_photo_alert else "run",
+            )
         if (
             role not in ["admin", "employee", "agent"]
             and handover_initiated
             and not is_post_handover_concierge
             and photo_turn
-            and not already_photo_alerted
         ):
             sign_contact = session.get("sign_contact") or {}
             reject_reason = session.get("photo_reject_reason") or "no_candidate"
@@ -1790,6 +1836,17 @@ class ConversationQueueProcessor:
                 intent=intent,
                 conversation_summary=note,
                 inbox_id=(metadata or {}).get("inbox_id") or 1,
+                skip_admin_alert=skip_photo_alert,
+            )
+            if handover_result and (
+                handover_result.get("assignment_verified")
+                or handover_result.get("unassigned")
+                or handover_result.get("alert_skipped")
+            ):
+                session["photo_handover_in_place"] = True
+            session["photo_agent_alerted_at"] = (
+                session.get("photo_agent_alerted_at")
+                or datetime.datetime.now(datetime.timezone.utc).isoformat()
             )
             session["photo_agent_alerted"] = True
             try:
@@ -1873,6 +1930,12 @@ class ConversationQueueProcessor:
             is_post_handover_concierge=is_post_handover_concierge,
             photo_no_match=photo_no_match,
             assignment_verified=assignment_verified,
+            keep_photo_handover_labels=bool(
+                photo_no_match
+                or session.get("photo_handover_in_place")
+                or session.get("photo_agent_alerted_at")
+            ),
+            photo_handover_in_place=bool(session.get("photo_handover_in_place")),
         )
 
         return {

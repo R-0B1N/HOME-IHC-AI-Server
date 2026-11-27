@@ -483,10 +483,10 @@ IMAGE_TURN_NO_MEDIA_REQUEST = (
 # a customer callback instruction.
 OWN_LISTING_PHONE_RULE = (
     "Never tell the customer to call or WhatsApp a phone number printed on a sign "
-    "or in a photo, including a Home IHC staff number. "
-    "If a listing matched, use that listing. Otherwise say a team member will check "
-    "that unit and reply in this chat. Do not say you will follow up soon, and do "
-    "not say you will check and get back to them."
+    "or in a photo, including a staff number. Never say that the sign uses a company line. "
+    "If a listing matched, use that listing. Otherwise say: "
+    "Thanks for the photo! Let me check this unit with our team and get back to you here. "
+    "Do not promise a time, a price, or that the unit is available."
 )
 
 

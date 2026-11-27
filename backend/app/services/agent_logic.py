@@ -688,9 +688,9 @@ _PHOTO_REQUEST_NOTE = re.compile(
 )
 
 _SIGN_FOLLOWUP = {
-    "zh": "这张招牌上的号码是 Home IHC 的。团队成员会核对这个单位，并在这个对话里回复。",
-    "ms": "Nombor pada papan ini ialah nombor Home IHC. Seorang ahli pasukan akan semak unit ini dan membalas dalam sembang ini.",
-    "en": "This sign uses a Home IHC line. A team member will check that unit and reply in this chat.",
+    "zh": "谢谢你发来的照片！我先和团队核对这个单位，再在这里回复你。",
+    "ms": "Terima kasih atas gambarnya! Saya akan semak unit ini dengan pasukan kami dan maklumkan anda di sini.",
+    "en": "Thanks for the photo! Let me check this unit with our team and get back to you here.",
 }
 
 
@@ -698,6 +698,70 @@ _SIGN_PROMISE = re.compile(
     r"follow up|get back to you|check and get back|跟进",
     re.IGNORECASE,
 )
+
+
+def customer_sign_reply(language: str, own_words: str = "", model_reply: str = "") -> str:
+    """Warm public reply for an unmatched sign photo, including questions in the same batch.
+
+    Safe sentences from the model, such as the street named on the sign, stay.
+    Phone numbers, call-backs, and the internal line wording do not.
+    """
+    base = _SIGN_FOLLOWUP.get(language or "en", _SIGN_FOLLOWUP["en"])
+    kept = []
+    for part in _SENTENCE_SPLIT.split((model_reply or "").strip()):
+        sentence = part.strip()
+        if not sentence or sentence == base:
+            continue
+        lowered = sentence.lower()
+        if "home ihc line" in lowered or "nombor home ihc" in lowered:
+            continue
+        if _SIGN_PROMISE.search(sentence) or _PHOTO_REQUEST_NOTE.search(sentence):
+            continue
+        if customer_media_request(sentence):
+            continue
+        if reply_contains_staff_phone(sentence) or suppressed_phone_like(sentence, default_suppression_numbers()):
+            continue
+        kept.append(sentence)
+    extra = _sign_question_note(language or "en", own_words or "")
+    parts = [base, *kept]
+    if extra:
+        parts.append(extra)
+    return " ".join(parts)
+
+
+def _sign_question_note(language: str, own_words: str) -> str:
+    low = (own_words or "").lower()
+    availability = bool(re.search(
+        r"available|availability|masih ada|ada lagi|还在|还有吗|空着",
+        low,
+    ))
+    rent = bool(re.search(
+        r"how much|per month|monthly|sewa sebulan|sebulan|berapa|租金|一个月|每月",
+        low,
+    ))
+    if language == "zh":
+        if availability and rent:
+            return "你问这间还在不在，以及每个月租金多少。团队核对后，我会在这里告诉你这两点。我现在还不能报价格。"
+        if availability:
+            return "你问这间还在不在。团队核对后，我会在这里告诉你。我现在还不能确认。"
+        if rent:
+            return "你问每个月租金多少。团队核对后，我会在这里告诉你。我现在还不能报价格。"
+        return ""
+    if language == "ms":
+        if availability and rent:
+            return "Anda tanya sama ada unit ini masih ada dan berapa sewa sebulan. Saya akan sahkan kedua-duanya di sini selepas pasukan semak. Saya belum ada harga untuk dikongsi."
+        if availability:
+            return "Anda tanya sama ada unit ini masih ada. Saya akan sahkan di sini selepas pasukan semak."
+        if rent:
+            return "Anda tanya berapa sewa sebulan. Saya akan sahkan di sini selepas pasukan semak. Saya belum ada harga untuk dikongsi."
+        return ""
+    if availability and rent:
+        return "You asked whether this unit is available and what the monthly rent is. I will confirm both in this chat after the team checks. I do not have a price to share yet."
+    if availability:
+        return "You asked whether this unit is available. I will confirm that in this chat after the team checks."
+    if rent:
+        return "You asked about the monthly rent. I will confirm that in this chat after the team checks. I do not have a price to share yet."
+    return ""
 
 
 def _public_sign_reply(text: str, language: str) -> str:
@@ -1236,7 +1300,13 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
     if captionless_photo or extract_phone_candidates(raw_text):
         sign_contact = resolve_sign_contact(raw_text)
     session["sign_contact"] = sign_contact
-    if captionless_photo and not is_seller_or_agent_turn:
+    sign_photo_with_text = (
+        not captionless_photo
+        and not is_seller_or_agent_turn
+        and (bool(images) or "[photo shows:" in (raw_text or "").lower())
+        and _recognised_sign_photo(raw_text, sign_contact)
+    )
+    if (captionless_photo or sign_photo_with_text) and not is_seller_or_agent_turn:
         # This turn only. A session is keyed by phone, so yesterday's Putrajaya
         # listing must not ride along on a caption-less sign photo. A staff
         # number on the sign is not a listing: agent_phone is shared.
@@ -1271,6 +1341,7 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
                 this_turn_photo_no_match = True
                 session["photo_no_match"] = True
                 session["photo_reject_reason"] = reject_reason
+                logger.info("photo_no_match armed reason=%s", reject_reason)
     elif not is_seller_or_agent_turn:
         matched_prop = find_matching_property(raw_text)
         if matched_prop:
@@ -1865,7 +1936,7 @@ def process_persona_state_machine(phone_number: str, text: str = "", session: di
         photo_text=raw_text,
     )
     if this_turn_photo_no_match:
-        response_text = _public_sign_reply(response_text, customer_lang)
+        response_text = customer_sign_reply(customer_lang, own_words, response_text)
 
     # Persist updated multi-intent memory and profile to Customer table
     MultiIntentMemoryTracker.persist_customer_memory(phone_number, session)
