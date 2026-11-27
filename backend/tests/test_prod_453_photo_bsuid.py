@@ -227,7 +227,9 @@ class PhotoNoMatchTests(unittest.TestCase):
             assigns.append(agent_id)
             return True
 
-        with patch("app.services.lead_handover.send_private_note", side_effect=_note), \
+        with patch("app.services.handover_assignee.resolve_general_pool", return_value={"users": [], "error": None}), \
+             patch("app.services.handover_assignee.unassign_agent", return_value=True) as unassign, \
+             patch("app.services.lead_handover.send_private_note", side_effect=_note), \
              patch("app.services.lead_handover.send_whatsapp_template", side_effect=_template), \
              patch("app.services.lead_handover.assign_agent", side_effect=_assign), \
              patch("app.services.lead_handover.get_agent_id_by_email", return_value=None), \
@@ -245,13 +247,16 @@ class PhotoNoMatchTests(unittest.TestCase):
         self.assertTrue(empty["admin_alert"])
         self.assertTrue(templates)
         self.assertTrue(any("No general assignee was found" in note for note in notes))
+        self.assertTrue(any("is unassigned" in note for note in notes))
         self.assertEqual(assigns, [])
+        unassign.assert_called_once_with(453)
 
         notes.clear()
         templates.clear()
-        with patch("app.services.handover_assignee.resolve_general_handover_assignees", return_value=[
+        with patch("app.services.handover_assignee.resolve_general_pool", return_value={"users": [
             {"email": "general@example.com", "full_name": "General Agent"},
-        ]), \
+        ], "error": None}), \
+             patch("app.services.handover_assignee.unassign_agent") as unassign_again, \
              patch("app.services.lead_handover.send_private_note", side_effect=_note), \
              patch("app.services.lead_handover.send_whatsapp_template", side_effect=_template), \
              patch("app.services.lead_handover.assign_agent", side_effect=_assign), \
@@ -262,11 +267,14 @@ class PhotoNoMatchTests(unittest.TestCase):
                 reason="photo_no_match",
                 note="Caption-less sign photo needs an agent.",
                 inbox_id=4,
+                photo_urls=["https://inbox.example/photo.jpg"],
             )
         self.assertTrue(assigned["assignment_verified"])
         self.assertEqual(assigns, [44])
         self.assertEqual(templates, [])
         self.assertTrue(any("General Agent" in note for note in notes))
+        self.assertTrue(any("Photo: https://inbox.example/photo.jpg" in note for note in notes))
+        unassign_again.assert_not_called()
 
     def test_labels_include_photo_needs_agent_and_tenant_without_muting(self):
         customer = MagicMock()
@@ -386,6 +394,8 @@ class UndeliverableTests(unittest.TestCase):
 
         with patch("app.services.outbound_block._client", return_value=redis), \
              patch("app.db.models.SessionLocal", return_value=db), \
+             patch("app.services.handover_assignee.resolve_general_pool", return_value={"users": [], "error": None}), \
+             patch("app.services.handover_assignee.unassign_agent", return_value=True), \
              patch("app.services.chatwoot.get_conversation_details", return_value={"labels": ["tenant", "warm"]}), \
              patch("app.services.chatwoot.apply_label", side_effect=_label), \
              patch("app.services.lead_handover.send_private_note", side_effect=_note), \
@@ -455,9 +465,9 @@ class UndeliverableTests(unittest.TestCase):
              patch("app.db.models.SessionLocal", return_value=MagicMock()), \
              patch("app.services.chatwoot.get_conversation_details", return_value={"labels": []}), \
              patch("app.services.chatwoot.apply_label"), \
-             patch("app.services.handover_assignee.resolve_general_handover_assignees", return_value=[
+             patch("app.services.handover_assignee.resolve_general_pool", return_value={"users": [
                  {"email": "general@example.com", "full_name": "General Agent"},
-             ]), \
+             ], "error": None}), \
              patch("app.services.lead_handover.send_private_note"), \
              patch("app.services.lead_handover.send_whatsapp_template") as template, \
              patch("app.services.lead_handover.assign_agent", return_value=True) as assign, \

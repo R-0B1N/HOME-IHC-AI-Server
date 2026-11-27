@@ -1003,6 +1003,30 @@ def get_or_create_conversation(contact_id: int, inbox_id: int) -> int:
             
     return create_conversation(contact_id, inbox_id)
 
+def unassign_agent(conversation_id: int) -> bool:
+    """Clear the Chatwoot assignee. Chatwoot treats a null assignee_id as unassigned.
+
+    POST /conversations/:id/assignments with assignee_id null. find_by(id: nil)
+    returns no user, and the conversation update sets assignee to nil. That
+    removes the AI Agent user when the general pool is empty.
+    """
+    if not conversation_id:
+        return False
+    url = f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/assignments"
+    headers = {
+        "api_access_token": CHATWOOT_API_TOKEN,
+        "Content-Type": "application/json",
+    }
+    try:
+        response = requests.post(url, headers=headers, json={"assignee_id": None}, timeout=10)
+        response.raise_for_status()
+        logger.info("Unassigned conversation %s", conversation_id)
+        return True
+    except requests.exceptions.RequestException as exc:
+        logger.warning("Could not unassign conversation %s: %s", conversation_id, exc)
+        return False
+
+
 def assign_agent(conversation_id: int, agent_id: int):
     """
     Assigns an agent to a Chatwoot conversation.

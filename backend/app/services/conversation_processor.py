@@ -32,7 +32,7 @@ from app.services.agent_logic import (
     restore_image_turn_reply,
 )
 from app.services.contact_identity import resolve_contact_identity
-from app.services.handover_assignee import handover_without_specialist
+from app.services.handover_assignee import handover_without_specialist, image_data_urls
 from app.services.outbound_block import customer_outbound_blocked, is_outbound_blocked
 from app.services.role_contract import (
     filter_unearned_followup,
@@ -1784,6 +1784,7 @@ class ConversationQueueProcessor:
                 conversation_id,
                 reason="photo_no_match",
                 note=note,
+                photo_urls=image_data_urls(messages),
                 customer_name=contact_name,
                 customer_phone="" if (metadata or {}).get("phone_missing") else phone_number,
                 intent=intent,
