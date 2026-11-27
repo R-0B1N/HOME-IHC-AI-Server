@@ -47,6 +47,7 @@ class GeneralPoolMembershipTests(unittest.TestCase):
         self.assertFalse(is_general_pool_member(_member(is_approved=False)))
         self.assertFalse(is_general_pool_member(_member(role="admin")))
         self.assertFalse(is_general_pool_member(_member(role="viewer")))
+        self.assertTrue(is_general_pool_member(_member(role="Employee")))
         self.assertFalse(is_general_pool_member(_member(receive_lead_handovers=False)))
         self.assertFalse(is_general_pool_member(_member(receive_lead_handovers=None)))
 
@@ -105,6 +106,7 @@ class GeneralPoolMembershipTests(unittest.TestCase):
         self.assertIn("is_active", sql)
         self.assertIn("is_approved", sql)
         self.assertIn("receive_lead_handovers", sql)
+        self.assertIn("lower", sql)
         self.assertNotIn("specialization_locations", sql)
         self.assertNotIn("specialization_property_types", sql)
 
@@ -131,6 +133,7 @@ class GeneralPoolMembershipTests(unittest.TestCase):
         db = MagicMock()
         db.query.return_value.filter.return_value.all.return_value = []
         with patch("app.services.general_assignee.SessionLocal", return_value=db), \
+             patch("app.services.handover_assignee.unassign_agent", return_value=True) as unassign, \
              patch("app.services.lead_handover.send_private_note", side_effect=_note), \
              patch("app.services.lead_handover.send_whatsapp_template", side_effect=_template), \
              patch("app.services.lead_handover.assign_agent") as assign, \
@@ -141,14 +144,62 @@ class GeneralPoolMembershipTests(unittest.TestCase):
                 reason="photo_no_match",
                 note="Caption-less sign photo needs an agent.",
                 inbox_id=4,
+                photo_urls=["https://inbox.example/rails/active_storage/blobs/photo.jpg"],
             )
         self.assertFalse(result["assignment_verified"])
         self.assertTrue(result["admin_alert"])
         self.assertTrue(result["unassigned"])
         self.assertTrue(any("No general assignee was found" in note for note in notes))
+        self.assertTrue(any("is unassigned" in note for note in notes))
+        self.assertTrue(any("Photo: https://inbox.example/rails/active_storage/blobs/photo.jpg" in note for note in notes))
         self.assertTrue(templates)
         assign.assert_not_called()
+        unassign.assert_called_once_with(453)
         db.close.assert_called()
+
+    def test_unassign_failure_does_not_claim_the_conversation_was_cleared(self):
+        notes = []
+
+        def _note(_cid, content):
+            notes.append(content)
+
+        with patch("app.services.handover_assignee.resolve_general_pool", return_value={"users": [], "error": None}), \
+             patch("app.services.handover_assignee.unassign_agent", return_value=False), \
+             patch("app.services.lead_handover.send_private_note", side_effect=_note), \
+             patch("app.services.lead_handover.send_whatsapp_template", return_value={"messages": [{"id": "1"}]}), \
+             patch("app.services.lead_handover.update_conversation_status", return_value={"status": "open"}):
+            result = handover_without_specialist(
+                453,
+                reason="photo_no_match",
+                note="Caption-less sign photo needs an agent.",
+                photo_urls=[],
+            )
+        self.assertFalse(result["unassigned"])
+        self.assertTrue(any("Unassign failed" in note for note in notes))
+        self.assertTrue(any("Photo: no attachment URL" in note for note in notes))
+        self.assertFalse(any("is unassigned" in note for note in notes))
+
+    def test_pool_member_assignment_replaces_the_previous_agent(self):
+        notes = []
+        with patch("app.services.handover_assignee.unassign_agent") as unassign, \
+             patch("app.services.lead_handover.send_private_note", side_effect=lambda _cid, content: notes.append(content)), \
+             patch("app.services.lead_handover.send_whatsapp_template") as template, \
+             patch("app.services.lead_handover.assign_agent", return_value=True) as assign, \
+             patch("app.services.lead_handover.get_agent_id_by_email", return_value=44), \
+             patch("app.services.lead_handover.update_conversation_status", return_value={"status": "open"}):
+            result = handover_without_specialist(
+                453,
+                reason="photo_no_match",
+                note="Caption-less sign photo needs an agent.",
+                assignees=[{"email": "pool@example.com", "full_name": "Pool Agent"}],
+                photo_urls=["https://inbox.example/photo.jpg"],
+            )
+        self.assertTrue(result["assignment_verified"])
+        assign.assert_called_once_with(453, 44)
+        unassign.assert_not_called()
+        template.assert_not_called()
+        self.assertTrue(any("Assigned to Pool Agent" in note for note in notes))
+        self.assertTrue(any("Photo: https://inbox.example/photo.jpg" in note for note in notes))
 
 
 if __name__ == "__main__":

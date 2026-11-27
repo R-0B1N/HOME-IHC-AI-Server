@@ -12,7 +12,7 @@ import logging
 from typing import Any, Dict, Optional
 
 from app.services.contact_identity import is_synthetic_customer_id, resolve_contact_identity
-from app.services.handover_assignee import handover_without_specialist
+from app.services.handover_assignee import handover_without_specialist, image_data_urls
 from app.services.outbound_block import block_key, is_outbound_blocked, mark_outbound_blocked
 
 logger = logging.getLogger(__name__)
@@ -185,6 +185,7 @@ def handle_message_updated(payload: Dict[str, Any]) -> Dict[str, Any]:
         intent="undeliverable",
         conversation_summary=note,
         inbox_id=inbox_id,
+        photo_urls=image_data_urls([payload]) or None,
     )
     try:
         _merge_label(conversation_id, UNDELIVERABLE_LABEL)

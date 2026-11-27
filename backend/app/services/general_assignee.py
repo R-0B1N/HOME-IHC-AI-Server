@@ -69,7 +69,7 @@ def general_pool_filters():
     return (
         User.is_active.is_(True),
         User.is_approved.is_(True),
-        User.role.in_(_POOL_ROLES),
+        func.lower(User.role).in_(_POOL_ROLES),
         User.receive_lead_handovers.is_(True),
         _untagged(User.assigned_locations),
         _untagged(User.assigned_property_types),
@@ -80,24 +80,33 @@ def general_pool_query(db):
     return db.query(User).filter(*general_pool_filters())
 
 
-def resolve_general_handover_assignees(db: Optional[Any] = None) -> List[Any]:
-    """Active approved general-pool agents and employees. Empty if nobody matches."""
+def resolve_general_pool(db: Optional[Any] = None) -> dict:
+    """Return ``{"users": [...], "error": None}``. ``error`` is set when the query fails.
+
+    A failed lookup is not the same as an empty pool. Callers must not tell
+    agents that nobody matched when the database query itself failed.
+    """
     own_session = db is None
     if own_session:
         try:
             db = SessionLocal()
         except Exception as exc:
             logger.warning("General pool lookup could not open a session: %s", exc)
-            return []
+            return {"users": [], "error": str(exc)}
     try:
         rows = general_pool_query(db).all()
     except Exception as exc:
         logger.warning("General pool lookup failed: %s", exc)
-        return []
+        return {"users": [], "error": str(exc)}
     finally:
         if own_session and db is not None:
             try:
                 db.close()
             except Exception:
                 pass
-    return [row for row in rows if is_general_pool_member(row)]
+    return {"users": [row for row in rows if is_general_pool_member(row)], "error": None}
+
+
+def resolve_general_handover_assignees(db: Optional[Any] = None) -> List[Any]:
+    """Active approved general-pool agents and employees. Empty if nobody matches."""
+    return list(resolve_general_pool(db).get("users") or [])
