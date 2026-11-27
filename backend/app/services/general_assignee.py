@@ -92,11 +92,13 @@ def resolve_general_pool(db: Optional[Any] = None) -> dict:
             db = SessionLocal()
         except Exception as exc:
             logger.warning("General pool lookup could not open a session: %s", exc)
+            logger.info("General pool lookup users=%s error=%s", 0, exc)
             return {"users": [], "error": str(exc)}
     try:
         rows = general_pool_query(db).all()
     except Exception as exc:
         logger.warning("General pool lookup failed: %s", exc)
+        logger.info("General pool lookup users=%s error=%s", 0, exc)
         return {"users": [], "error": str(exc)}
     finally:
         if own_session and db is not None:
@@ -104,7 +106,9 @@ def resolve_general_pool(db: Optional[Any] = None) -> dict:
                 db.close()
             except Exception:
                 pass
-    return {"users": [row for row in rows if is_general_pool_member(row)], "error": None}
+    users = [row for row in rows if is_general_pool_member(row)]
+    logger.info("General pool lookup users=%s error=%s", len(users), None)
+    return {"users": users, "error": None}
 
 
 def resolve_general_handover_assignees(db: Optional[Any] = None) -> List[Any]:

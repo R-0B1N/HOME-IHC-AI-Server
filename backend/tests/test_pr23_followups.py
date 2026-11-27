@@ -239,7 +239,8 @@ class SignReplyAndPhotoTests(unittest.TestCase):
         self.assertNotIn("011-651", reply)
         self.assertNotIn("44931", reply)
         self.assertNotIn("call the number", reply.lower())
-        self.assertIn("check that unit", reply.lower())
+        self.assertIn("thanks for the photo", reply.lower())
+        self.assertNotIn("home ihc line", reply.lower())
         self.assertEqual(result["images_to_send"], [])
         self.assertEqual(
             result["updated_session"]["collected_data"].get("customer_category"),
@@ -421,7 +422,8 @@ class CaptionlessListingMatchTests(unittest.TestCase):
         self.assertNotIn("011-630", reply)
         self.assertNotIn("44931", reply)
         self.assertNotIn("call the number", reply.lower())
-        self.assertIn("check that unit", reply.lower())
+        self.assertIn("thanks for the photo", reply.lower())
+        self.assertNotIn("home ihc line", reply.lower())
 
     def test_rent_enquiry_title_match_on_sale_only_listing_sends_nothing(self):
         note = f"[Customer sent a photo.] [Photo shows: FOR RENT {SALE_LAND}]"

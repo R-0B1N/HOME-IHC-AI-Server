@@ -95,12 +95,14 @@ class PhotoNoMatchTests(unittest.TestCase):
         self.assertEqual(result["updated_session"].get("photo_reject_reason"), "no_candidate")
         self.assertTrue(any("reason=no_candidate" in line for line in logs.output))
         self.assertNotIn("follow up soon", reply.lower())
-        self.assertNotIn("get back", reply.lower())
+        self.assertNotIn("soon", reply.lower())
+        self.assertIn("get back to you here", reply.lower())
         self.assertNotIn("6830", reply)
         self.assertNotIn("6831", reply)
         self.assertNotIn("call", reply.lower())
         self.assertNotIn("whatsapp", reply.lower())
-        self.assertIn("check that unit", reply.lower())
+        self.assertIn("thanks for the photo", reply.lower())
+        self.assertNotIn("home ihc line", reply.lower())
         category = result["updated_session"]["collected_data"].get("customer_category")
         self.assertEqual(category, "renter")
         self.assertEqual(public_intent_label(category), "tenant")
@@ -319,7 +321,8 @@ class PhotoNoMatchTests(unittest.TestCase):
             handover_happened=False,
             photo_no_match=True,
         )
-        self.assertIn("check that unit", photo.lower())
+        self.assertIn("thanks for the photo", photo.lower())
+        self.assertNotIn("home ihc line", photo.lower())
         self.assertNotIn("follow up", photo.lower())
 
 
@@ -345,7 +348,8 @@ class FuzzyStaffSuppressionTests(unittest.TestCase):
         self.assertNotIn("6830", cleaned)
         self.assertNotIn("44932", cleaned)
         self.assertNotIn("whatsapp", cleaned.lower())
-        self.assertIn("check that unit", cleaned.lower())
+        self.assertIn("thanks for the photo", cleaned.lower())
+        self.assertNotIn("home ihc line", cleaned.lower())
 
 
 class UndeliverableTests(unittest.TestCase):

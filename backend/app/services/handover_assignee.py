@@ -95,10 +95,29 @@ def handover_without_specialist(
     service: Optional[LeadHandoverService] = None,
     assignees: Optional[List[Any]] = None,
     photo_urls: Optional[List[str]] = None,
+    skip_admin_alert: bool = False,
 ) -> Dict[str, Any]:
     """Assign general employees, or alert admins and clear the Chatwoot assignee."""
     service = service or LeadHandoverService()
     note = with_photo_links(note, photo_urls)
+    if skip_admin_alert:
+        body = (
+            f"{note}\nPhoto handover is already in place. Duplicate admin alert skipped."
+        ).strip()
+        if conversation_id:
+            try:
+                service.send_private_note_func(conversation_id, body)
+            except Exception as exc:
+                logger.warning("Could not post duplicate photo note: %s", exc)
+        logger.info("photo handover duplicate admin alert skipped conversation_id=%s", conversation_id)
+        return {
+            "assignment_verified": False,
+            "assigned_agents": [],
+            "admin_alert": False,
+            "alert_skipped": True,
+            "unassigned": False,
+            "reason": reason,
+        }
     lookup_error = None
     if assignees is None:
         pool = resolve_general_pool()
